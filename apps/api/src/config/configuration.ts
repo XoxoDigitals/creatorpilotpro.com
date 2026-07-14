@@ -32,6 +32,9 @@ export function configuration() {
     version: env.APP_VERSION,
     corsOrigins: env.CORS_ORIGINS.split(',').map((s) => s.trim()),
     databaseUrl: env.DATABASE_URL,
+    masterKey: env.MASTER_KEY,
+    sessionSecret: env.SESSION_SECRET,
+    isProduction: env.NODE_ENV === 'production',
   };
 }
 

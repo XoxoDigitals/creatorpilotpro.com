@@ -1,13 +1,35 @@
-import Link from 'next/link';
+'use client';
 
-/**
- * Login placeholder (Phase 0). Real credentials auth (Auth.js + DB sessions)
- * lands in task #4 — this form does not submit anywhere yet.
- */
+import { useState } from 'react';
+import { api, ApiError } from '@/lib/api';
+import type { SessionUser } from '@/lib/types';
+
 export default function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await api.post<{ user: SessionUser }>('/auth/login', { email, password });
+      // Full navigation so middleware sees the freshly-set cookie.
+      window.location.href = '/dashboard';
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Login failed');
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-sm rounded-xl border border-slate-800 bg-slate-900/60 p-8 shadow-xl">
+      <form
+        onSubmit={onSubmit}
+        className="w-full max-w-sm rounded-xl border border-slate-800 bg-slate-900/60 p-8 shadow-xl"
+      >
         <h1 className="text-xl font-semibold text-slate-100">SocialCreatorPilot</h1>
         <p className="mt-1 text-sm text-slate-400">Sign in to your workspace</p>
 
@@ -19,9 +41,11 @@ export default function LoginPage() {
             <input
               id="email"
               type="email"
-              disabled
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500"
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
             />
           </div>
           <div>
@@ -31,26 +55,29 @@ export default function LoginPage() {
             <input
               id="password"
               type="password"
-              disabled
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500"
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
             />
           </div>
+
+          {error && (
+            <p className="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-300">
+              {error}
+            </p>
+          )}
+
           <button
-            type="button"
-            disabled
-            className="w-full cursor-not-allowed rounded-md bg-indigo-600/50 px-3 py-2 text-sm font-medium text-white"
+            type="submit"
+            disabled={busy}
+            className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Sign in (coming in task #4)
+            {busy ? 'Signing in…' : 'Sign in'}
           </button>
-          <p className="text-center text-xs text-slate-500">
-            Auth is not wired yet —{' '}
-            <Link href="/dashboard" className="text-indigo-400 hover:underline">
-              preview the dashboard shell
-            </Link>
-          </p>
         </div>
-      </div>
+      </form>
     </main>
   );
 }

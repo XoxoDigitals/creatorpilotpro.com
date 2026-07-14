@@ -1,0 +1,50 @@
+import { describe, it, expect } from 'vitest';
+import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { RolesGuard } from './roles.guard';
+import { ROLES_KEY } from '../decorators/roles.decorator';
+import type { SessionUser } from '../session/session.types';
+
+/** Build a minimal ExecutionContext carrying a request user. */
+function ctxFor(user: SessionUser | undefined): ExecutionContext {
+  return {
+    getHandler: () => ({}),
+    getClass: () => ({}),
+    switchToHttp: () => ({ getRequest: () => ({ user }) }),
+  } as unknown as ExecutionContext;
+}
+
+const owner: SessionUser = { id: '1', email: 'o@x.com', name: 'O', role: 'OWNER' };
+const worker: SessionUser = { id: '2', email: 'w@x.com', name: 'W', role: 'WORKER' };
+
+describe('RolesGuard', () => {
+  it('allows any authenticated user when no @Roles is set', () => {
+    const reflector = { getAllAndOverride: () => undefined } as unknown as Reflector;
+    const guard = new RolesGuard(reflector);
+    expect(guard.canActivate(ctxFor(worker))).toBe(true);
+  });
+
+  it('allows a user whose role is in the required set', () => {
+    const reflector = {
+      getAllAndOverride: (key: string) => (key === ROLES_KEY ? ['OWNER', 'ADMIN'] : undefined),
+    } as unknown as Reflector;
+    const guard = new RolesGuard(reflector);
+    expect(guard.canActivate(ctxFor(owner))).toBe(true);
+  });
+
+  it('rejects a user whose role is not in the required set', () => {
+    const reflector = {
+      getAllAndOverride: () => ['OWNER', 'ADMIN'],
+    } as unknown as Reflector;
+    const guard = new RolesGuard(reflector);
+    expect(() => guard.canActivate(ctxFor(worker))).toThrow(ForbiddenException);
+  });
+
+  it('rejects when there is no authenticated user', () => {
+    const reflector = {
+      getAllAndOverride: () => ['OWNER'],
+    } as unknown as Reflector;
+    const guard = new RolesGuard(reflector);
+    expect(() => guard.canActivate(ctxFor(undefined))).toThrow(ForbiddenException);
+  });
+});
