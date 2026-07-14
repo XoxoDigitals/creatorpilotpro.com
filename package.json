@@ -11,6 +11,8 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
+    "test": "turbo run test",
+    "ci-check": "pnpm typecheck && pnpm lint && pnpm build && pnpm test",
     "dev": "turbo run dev",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,mjs,cjs}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,mjs,cjs}\"",

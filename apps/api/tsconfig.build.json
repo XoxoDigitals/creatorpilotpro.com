@@ -1,4 +1,10 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // nest-cli's deleteOutDir wipes dist every build; incremental tsbuildinfo
+    // would then make tsc skip emit and leave dist empty (also poisons turbo's
+    // output cache). Disable incremental so the build always emits fully.
+    "incremental": false
+  },
   "exclude": ["node_modules", "dist", "test", "**/*.spec.ts"]
 }
