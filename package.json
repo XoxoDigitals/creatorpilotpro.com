@@ -1,0 +1,29 @@
+{
+  "name": "socialcreatorpilot",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "dev": "turbo run dev",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,mjs,cjs}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,mjs,cjs}\"",
+    "db:generate": "pnpm --filter @scp/db generate",
+    "db:seed": "pnpm --filter @scp/db seed"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  }
+}

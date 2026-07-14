@@ -1,0 +1,13 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# pnpm 11 blocks lifecycle scripts unless allowlisted (supply-chain guard).
+allowBuilds:
+  "@prisma/client": true
+  "@prisma/engines": true
+  prisma: true
+  esbuild: true
+  sharp: true
+  # Telemetry postinstall we deliberately keep blocked.
+  "@scarf/scarf": false

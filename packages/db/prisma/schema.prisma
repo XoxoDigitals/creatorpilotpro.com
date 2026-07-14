@@ -1,0 +1,178 @@
+// SocialCreatorPilot — Prisma schema
+// Phase 0 base schema: docs/03 Domain 1 (Identity & Access) + Domain 8 subset
+// (system_settings, notifications, job_runs). Remaining domains land in later phases.
+// Conventions (docs/03): cuid() ids, createdAt/updatedAt everywhere, soft-delete
+// (deletedAt) on user-facing entities, helpful @@index entries.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 1 — Identity & Access
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  REVIEWER
+  WORKER
+  ANALYST
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model User {
+  id             String     @id @default(cuid())
+  email          String     @unique
+  passwordHash   String
+  name           String?
+  role           Role       @default(WORKER)
+  status         UserStatus @default(ACTIVE)
+  telegramChatId String?
+  lastLoginAt    DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // soft-delete (user-facing entity)
+
+  sessions      Session[]
+  apiTokens     ApiToken[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+
+  @@index([role])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+/// Auth.js DB session store.
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([expires])
+  @@map("sessions")
+}
+
+/// Scoped API tokens for programmatic access (e.g. worker upload scripts).
+model ApiToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  scopes     String[]  @default([])
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("api_tokens")
+}
+
+/// Append-only audit trail (docs/03 Domain 1). No updatedAt / deletedAt by design.
+model AuditLog {
+  id         String  @id @default(cuid())
+  userId     String?
+  user       User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  ip         String?
+  at         DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([at])
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 8 — System (subset for Phase 0)
+// ---------------------------------------------------------------------------
+
+/// Global key/value config: Drive accounts, storage thresholds, notification
+/// config, feature flags, TTS default, kill-switches (docs/03 Domain 8).
+model SystemSetting {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+enum NotificationChannel {
+  INAPP
+  TELEGRAM
+  EMAIL
+}
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // TODO(task#7+): add incident relation when Domain 7 (incidents) lands.
+  incidentId String?
+  type       String
+  payload    Json
+  channels   NotificationChannel[] @default([])
+  readAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, readAt])
+  @@index([incidentId])
+  @@map("notifications")
+}
+
+enum JobRunStatus {
+  WAITING
+  ACTIVE
+  COMPLETED
+  FAILED
+  DELAYED
+}
+
+/// Mirror of pg-boss job history kept ~30 days for the ops dashboard (docs/03 Domain 8).
+model JobRun {
+  id         String       @id @default(cuid())
+  queue      String
+  jobName    String
+  entityId   String?
+  status     JobRunStatus @default(WAITING)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  error      Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([queue, status])
+  @@index([entityId])
+  @@index([createdAt])
+  @@map("job_runs")
+}
