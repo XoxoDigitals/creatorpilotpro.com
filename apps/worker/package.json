@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@scp/shared": "workspace:*",
+    "dotenv": "^17.4.2",
     "pg-boss": "^10.1.6"
   },
   "devDependencies": {

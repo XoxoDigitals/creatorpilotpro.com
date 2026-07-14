@@ -1,4 +1,17 @@
 /** Worker runtime config read from env (docs/02 — pg-boss lives in Postgres). */
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { config as loadEnv } from 'dotenv';
+
+// The single .env lives at the repo root; cwd is apps/worker under
+// `turbo run dev` but the repo root under pm2. Load the first match.
+for (const candidate of ['.env', '../../.env']) {
+  const path = resolve(process.cwd(), candidate);
+  if (existsSync(path)) {
+    loadEnv({ path, quiet: true });
+    break;
+  }
+}
 
 /**
  * Read lazily (only when the worker actually boots) so that building/importing
@@ -12,4 +25,6 @@ export function getDatabaseUrl(): string {
   return url;
 }
 
-export const DEFAULT_CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? '4');
+export function getDefaultConcurrency(): number {
+  return Number(process.env.WORKER_CONCURRENCY ?? '4');
+}

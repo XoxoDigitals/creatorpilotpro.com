@@ -32,6 +32,9 @@ import { SystemModule } from './modules/system/system.module';
       isGlobal: true,
       load: [configuration],
       validate: validateEnv,
+      // The single .env lives at the repo root; cwd is apps/api under
+      // `turbo run dev` but the repo root under pm2/`node dist/main.js`.
+      envFilePath: ['.env', '../../.env'],
     }),
     // Cross-cutting infrastructure (global).
     PrismaModule,
