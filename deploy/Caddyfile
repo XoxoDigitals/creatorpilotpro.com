@@ -1,0 +1,35 @@
+# SocialCreatorPilot — Caddy reverse proxy (docs/02 §7, native deploy)
+# {$DOMAIN} is substituted by deploy/setup.sh (or export DOMAIN and run
+# `caddy run --config deploy/Caddyfile` directly — Caddy expands {$ENV} itself).
+#
+# Auto-TLS: Caddy provisions Let's Encrypt certificates for {$DOMAIN}
+# automatically as long as ports 80/443 are reachable and DNS points here.
+
+{$DOMAIN} {
+	encode gzip zstd
+
+	# NestJS API — /api/* (global prefix /api/v1 + /api/docs swagger UI)
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# Next.js web app — everything else
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	header {
+		# Basic hardening; CSP handled app-side later (task #4+)
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	log {
+		output file /var/log/caddy/scp-access.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+	}
+}
