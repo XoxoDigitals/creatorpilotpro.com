@@ -110,6 +110,63 @@ model AuditLog {
 }
 
 // ---------------------------------------------------------------------------
+// Domain 6 — AI Providers & Keys (docs/03 Domain 6, docs/05 §4)
+// ---------------------------------------------------------------------------
+
+enum AiProviderKind {
+  TEXT
+  TTS
+  MULTIMODAL
+}
+
+enum AiKeyStatus {
+  ACTIVE
+  COOLDOWN
+  EXHAUSTED
+  DISABLED
+}
+
+/// An AI capability provider (gemini/openai/kokoro/…). baseConfig holds
+/// non-secret provider config (base URL, default models). Secrets live on keys.
+model AiProvider {
+  id         String         @id @default(cuid())
+  name       String         @unique
+  kind       AiProviderKind
+  enabled    Boolean        @default(true)
+  baseConfig Json           @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  keys AiKey[]
+
+  @@map("ai_providers")
+}
+
+/// A single API key in a provider's pool. The secret is AES-256-GCM encrypted
+/// (keyEnc, `v1:<iv>:<tag>:<ciphertext>`); only the last-4 is kept in clear for
+/// display. keyEnc is NEVER returned by the API (docs/08 §2, write-only from UI).
+model AiKey {
+  id            String       @id @default(cuid())
+  providerId    String
+  provider      AiProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  label         String
+  keyEnc        String
+  keyLast4      String
+  priority      Int          @default(100)
+  status        AiKeyStatus  @default(ACTIVE)
+  cooldownUntil DateTime?
+  limits        Json         @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([providerId, priority])
+  @@index([status])
+  @@map("ai_keys")
+}
+
+// ---------------------------------------------------------------------------
 // Domain 8 — System (subset for Phase 0)
 // ---------------------------------------------------------------------------
 

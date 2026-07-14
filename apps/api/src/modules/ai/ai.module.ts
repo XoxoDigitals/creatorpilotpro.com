@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
+import { AiController } from './ai.controller';
+import { AiService } from './ai.service';
 
-/**
- * Ai module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
- */
-@Module({})
+/** AI providers & encrypted key pool (docs/03 Domain 6, docs/05 §4). */
+@Module({
+  controllers: [AiController],
+  providers: [AiService],
+})
 export class AiModule {}

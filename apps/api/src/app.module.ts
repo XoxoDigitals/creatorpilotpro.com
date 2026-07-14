@@ -1,6 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { configuration, validateEnv } from './config/configuration';
+import { PrismaModule } from './prisma/prisma.module';
+import { CryptoModule } from './common/crypto/crypto.module';
+import { CsrfGuard } from './common/guards/csrf.guard';
+import { SessionAuthGuard } from './common/guards/session-auth.guard';
+import { RolesGuard } from './common/guards/roles.guard';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -26,8 +33,11 @@ import { SystemModule } from './modules/system/system.module';
       load: [configuration],
       validate: validateEnv,
     }),
+    // Cross-cutting infrastructure (global).
+    PrismaModule,
+    CryptoModule,
     HealthModule,
-    // Feature modules (docs/02 §3) — Phase 0 stubs, wired for boundary structure.
+    // Feature modules (docs/02 §3).
     AuthModule,
     UsersModule,
     AccountsModule,
@@ -44,6 +54,14 @@ import { SystemModule } from './modules/system/system.module';
     NotificationsModule,
     StorageModule,
     SystemModule,
+  ],
+  providers: [
+    // Global guard chain (order matters): CSRF → session auth → RBAC.
+    { provide: APP_GUARD, useClass: CsrfGuard },
+    { provide: APP_GUARD, useClass: SessionAuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+    // Audit trail for @Audit()-annotated mutations (docs/08 §3).
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
 })
 export class AppModule {}

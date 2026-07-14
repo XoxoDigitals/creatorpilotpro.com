@@ -3,10 +3,36 @@
  * Runnable later via `pnpm db:seed` (requires a reachable DATABASE_URL).
  * Password comes from env SEED_OWNER_PASSWORD and is bcrypt-hashed.
  */
-import { PrismaClient, Role, UserStatus } from '@prisma/client';
+import { PrismaClient, Role, UserStatus, AiProviderKind } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
+
+/**
+ * Default AI providers (docs/05 §2/§6). Keys are added later from the dashboard
+ * (encrypted vault); kokoro is self-hosted and needs no key.
+ */
+const DEFAULT_PROVIDERS: Array<{
+  name: string;
+  kind: AiProviderKind;
+  baseConfig: Record<string, unknown>;
+}> = [
+  {
+    name: 'gemini',
+    kind: AiProviderKind.MULTIMODAL,
+    baseConfig: { baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true },
+  },
+  {
+    name: 'openai',
+    kind: AiProviderKind.TEXT,
+    baseConfig: { baseUrl: 'https://api.openai.com/v1', needsKey: true },
+  },
+  {
+    name: 'kokoro',
+    kind: AiProviderKind.TTS,
+    baseConfig: { baseUrl: 'http://localhost:8880', needsKey: false },
+  },
+];
 
 async function main(): Promise<void> {
   const email = 'saboor@xoxodigitals.com';
@@ -31,6 +57,15 @@ async function main(): Promise<void> {
   });
 
   console.log(`Seeded Owner user: ${owner.email} (${owner.id})`);
+
+  for (const p of DEFAULT_PROVIDERS) {
+    const provider = await prisma.aiProvider.upsert({
+      where: { name: p.name },
+      update: { kind: p.kind, baseConfig: p.baseConfig },
+      create: { name: p.name, kind: p.kind, baseConfig: p.baseConfig },
+    });
+    console.log(`Seeded AI provider: ${provider.name} (${provider.kind})`);
+  }
 }
 
 main()

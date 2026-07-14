@@ -1,8 +1,12 @@
 import { Module } from '@nestjs/common';
+import { SystemController } from './system.controller';
+import { SettingsService } from './settings.service';
+import { AuditService } from './audit.service';
 
-/**
- * System module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
- */
-@Module({})
+/** System settings + audit log (docs/03 Domain 8, docs/08 §3). */
+@Module({
+  controllers: [SystemController],
+  providers: [SettingsService, AuditService],
+  exports: [SettingsService],
+})
 export class SystemModule {}
