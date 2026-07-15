@@ -45,10 +45,11 @@ model User {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime? // soft-delete (user-facing entity)
 
-  sessions      Session[]
-  apiTokens     ApiToken[]
-  auditLogs     AuditLog[]
-  notifications Notification[]
+  sessions       Session[]
+  apiTokens      ApiToken[]
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+  socialAccounts SocialAccount[]
 
   @@index([role])
   @@index([status])
@@ -107,6 +108,105 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([at])
   @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 2 — Connections & Channel Profiles (docs/03 Domain 2, Phase 1a)
+// ---------------------------------------------------------------------------
+
+enum Platform {
+  YOUTUBE
+  FACEBOOK
+  TIKTOK
+}
+
+enum AccountKind {
+  YT_CHANNEL
+  FB_PAGE
+  FB_BM_PAGE
+  TIKTOK_ACCOUNT
+}
+
+/// Connection/token health surfaced by the monitor (docs/03 Domain 2, FR-A4).
+enum ConnectionStatus {
+  HEALTHY
+  EXPIRING
+  BROKEN
+}
+
+/// How the account publishes: PostQued bridge or the owner's own platform app.
+enum ConnectionMethod {
+  POSTQUED
+  OWN_APP
+}
+
+/// Content pipeline chosen at connect time (docs/11 §1); decides workspace tabs.
+enum AccountContentType {
+  AI
+  REPURPOSED
+  MIXED
+}
+
+/// A connected social channel/page/account (docs/03 Domain 2).
+/// `authPayload` is an AES-256-GCM envelope (never returned by the API): PostQued
+/// accounts store `{pqAccountId, workspaceId}`; OAuth accounts store a token bundle.
+model SocialAccount {
+  id               String             @id @default(cuid())
+  platform         Platform
+  kind             AccountKind
+  externalId       String
+  name             String
+  handle           String?
+  avatarUrl        String?
+  authPayload      String? // enc envelope; nullable until authorized
+  tokenExpiresAt   DateTime?
+  connectionStatus ConnectionStatus   @default(HEALTHY)
+  connectionMethod ConnectionMethod
+  contentType      AccountContentType @default(AI)
+  dramasEnabled    Boolean            @default(false)
+  monetized        Boolean            @default(false)
+  paused           Boolean            @default(false)
+  timezone         String             @default("UTC")
+
+  addedById String?
+  addedBy   User?   @relation(fields: [addedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // soft-delete (user-facing entity)
+
+  profile ChannelProfile?
+
+  @@unique([platform, externalId])
+  @@index([platform])
+  @@index([connectionStatus])
+  @@index([deletedAt])
+  @@map("social_accounts")
+}
+
+/// 1:1 channel profile: AI prompts, styles, publish defaults, scheduling prefs
+/// (docs/03 Domain 2). `schedulingPrefs` shape documented in docs/11 §1 wizard.
+model ChannelProfile {
+  id        String        @id @default(cuid())
+  accountId String        @unique
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  masterPrompt        String   @default("")
+  writingStyle        String   @default("")
+  narrationStyle      String   @default("")
+  language            String   @default("en")
+  voiceSettings       Json     @default("{}")
+  titleTemplate       String   @default("")
+  descriptionTemplate String   @default("")
+  defaultTags         String[] @default([])
+  aiLabelDefault      Boolean  @default(true)
+  approvalPolicy      Json     @default("{}")
+  schedulingPrefs     Json     @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("channel_profiles")
 }
 
 // ---------------------------------------------------------------------------
