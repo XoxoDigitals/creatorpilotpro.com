@@ -93,9 +93,9 @@ model ApiToken {
 
 /// Append-only audit trail (docs/03 Domain 1). No updatedAt / deletedAt by design.
 model AuditLog {
-  id         String  @id @default(cuid())
+  id         String   @id @default(cuid())
   userId     String?
-  user       User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   action     String
   entityType String
   entityId   String?
@@ -175,7 +175,10 @@ model SocialAccount {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime? // soft-delete (user-facing entity)
 
-  profile ChannelProfile?
+  profile        ChannelProfile?
+  publishTargets PublishTarget[]
+  scheduleSlots  ScheduleSlot[]
+  incidents      Incident[]
 
   @@unique([platform, externalId])
   @@index([platform])
@@ -207,6 +210,258 @@ model ChannelProfile {
   updatedAt DateTime @updatedAt
 
   @@map("channel_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 4 — Content Core (docs/03 Domain 4, Phase 1b)
+// ---------------------------------------------------------------------------
+
+/// Origin pipeline of a content item (docs/03 Domain 4).
+enum ContentItemType {
+  REPURPOSED
+  WORKER_PRODUCED
+  DRAMA_EPISODE
+  MANUAL_UPLOAD
+}
+
+/// content_items state machine (docs/03 Domain 4, docs/04 §4). Illegal
+/// transitions are rejected + audited in the service layer, not by triggers.
+enum ContentItemStatus {
+  INGESTED
+  REVIEW_PENDING
+  APPROVED
+  ANALYZING
+  SCRIPT_READY
+  SCRIPT_APPROVED
+  TTS_DONE
+  RENDERED
+  METADATA_READY
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  DRAFT
+  REJECTED
+  FAILED
+}
+
+/// Media artifact kinds attached to a content item (docs/03 Domain 4).
+enum AssetKind {
+  ORIGINAL
+  PROCESSED
+  VOICEOVER
+  BG_AUDIO
+  FINAL
+  THUMBNAIL
+  SUBTITLE
+}
+
+/// Where an asset's bytes physically live across the tiered store (docs/02 §6).
+enum StorageState {
+  LOCAL
+  UPLOADING
+  DRIVE
+  BOTH
+  EVICTED
+}
+
+/// The central video project entity (docs/03 Domain 4). `sourceVideoId`,
+/// `ideaId`, `episodeId` are soft references to Domain 3/5 rows that land in
+/// later phases; kept as plain columns (no FK) until those tables exist.
+model ContentItem {
+  id            String            @id @default(cuid())
+  type          ContentItemType
+  sourceVideoId String?
+  ideaId        String?
+  episodeId     String?
+  title         String
+  status        ContentItemStatus @default(INGESTED)
+  statusReason  String?
+  reviewedById  String?
+  currentStep   Json              @default("{}")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // soft-delete (user-facing entity)
+
+  assets         Asset[]
+  publishTargets PublishTarget[]
+  incidents      Incident[]
+
+  @@index([status])
+  @@index([type])
+  @@index([deletedAt])
+  @@map("content_items")
+}
+
+/// A media file belonging to a content item, tracked across storage tiers
+/// (docs/03 Domain 4). `localPath` is relative to the storage hot-tier root.
+model Asset {
+  id            String       @id @default(cuid())
+  contentItemId String
+  contentItem   ContentItem  @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  kind          AssetKind
+  localPath     String?
+  driveFileId   String?
+  md5           String?
+  bytes         BigInt?
+  durationSec   Float?
+  width         Int?
+  height        Int?
+  storageState  StorageState @default(LOCAL)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contentItemId, kind])
+  @@index([storageState])
+  @@map("assets")
+}
+
+/// Cross-post mode for a target (docs/06 §3). NOW dispatches immediately;
+/// FIXED/QUEUE_SLOT/RANDOM_WINDOW resolve a concrete `scheduledAt`.
+enum ScheduleMode {
+  NOW
+  FIXED
+  QUEUE_SLOT
+  RANDOM_WINDOW
+}
+
+/// Lifecycle of a single account publish target (docs/03 Domain 4, docs/06 §4).
+enum PublishTargetStatus {
+  PENDING
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  DRAFT
+}
+
+/// One content item → many targets = cross-posting (docs/03 Domain 4). Each
+/// target resolves its own metadata, schedules on its account's rules, and
+/// fails/retries independently. `metadataOverride` holds final per-account
+/// title/description/tags; `lastError` mirrors the most recent failure payload.
+model PublishTarget {
+  id               String              @id @default(cuid())
+  contentItemId    String
+  contentItem      ContentItem         @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  accountId        String
+  account          SocialAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  metadataOverride Json                @default("{}")
+  scheduleMode     ScheduleMode        @default(QUEUE_SLOT)
+  scheduledAt      DateTime?
+  status           PublishTargetStatus @default(PENDING)
+  platformPostId   String?
+  publishedAt      DateTime?
+  lastError        Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attempts  PublishAttempt[]
+  incidents Incident[]
+
+  @@index([contentItemId])
+  @@index([accountId])
+  @@index([status, scheduledAt])
+  @@map("publish_targets")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 7 — Scheduling, Publishing, Incidents (docs/03 Domain 7, Phase 1b)
+// ---------------------------------------------------------------------------
+
+/// Per-account slot rules the planner expands into concrete publish slots
+/// (docs/06 §3). `rule` is rrule-style (daily/weekly/monthly/custom dates);
+/// `timeWindows` is [{start,end,randomize}] in the account timezone.
+model ScheduleSlot {
+  id          String        @id @default(cuid())
+  accountId   String
+  account     SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  rule        Json          @default("{}")
+  timeWindows Json          @default("[]")
+  active      Boolean       @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId, active])
+  @@map("schedule_slots")
+}
+
+/// Outcome class of a publish attempt, driving the retry matrix (docs/06 §4).
+enum PublishAttemptOutcome {
+  SUCCESS
+  RETRYABLE_ERROR
+  TERMINAL_ERROR
+}
+
+/// Append-only history of publish attempts (docs/03 Domain 7; retained
+/// forever — small). One row per adapter.publish() invocation.
+model PublishAttempt {
+  id              String                 @id @default(cuid())
+  publishTargetId String
+  publishTarget   PublishTarget          @relation(fields: [publishTargetId], references: [id], onDelete: Cascade)
+  attemptNo       Int
+  startedAt       DateTime               @default(now())
+  finishedAt      DateTime?
+  outcome         PublishAttemptOutcome?
+  errorCode       String?
+  errorPayload    Json?
+
+  @@index([publishTargetId, attemptNo])
+  @@map("publish_attempts")
+}
+
+/// What an incident is about (docs/03 Domain 7, docs/06 §4 error matrix).
+enum IncidentKind {
+  COPYRIGHT
+  AUTH
+  RATE_LIMIT
+  PLATFORM_REJECT
+  WATCHER
+  STORAGE
+  SYSTEM
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum IncidentStatus {
+  OPEN
+  ACKED
+  RESOLVED
+}
+
+/// An operational incident surfaced in the Incident center (docs/03 Domain 7).
+/// Optionally scoped to an account, content item, and/or publish target.
+model Incident {
+  id              String           @id @default(cuid())
+  kind            IncidentKind
+  severity        IncidentSeverity @default(MEDIUM)
+  accountId       String?
+  account         SocialAccount?   @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  contentItemId   String?
+  contentItem     ContentItem?     @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+  publishTargetId String?
+  publishTarget   PublishTarget?   @relation(fields: [publishTargetId], references: [id], onDelete: SetNull)
+  title           String
+  detail          Json             @default("{}")
+  status          IncidentStatus   @default(OPEN)
+  resolvedById    String?
+  resolvedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notifications Notification[]
+
+  @@index([status, severity])
+  @@index([accountId])
+  @@index([kind])
+  @@map("incidents")
 }
 
 // ---------------------------------------------------------------------------
@@ -247,16 +502,16 @@ model AiProvider {
 /// (keyEnc, `v1:<iv>:<tag>:<ciphertext>`); only the last-4 is kept in clear for
 /// display. keyEnc is NEVER returned by the API (docs/08 §2, write-only from UI).
 model AiKey {
-  id            String       @id @default(cuid())
+  id            String      @id @default(cuid())
   providerId    String
-  provider      AiProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  provider      AiProvider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
   label         String
   keyEnc        String
   keyLast4      String
-  priority      Int          @default(100)
-  status        AiKeyStatus  @default(ACTIVE)
+  priority      Int         @default(100)
+  status        AiKeyStatus @default(ACTIVE)
   cooldownUntil DateTime?
-  limits        Json         @default("{}")
+  limits        Json        @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -288,11 +543,11 @@ enum NotificationChannel {
 }
 
 model Notification {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  // TODO(task#7+): add incident relation when Domain 7 (incidents) lands.
+  id         String                @id @default(cuid())
+  userId     String
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   incidentId String?
+  incident   Incident?             @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   type       String
   payload    Json
   channels   NotificationChannel[] @default([])
