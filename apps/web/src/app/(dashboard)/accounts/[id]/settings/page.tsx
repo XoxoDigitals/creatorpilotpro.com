@@ -1,27 +1,34 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Select, Textarea, Toggle } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
-import { getAccount } from '@/lib/mock-data';
+import { api, ApiError } from '@/lib/api';
+import { getApiAccount, getAccountView, type ApiAccount } from '@/lib/api-data';
 import type { ContentType } from '@/lib/domain-types';
 
-/** Channel Profile editor (FR-G). Values are local mock state until Phase 1. */
+/**
+ * Channel Profile editor (FR-G). For a real account, Save persists via
+ * PATCH /accounts/:id (contentType, dramas) + PATCH /accounts/:id/profile.
+ * Demo accounts fall back to a toast (nothing to persist).
+ */
 export default function AccountSettingsPage() {
   const { id } = useParams<{ id: string }>();
-  const account = getAccount(id);
   const toast = useToast();
 
-  const [contentType, setContentType] = useState<ContentType>(account?.contentType ?? 'AI');
-  const [dramasEnabled, setDramasEnabled] = useState(account?.dramasEnabled ?? false);
-  const [masterPrompt, setMasterPrompt] = useState(
-    'You write for a fast-paced short-form channel. Tone: energetic, plain language, hook in the first sentence…',
-  );
-  const [writingStyle, setWritingStyle] = useState('Short sentences. Concrete verbs. No filler.');
-  const [narrationStyle, setNarrationStyle] = useState('Warm, medium pace, slight emphasis on numbers.');
+  const [loading, setLoading] = useState(true);
+  const [real, setReal] = useState<ApiAccount | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const [contentType, setContentType] = useState<ContentType>('AI');
+  const [dramasEnabled, setDramasEnabled] = useState(false);
+  const [masterPrompt, setMasterPrompt] = useState('');
+  const [writingStyle, setWritingStyle] = useState('');
+  const [narrationStyle, setNarrationStyle] = useState('');
   const [language, setLanguage] = useState('en');
   const [ttsProvider, setTtsProvider] = useState('kokoro');
   const [voice, setVoice] = useState('af_bella');
@@ -32,12 +39,102 @@ export default function AccountSettingsPage() {
   const [maxPerDay, setMaxPerDay] = useState('2');
   const [minGap, setMinGap] = useState('3');
 
-  if (!account) return null;
+  const load = useCallback(async () => {
+    setLoading(true);
+    const apiAccount = await getApiAccount(id);
+    if (apiAccount) {
+      setReal(apiAccount);
+      setContentType(apiAccount.contentType);
+      setDramasEnabled(apiAccount.dramasEnabled);
+      const p = apiAccount.profile;
+      if (p) {
+        setMasterPrompt(p.masterPrompt);
+        setWritingStyle(p.writingStyle);
+        setNarrationStyle(p.narrationStyle);
+        setLanguage(p.language);
+        if (p.titleTemplate) setTitleTemplate(p.titleTemplate);
+        if (p.defaultTags?.length) setTags(p.defaultTags.join(', '));
+        setAiLabel(p.aiLabelDefault);
+        const voice = p.voiceSettings as { provider?: string; voiceId?: string } | null;
+        if (voice?.provider) setTtsProvider(voice.provider);
+        if (voice?.voiceId) setVoice(voice.voiceId);
+        const approval = p.approvalPolicy as { scriptGate?: boolean } | null;
+        if (typeof approval?.scriptGate === 'boolean') setScriptGate(approval.scriptGate);
+        const sched = p.schedulingPrefs as { maxPerDay?: number; minGapMin?: number } | null;
+        if (typeof sched?.maxPerDay === 'number') setMaxPerDay(String(sched.maxPerDay));
+        if (typeof sched?.minGapMin === 'number') setMinGap(String(Math.round(sched.minGapMin / 60)));
+      }
+    } else {
+      // Demo (or missing) account: populate the pipeline toggles for display.
+      setReal(null);
+      const { account } = await getAccountView(id);
+      if (account) {
+        setContentType(account.contentType);
+        setDramasEnabled(account.dramasEnabled);
+      }
+    }
+    setLoading(false);
+  }, [id]);
 
-  const save = () => toast('Channel profile saved (mock — persists in Phase 1)', 'success');
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function save() {
+    if (!real) {
+      toast('Demo account — connect a real account to persist changes.', 'info');
+      return;
+    }
+    setSaving(true);
+    try {
+      const existingSched = (real.profile?.schedulingPrefs ?? {}) as Record<string, unknown>;
+      await api.patch(`/accounts/${id}`, { contentType, dramasEnabled });
+      await api.patch(`/accounts/${id}/profile`, {
+        masterPrompt,
+        writingStyle,
+        narrationStyle,
+        language,
+        voiceSettings: { provider: ttsProvider, voiceId: voice },
+        titleTemplate,
+        defaultTags: tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+        aiLabelDefault: aiLabel,
+        approvalPolicy: { scriptGate },
+        schedulingPrefs: {
+          cadence: 'PER_DAY',
+          times: [],
+          ...existingSched,
+          maxPerDay: Number(maxPerDay) || 1,
+          minGapMin: (Number(minGap) || 0) * 60,
+        },
+      });
+      toast('Channel profile saved', 'success');
+      await load();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Save failed', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="max-w-3xl space-y-6">
+        <Skeleton className="h-40 w-full rounded-lg" />
+        <Skeleton className="h-64 w-full rounded-lg" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-3xl space-y-6">
+      {!real && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Demo account — Save is illustrative. Connect a real account to persist a channel profile.
+        </div>
+      )}
       <Card>
         <CardHeader
           title="Content pipeline"
@@ -80,11 +177,7 @@ export default function AccountSettingsPage() {
         />
         <div className="space-y-4 p-4">
           <Field label="Master prompt">
-            <Textarea
-              rows={5}
-              value={masterPrompt}
-              onChange={(e) => setMasterPrompt(e.target.value)}
-            />
+            <Textarea rows={5} value={masterPrompt} onChange={(e) => setMasterPrompt(e.target.value)} />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Writing style">
@@ -159,9 +252,9 @@ export default function AccountSettingsPage() {
       </Card>
 
       <div className="flex justify-end gap-2">
-        <Button onClick={() => toast('Changes discarded', 'info')}>Discard</Button>
-        <Button variant="primary" onClick={save}>
-          Save channel profile
+        <Button onClick={() => void load()}>Discard</Button>
+        <Button variant="primary" onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save channel profile'}
         </Button>
       </div>
     </div>

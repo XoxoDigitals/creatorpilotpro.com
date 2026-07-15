@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { Route } from 'next';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { RoleBadge } from '@/components/role-badge';
 import { ConnectWizard } from '@/components/connect-wizard';
 import { Avatar } from '@/components/ui/avatar';
-import { getAccounts, getRollups } from '@/lib/mock-data';
+import { getRollups } from '@/lib/mock-data';
+import { getAccountsView } from '@/lib/api-data';
 import type { SessionUser } from '@/lib/types';
 
 /** Minimal stroke icons for the global nav. */
@@ -49,12 +50,26 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 export function Sidebar({ user }: { user: SessionUser }) {
   const pathname = usePathname();
   const rollups = getRollups();
-  const accounts = getAccounts();
 
+  const [accountCount, setAccountCount] = useState(0);
   const [unread, setUnread] = useState(0);
   const [signingOut, setSigningOut] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+
+  // Real account count (falls back to demo data when demo mode is on + empty).
+  const loadAccountCount = useCallback(async () => {
+    try {
+      const { accounts } = await getAccountsView();
+      setAccountCount(accounts.length);
+    } catch {
+      /* ignore transient errors */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAccountCount();
+  }, [loadAccountCount]);
 
   // Auto-collapse on narrow viewports (docs/11 §5 responsive).
   useEffect(() => {
@@ -153,7 +168,7 @@ export function Sidebar({ user }: { user: SessionUser }) {
             href="/accounts"
             label="All accounts"
             icon={<Icon name="accounts" />}
-            badge={accounts.length}
+            badge={accountCount}
             active={pathname === '/accounts' || pathname.startsWith('/accounts/')}
             collapsed={collapsed}
           />
@@ -221,7 +236,13 @@ export function Sidebar({ user }: { user: SessionUser }) {
         </div>
       </div>
 
-      <ConnectWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <ConnectWizard
+        open={wizardOpen}
+        onClose={() => {
+          setWizardOpen(false);
+          void loadAccountCount();
+        }}
+      />
     </aside>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Tabs, type TabItem } from '@/components/ui/tabs';
 import { Avatar } from '@/components/ui/avatar';
 import { HealthDot } from '@/components/ui/health-dot';
@@ -9,16 +9,48 @@ import { ContentTypeBadge } from '@/components/ui/badge';
 import { PlatformIcon } from '@/components/ui/platform-icon';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { compactNumber } from '@/lib/format';
-import { getAccount, getReviewItems } from '@/lib/mock-data';
-import { TAB_VISIBILITY } from '@/lib/domain-types';
+import { getAccountView } from '@/lib/api-data';
+import { api, ApiError } from '@/lib/api';
+import { getReviewItems } from '@/lib/mock-data';
+import { TAB_VISIBILITY, type Account } from '@/lib/domain-types';
 
 export default function AccountLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
-  const account = getAccount(params.id);
   const toast = useToast();
-  const [paused, setPaused] = useState(account?.paused ?? false);
+
+  const [account, setAccount] = useState<Account | null>(null);
+  const [demo, setDemo] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [paused, setPaused] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { account: acc, demo: isDemo } = await getAccountView(params.id);
+      setAccount(acc);
+      setDemo(isDemo);
+      setPaused(acc?.paused ?? false);
+    } finally {
+      setLoading(false);
+    }
+  }, [params.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-16 w-full rounded-lg" />
+        <Skeleton className="h-8 w-96 rounded-md" />
+        <Skeleton className="h-64 w-full rounded-lg" />
+      </div>
+    );
+  }
 
   if (!account) {
     return (
@@ -26,8 +58,8 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
         title="Account not found"
         hint="This account may have been disconnected or the link is out of date."
         cta={
-          <Button variant="secondary" onClick={() => (window.location.href = '/dashboard')}>
-            Back to dashboard
+          <Button variant="secondary" onClick={() => (window.location.href = '/accounts')}>
+            Back to accounts
           </Button>
         }
       />
@@ -50,8 +82,29 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
     { href: `${base}/settings`, label: 'Settings' },
   ];
 
+  async function togglePause() {
+    const next = !paused;
+    setPaused(next);
+    if (demo || !account) {
+      toast(next ? `Queue paused for ${account?.name}` : 'Queue resumed', 'info');
+      return;
+    }
+    try {
+      await api.patch(`/accounts/${account.id}`, { paused: next });
+      toast(next ? `Queue paused for ${account.name}` : 'Queue resumed', 'success');
+    } catch (err) {
+      setPaused(!next); // revert
+      toast(err instanceof ApiError ? err.message : 'Could not update queue', 'error');
+    }
+  }
+
   return (
     <div>
+      {demo && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Demo account — changes here are illustrative until a real account is connected.
+        </div>
+      )}
       {/* Workspace header */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -81,20 +134,13 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setPaused((p) => !p);
-              toast(paused ? 'Queue resumed' : `Queue paused for ${account.name}`, 'info');
-            }}
-          >
+          <Button variant="secondary" size="sm" onClick={togglePause}>
             {paused ? 'Resume queue' : 'Pause queue'}
           </Button>
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => toast('Deep-link to the platform arrives in Phase 1', 'info')}
+            onClick={() => toast('Deep-link to the platform arrives in Phase 1b', 'info')}
           >
             Open on platform ↗
           </Button>

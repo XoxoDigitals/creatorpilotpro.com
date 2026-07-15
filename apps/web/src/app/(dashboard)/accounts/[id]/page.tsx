@@ -3,6 +3,7 @@
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
+import { useEffect, useState } from 'react';
 import { Card, CardHeader } from '@/components/ui/card';
 import { StatCard } from '@/components/ui/stat-card';
 import { Badge } from '@/components/ui/badge';
@@ -10,12 +11,19 @@ import { PostStatusBadge } from '@/components/ui/status-badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
 import { EmptyState } from '@/components/ui/empty-state';
 import { compactNumber, relativeTime, absoluteTime } from '@/lib/format';
-import { getAccount, getPosts, getIncidents } from '@/lib/mock-data';
+import { getAccountView } from '@/lib/api-data';
+import { getPosts, getIncidents } from '@/lib/mock-data';
+import type { Account } from '@/lib/domain-types';
 
 export default function AccountOverviewPage() {
   const { id } = useParams<{ id: string }>();
-  const account = getAccount(id);
-  if (!account) return null; // layout renders the not-found state
+  const [account, setAccount] = useState<Account | null>(null);
+
+  useEffect(() => {
+    void getAccountView(id).then(({ account: acc }) => setAccount(acc));
+  }, [id]);
+
+  if (!account) return null; // layout renders loading / not-found states
 
   const posts = getPosts(id);
   const recent = [...posts].sort((a, b) => {
