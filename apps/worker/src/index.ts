@@ -6,7 +6,7 @@
  */
 import os from 'node:os';
 import PgBoss from 'pg-boss';
-import { ALL_QUEUES, QUEUE_CONCURRENCY, type QueueName } from '@scp/shared';
+import { ALL_QUEUES, QUEUE, QUEUE_CONCURRENCY, type QueueName } from '@scp/shared';
 import { getDatabaseUrl } from './config.js';
 import { processors } from './processors.js';
 
@@ -43,6 +43,12 @@ async function main(): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`[worker] registered queue "${queue}" (batchSize=${batchSize})`);
   }
+
+  // Recurring maintenance: refresh Google tokens near expiry every 5 minutes
+  // (docs/06 §4). singletonKey via the queue prevents overlapping runs.
+  await boss.schedule(QUEUE.MAINTENANCE, '*/5 * * * *');
+  // eslint-disable-next-line no-console
+  console.log('[worker] scheduled maintenance cron (*/5 * * * *)');
 
   // eslint-disable-next-line no-console
   console.log(`[worker] startup complete — ${ALL_QUEUES.length} queues registered`);

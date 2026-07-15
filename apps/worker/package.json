@@ -13,6 +13,8 @@
     "clean": "rimraf dist .turbo"
   },
   "dependencies": {
+    "@prisma/client": "^6.2.1",
+    "@scp/db": "workspace:*",
     "@scp/shared": "workspace:*",
     "dotenv": "^17.4.2",
     "pg-boss": "^10.1.6"
