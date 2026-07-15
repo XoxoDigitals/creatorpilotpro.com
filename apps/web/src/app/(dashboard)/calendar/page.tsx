@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Avatar } from '@/components/ui/avatar';
 import { cn } from '@/lib/cn';
-import { getAccounts, getPosts } from '@/lib/mock-data';
-import type { Post } from '@/lib/domain-types';
+import { getAccountsView, getPostsView } from '@/lib/api-data';
+import type { Account, Post } from '@/lib/domain-types';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -23,8 +23,19 @@ export default function CalendarPage() {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
-  const accounts = getAccounts();
-  const posts = getPosts().filter((p) => p.scheduledAt || p.publishedAt);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [posts, setPosts] = useState<Post[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      const [{ accounts: accs }, { posts: ps }] = await Promise.all([
+        getAccountsView(),
+        getPostsView(),
+      ]);
+      setAccounts(accs);
+      setPosts(ps.filter((p) => p.scheduledAt || p.publishedAt));
+    })();
+  }, []);
 
   const year = cursor.getFullYear();
   const month = cursor.getMonth();

@@ -1,24 +1,44 @@
 'use client';
 
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { PostStatusBadge } from '@/components/ui/status-badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/components/ui/toast';
+import { ManualUploadModal } from '@/components/manual-upload-modal';
 import { relativeTime, absoluteTime } from '@/lib/format';
-import { getPosts } from '@/lib/mock-data';
+import { getUpcomingView, type UpcomingResult } from '@/lib/api-data';
 
 export default function AccountSchedulePage() {
   const { id } = useParams<{ id: string }>();
   const toast = useToast();
-  const upcoming = getPosts(id)
-    .filter((p) => p.scheduledAt && p.status !== 'PUBLISHED')
-    .sort((a, b) => Date.parse(a.scheduledAt!) - Date.parse(b.scheduledAt!));
+  const [data, setData] = useState<UpcomingResult>({ scheduled: [], freeSlots: [], demo: false });
+  const [loading, setLoading] = useState(true);
+  const [uploadOpen, setUploadOpen] = useState(false);
 
-  const comingSoon = () => toast('Slot rule editing arrives with the scheduling engine (Phase 2)', 'info');
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setData(await getUpcomingView(id));
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const openUpload = () => {
+    if (data.demo) {
+      toast('Connect a real account to upload and schedule videos', 'info');
+      return;
+    }
+    setUploadOpen(true);
+  };
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -27,16 +47,18 @@ export default function AccountSchedulePage() {
           title="Upcoming queue"
           description="Posts waiting on their scheduled slot"
           action={
-            <Button size="sm" onClick={() => toast('Manual scheduling arrives in Phase 1', 'info')}>
-              Schedule post
+            <Button size="sm" variant="primary" onClick={openUpload}>
+              Upload video
             </Button>
           }
         />
-        {upcoming.length === 0 ? (
+        {loading ? (
+          <p className="p-4 text-sm text-zinc-500">Loading…</p>
+        ) : data.scheduled.length === 0 ? (
           <div className="p-4">
             <EmptyState
               title="Nothing scheduled"
-              hint="Approved content is placed into this account's next free slots automatically."
+              hint="Upload a video, or let approved content flow into this account's next free slots automatically."
             />
           </div>
         ) : (
@@ -49,11 +71,11 @@ export default function AccountSchedulePage() {
               </TR>
             </THead>
             <TBody>
-              {upcoming.map((p) => (
-                <TR key={p.id}>
+              {data.scheduled.map((p) => (
+                <TR key={p.publishTargetId}>
                   <TD className="font-medium text-zinc-900">{p.title}</TD>
                   <TD>
-                    <PostStatusBadge status={p.status} />
+                    <Badge tone="indigo">Scheduled</Badge>
                   </TD>
                   <TD title={absoluteTime(p.scheduledAt)}>{relativeTime(p.scheduledAt)}</TD>
                 </TR>
@@ -64,37 +86,38 @@ export default function AccountSchedulePage() {
       </Card>
 
       <Card>
-        <CardHeader
-          title="Slot rules"
-          description="How this account picks publish times"
-          action={
-            <Button size="sm" variant="ghost" onClick={comingSoon}>
-              Edit
-            </Button>
-          }
-        />
-        <div className="space-y-3 p-4 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-500">Cadence</span>
-            <Badge tone="indigo">Daily</Badge>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-500">Window</span>
-            <span className="nums">18:00 – 21:00 (randomized)</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-500">Max posts / day</span>
-            <span className="nums">2</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-500">Min gap</span>
-            <span className="nums">3h</span>
-          </div>
-          <p className="border-t border-zinc-100 pt-3 text-xs text-zinc-400">
-            Mock values — the rule editor ships with the scheduling engine in Phase 2.
-          </p>
+        <CardHeader title="Next free slots" description="Generated from this account's schedule rules" />
+        <div className="space-y-2 p-4 text-sm">
+          {data.freeSlots.length === 0 ? (
+            <p className="text-xs text-zinc-400">
+              {data.demo
+                ? 'Slot generation runs for real accounts. Connect one to see upcoming slots.'
+                : 'No upcoming slots — set post times in the account’s connect/schedule settings.'}
+            </p>
+          ) : (
+            data.freeSlots.map((slot) => (
+              <div key={slot} className="flex items-center justify-between">
+                <span className="text-zinc-500">{relativeTime(slot)}</span>
+                <span className="nums text-xs text-zinc-700" title={absoluteTime(slot)}>
+                  {new Date(slot).toLocaleString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+              </div>
+            ))
+          )}
         </div>
       </Card>
+
+      <ManualUploadModal
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        accountId={id}
+        onUploaded={() => void load()}
+      />
     </div>
   );
 }

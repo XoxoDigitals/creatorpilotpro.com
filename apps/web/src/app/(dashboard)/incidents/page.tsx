@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/components/ui/toast';
 import { cn } from '@/lib/cn';
 import { relativeTime, absoluteTime } from '@/lib/format';
-import { getAccounts, getIncidents } from '@/lib/mock-data';
+import { getIncidentsView, retryIncident, resolveIncident } from '@/lib/api-data';
 import type { Incident, IncidentKind } from '@/lib/domain-types';
 
 const KIND: Record<IncidentKind, { tone: BadgeTone; label: string }> = {
@@ -27,10 +27,68 @@ type Filter = 'ALL' | 'OPEN' | 'RESOLVED';
 export default function IncidentsPage() {
   const [filter, setFilter] = useState<Filter>('OPEN');
   const [selected, setSelected] = useState<Incident | null>(null);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [accountNames, setAccountNames] = useState<Record<string, string>>({});
+  const [demo, setDemo] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const toast = useToast();
-  const accounts = getAccounts();
-  const incidents = getIncidents().filter((i) => filter === 'ALL' || i.status === filter);
-  const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { incidents: list, accountNames: names, demo: isDemo } = await getIncidentsView();
+      setIncidents(list);
+      setAccountNames(names);
+      setDemo(isDemo);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const visible = incidents.filter((i) => filter === 'ALL' || i.status === filter);
+  const accountName = (id: string) => accountNames[id] ?? (id || '—');
+
+  const onRetry = async (inc: Incident) => {
+    if (demo) {
+      toast('Retry runs against the real publish engine once a real account is connected', 'info');
+      return;
+    }
+    setBusy(true);
+    try {
+      await retryIncident(inc.id);
+      toast('Retry queued — the target is scheduled to publish again', 'success');
+      setSelected(null);
+      await load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Retry failed', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onResolve = async (inc: Incident) => {
+    if (demo) {
+      toast('Marked resolved (demo — connect a real account to persist)', 'info');
+      setSelected(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      await resolveIncident(inc.id);
+      toast('Incident marked resolved', 'success');
+      setSelected(null);
+      await load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not resolve incident', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -55,7 +113,16 @@ export default function IncidentsPage() {
         }
       />
 
-      {incidents.length === 0 ? (
+      {demo && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Showing demo data. Connect a real account, or turn off <strong>Demo data</strong> in
+          Settings → General, to see live incidents.
+        </div>
+      )}
+
+      {loading ? (
+        <p className="p-4 text-sm text-zinc-500">Loading incidents…</p>
+      ) : visible.length === 0 ? (
         <EmptyState
           title={filter === 'OPEN' ? 'No open incidents' : 'No incidents'}
           hint="When a publish fails or a platform flags content, the item is drafted automatically and the incident appears here."
@@ -73,7 +140,7 @@ export default function IncidentsPage() {
             </TR>
           </THead>
           <TBody>
-            {incidents.map((inc) => (
+            {visible.map((inc) => (
               <TR key={inc.id} onClick={() => setSelected(inc)}>
                 <TD className="font-medium text-zinc-900">{inc.title}</TD>
                 <TD>{accountName(inc.accountId)}</TD>
@@ -120,20 +187,10 @@ export default function IncidentsPage() {
             </dl>
             {selected.status === 'OPEN' && (
               <div className="flex gap-2 border-t border-zinc-100 pt-4">
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={() => toast('Retry runs against the real publish engine in Phase 1', 'info')}
-                >
+                <Button size="sm" variant="primary" disabled={busy} onClick={() => void onRetry(selected)}>
                   Retry
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    toast('Marked resolved (mock — persists in Phase 1)', 'success');
-                    setSelected(null);
-                  }}
-                >
+                <Button size="sm" disabled={busy} onClick={() => void onResolve(selected)}>
                   Mark resolved
                 </Button>
               </div>

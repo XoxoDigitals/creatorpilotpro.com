@@ -17,19 +17,42 @@ const KIND: Record<ReviewKind, { tone: BadgeTone; label: string }> = {
 };
 
 /**
- * Review queue rows with approve/reject actions. Decisions are local-state only
- * until Phase 2 wires the real review endpoints (mock layer contract).
+ * Review queue rows with approve/reject actions. When `onDecide` is provided the
+ * decision is persisted via the real API (content approve/reject); otherwise it
+ * falls back to local-state only (demo mode / mock contract).
  */
-export function ReviewList({ items, emptyHint }: { items: ReviewItem[]; emptyHint: string }) {
+export function ReviewList({
+  items,
+  emptyHint,
+  onDecide,
+}: {
+  items: ReviewItem[];
+  emptyHint: string;
+  onDecide?: (item: ReviewItem, status: ReviewStatus) => Promise<void>;
+}) {
   const toast = useToast();
   const [decisions, setDecisions] = useState<Record<string, ReviewStatus>>({});
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
 
-  const decide = (item: ReviewItem, status: ReviewStatus) => {
-    setDecisions((d) => ({ ...d, [item.id]: status }));
-    toast(
-      `${status === 'APPROVED' ? 'Approved' : 'Rejected'}: ${item.title} (mock — persists in Phase 2)`,
-      status === 'APPROVED' ? 'success' : 'info',
-    );
+  const decide = async (item: ReviewItem, status: ReviewStatus) => {
+    if (!onDecide) {
+      setDecisions((d) => ({ ...d, [item.id]: status }));
+      toast(
+        `${status === 'APPROVED' ? 'Approved' : 'Rejected'}: ${item.title} (demo — connect a real account to persist)`,
+        status === 'APPROVED' ? 'success' : 'info',
+      );
+      return;
+    }
+    setBusy((b) => ({ ...b, [item.id]: true }));
+    try {
+      await onDecide(item, status);
+      setDecisions((d) => ({ ...d, [item.id]: status }));
+      toast(`${status === 'APPROVED' ? 'Approved' : 'Rejected'}: ${item.title}`, status === 'APPROVED' ? 'success' : 'info');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not save decision', 'error');
+    } finally {
+      setBusy((b) => ({ ...b, [item.id]: false }));
+    }
   };
 
   if (items.length === 0) {
@@ -92,10 +115,20 @@ export function ReviewList({ items, emptyHint }: { items: ReviewItem[]; emptyHin
             </div>
             {status === 'PENDING' && (
               <div className="flex shrink-0 gap-2">
-                <Button size="sm" variant="danger" onClick={() => decide(item, 'REJECTED')}>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={busy[item.id]}
+                  onClick={() => void decide(item, 'REJECTED')}
+                >
                   Reject
                 </Button>
-                <Button size="sm" variant="primary" onClick={() => decide(item, 'APPROVED')}>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busy[item.id]}
+                  onClick={() => void decide(item, 'APPROVED')}
+                >
                   Approve
                 </Button>
               </div>

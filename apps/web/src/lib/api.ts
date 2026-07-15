@@ -38,6 +38,29 @@ export async function apiFetch<T = unknown>(path: string, init?: RequestInit): P
   return body as T;
 }
 
+/**
+ * Multipart upload (a File streamed as form-data). Does NOT set content-type —
+ * the browser sets the multipart boundary. Same-origin + credentials as apiFetch.
+ */
+export async function apiUpload<T = unknown>(path: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${BASE}${path}`, { method: 'POST', credentials: 'include', body: form });
+
+  if (res.status === 401 && typeof window !== 'undefined') {
+    window.location.href = '/login';
+    throw new ApiError(401, 'Not authenticated');
+  }
+
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : undefined;
+  if (!res.ok) {
+    const message = (body && (body.message || body.error)) || `Upload failed (${res.status})`;
+    throw new ApiError(res.status, Array.isArray(message) ? message.join(', ') : String(message));
+  }
+  return body as T;
+}
+
 export const api = {
   get: <T>(p: string) => apiFetch<T>(p),
   post: <T>(p: string, body?: unknown) =>
@@ -47,4 +70,5 @@ export const api = {
   patch: <T>(p: string, body?: unknown) =>
     apiFetch<T>(p, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
   del: <T>(p: string) => apiFetch<T>(p, { method: 'DELETE' }),
+  upload: <T>(p: string, file: File) => apiUpload<T>(p, file),
 };
