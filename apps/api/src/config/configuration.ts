@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { z } from 'zod';
 
 /**
@@ -18,6 +19,9 @@ export const envSchema = z.object({
   // The browser reaches the API through the web's same-origin /api rewrite, so
   // OAuth redirect URIs live under the web origin and stay first-party.
   WEB_APP_URL: z.string().default('http://localhost:3000'),
+  // Local hot-tier storage root (docs/02 §6). Absolute paths are stored on
+  // assets so the worker reads the exact file the API wrote (shared filesystem).
+  STORAGE_ROOT: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -39,6 +43,9 @@ export function configuration() {
     masterKey: env.MASTER_KEY,
     sessionSecret: env.SESSION_SECRET,
     webAppUrl: env.WEB_APP_URL.replace(/\/$/, ''),
+    storageRoot: env.STORAGE_ROOT
+      ? resolve(env.STORAGE_ROOT)
+      : resolve(process.cwd(), '.data'),
     isProduction: env.NODE_ENV === 'production',
   };
 }

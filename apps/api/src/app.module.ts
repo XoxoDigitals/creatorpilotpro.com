@@ -4,6 +4,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { configuration, validateEnv } from './config/configuration';
 import { PrismaModule } from './prisma/prisma.module';
 import { CryptoModule } from './common/crypto/crypto.module';
+import { QueueModule } from './common/queue/queue.module';
 import { CsrfGuard } from './common/guards/csrf.guard';
 import { SessionAuthGuard } from './common/guards/session-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -39,6 +40,7 @@ import { SystemModule } from './modules/system/system.module';
     // Cross-cutting infrastructure (global).
     PrismaModule,
     CryptoModule,
+    QueueModule,
     HealthModule,
     // Feature modules (docs/02 §3).
     AuthModule,

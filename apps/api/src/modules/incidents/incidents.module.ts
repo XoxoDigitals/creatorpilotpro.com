@@ -1,8 +1,14 @@
 import { Module } from '@nestjs/common';
+import { IncidentsController } from './incidents.controller';
+import { IncidentsService } from './incidents.service';
 
 /**
- * Incidents module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
+ * Incidents module (docs/03 Domain 7). Incident center; QueueModule (producer)
+ * is global for manual retry re-dispatch.
  */
-@Module({})
+@Module({
+  controllers: [IncidentsController],
+  providers: [IncidentsService],
+  exports: [IncidentsService],
+})
 export class IncidentsModule {}

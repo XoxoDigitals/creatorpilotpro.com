@@ -1,8 +1,15 @@
 import { Module } from '@nestjs/common';
+import { SchedulingController } from './scheduling.controller';
+import { SchedulingService } from './scheduling.service';
+import { SlotPlannerService } from './slot-planner.service';
 
 /**
- * Scheduling module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
+ * Scheduling module (docs/06 §3). Slot rules + planner. SlotPlannerService is
+ * exported so the publishing module can resolve QUEUE_SLOT scheduled times.
  */
-@Module({})
+@Module({
+  controllers: [SchedulingController],
+  providers: [SchedulingService, SlotPlannerService],
+  exports: [SchedulingService, SlotPlannerService],
+})
 export class SchedulingModule {}

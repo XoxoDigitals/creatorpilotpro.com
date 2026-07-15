@@ -1,8 +1,14 @@
 import { Module } from '@nestjs/common';
+import { StorageController } from './storage.controller';
+import { StorageService } from './storage.service';
 
 /**
- * Storage module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
+ * Storage module (docs/02 §6). Manual upload → local hot tier → Asset row.
+ * PrismaModule + ConfigModule are global.
  */
-@Module({})
+@Module({
+  controllers: [StorageController],
+  providers: [StorageService],
+  exports: [StorageService],
+})
 export class StorageModule {}

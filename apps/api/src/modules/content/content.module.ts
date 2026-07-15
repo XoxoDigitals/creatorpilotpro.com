@@ -1,8 +1,14 @@
 import { Module } from '@nestjs/common';
+import { ContentController } from './content.controller';
+import { ContentService } from './content.service';
 
 /**
- * Content module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
+ * Content module (docs/03 Domain 4). Content items + review queue with
+ * state-machine-enforced transitions. PrismaModule is global.
  */
-@Module({})
+@Module({
+  controllers: [ContentController],
+  providers: [ContentService],
+  exports: [ContentService],
+})
 export class ContentModule {}
