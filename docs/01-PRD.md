@@ -38,6 +38,8 @@ One self-hosted dashboard from which a small team manages the entire lifecycle o
 - A3. Connect TikTok accounts via PostQued (API key/workspace link); adapter interface so official TikTok Content Posting API can replace it later.
 - A4. Connection health monitor: token expiry countdown, failed-refresh alerts, one-click re-auth.
 - A5. Each connected account gets a **Channel Profile** (see FR-G).
+- A6. At connect time the owner selects the account's **content type** — `AI`, `REPURPOSED` (public content), or `MIXED` — which decides which workspace features the account exposes (Ideas/Dramas vs Sources/Review; see docs/11-UI-DESIGN.md). Editable later in account settings.
+- A7. **Account-centric navigation:** every account opens its own workspace (`/accounts/[id]`) containing that account's sources, review queue, ideas, dramas, schedule, analytics, and settings (Owner directive 2026-07-14, docs/11).
 
 ### FR-B. Public-Content Ingestion (Pipeline 1 sources)
 - B1. Add a **watched source**: Kuaishou profile URL + check interval (e.g. every 6h). System lists newly available videos and downloads only new ones (dedupe by source video ID **and** perceptual hash).
