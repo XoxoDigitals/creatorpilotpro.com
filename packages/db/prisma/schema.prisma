@@ -179,6 +179,7 @@ model SocialAccount {
   publishTargets PublishTarget[]
   scheduleSlots  ScheduleSlot[]
   incidents      Incident[]
+  watchedSources WatchedSource[]
 
   @@unique([platform, externalId])
   @@index([platform])
@@ -210,6 +211,94 @@ model ChannelProfile {
   updatedAt DateTime @updatedAt
 
   @@map("channel_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 3 — Sources & Ingestion (docs/03 Domain 3, Phase 2)
+// ---------------------------------------------------------------------------
+
+/// A watched source (a Kuaishou profile poller) or a bulk-URL import batch
+/// (a GENERIC_URL source that does not poll). Both feed source_videos.
+enum WatchedSourceType {
+  KUAISHOU_PROFILE
+  GENERIC_URL
+}
+
+/// Watcher health (docs/04 §5): auto-pauses to ERROR after repeated failures.
+enum WatchedSourceStatus {
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+/// Per-source-video download lifecycle (docs/03 Domain 3).
+enum DownloadStatus {
+  PENDING
+  DOWNLOADING
+  DONE
+  FAILED
+  SKIPPED_DUPLICATE
+}
+
+/// A polled Kuaishou profile or a bulk-import batch (docs/03 Domain 3).
+/// `trimStartMs` (default 500) is the ingest first-frames trim. `targetAccountId`
+/// binds ingested videos to the account that will repurpose them.
+model WatchedSource {
+  id                  String              @id @default(cuid())
+  type                WatchedSourceType
+  url                 String
+  label               String?
+  checkIntervalMin    Int                 @default(360)
+  trimStartMs         Int                 @default(500)
+  lastCheckedAt       DateTime?
+  status              WatchedSourceStatus @default(ACTIVE)
+  errorNote           String?
+  consecutiveFailures Int                 @default(0)
+
+  targetAccountId String?
+  targetAccount   SocialAccount? @relation(fields: [targetAccountId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // soft-delete (user-facing entity)
+
+  videos SourceVideo[]
+
+  @@index([status])
+  @@index([targetAccountId])
+  @@index([deletedAt])
+  @@map("watched_sources")
+}
+
+/// A single discovered/imported source video (docs/03 Domain 3). Deduped by
+/// (watchedSourceId, sourcePlatformId) and by perceptualHash (near-dup lookup).
+/// `nearDuplicateOfId` self-references the item this was flagged as a dup of.
+model SourceVideo {
+  id                  String         @id @default(cuid())
+  watchedSourceId     String?
+  watchedSource       WatchedSource? @relation(fields: [watchedSourceId], references: [id], onDelete: Cascade)
+  sourceUrl           String
+  sourcePlatformId    String
+  uploaderName        String?
+  title               String?
+  durationSec         Float?
+  publishedAt         DateTime?
+  perceptualHash      String?
+  md5                 String?
+  downloadStatus      DownloadStatus @default(PENDING)
+  rightsNote          String?
+  rightsConfirmedById String?
+  nearDuplicateOfId   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contentItems ContentItem[]
+
+  @@unique([watchedSourceId, sourcePlatformId])
+  @@index([perceptualHash])
+  @@index([downloadStatus])
+  @@map("source_videos")
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +360,7 @@ model ContentItem {
   id            String            @id @default(cuid())
   type          ContentItemType
   sourceVideoId String?
+  sourceVideo   SourceVideo?      @relation(fields: [sourceVideoId], references: [id], onDelete: SetNull)
   ideaId        String?
   episodeId     String?
   title         String
