@@ -19,6 +19,14 @@ export class SystemController {
     return this.settings.list();
   }
 
+  // Readable by any authenticated user (the accounts UI needs it to decide the
+  // demo-data fallback), unlike the Owner/Admin-only settings above.
+  @Get('demo-mode')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER', 'WORKER', 'ANALYST')
+  demoMode(): Promise<{ enabled: boolean }> {
+    return this.settings.getDemoMode();
+  }
+
   @Put('settings/:key')
   @Audit('system.setting.update', 'SystemSetting')
   putSetting(@Param('key') key: string, @Body('value') value: unknown): Promise<SettingView> {

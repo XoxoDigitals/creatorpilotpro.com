@@ -44,13 +44,82 @@ const SETTINGS_WHITELIST: Record<string, SettingSpec> = {
     }),
     secret: true,
   },
+
+  // --- Platform Apps (docs mission §3) — owner-supplied provider credentials.
+  // Secret object settings: partial-merge on write (blank fields keep the stored
+  // value) and a per-field last-4 preview is kept in clear for the UI.
+  'platform_apps.postqued': {
+    schema: z.object({
+      apiKey: z.string().optional(),
+      workspaceId: z.string().optional(),
+    }),
+    secret: true,
+  },
+  'platform_apps.google': {
+    schema: z.object({
+      clientId: z.string().optional(),
+      clientSecret: z.string().optional(),
+      directUpload: z.boolean().optional(),
+    }),
+    secret: true,
+  },
+  'platform_apps.meta': {
+    schema: z.object({
+      appId: z.string().optional(),
+      appSecret: z.string().optional(),
+    }),
+    secret: true,
+  },
+  'platform_apps.tiktok': {
+    schema: z.object({
+      clientKey: z.string().optional(),
+      clientSecret: z.string().optional(),
+    }),
+    secret: true,
+  },
+
+  // Demo data toggle (docs mission §4). Default ON until real accounts exist.
+  demo_mode: {
+    schema: z.object({ enabled: z.boolean() }),
+    secret: false,
+  },
 };
+
+/** Secret string fields whose last-4 we keep in clear for the UI preview. */
+const SECRET_STRING_FIELDS = new Set([
+  'apiKey',
+  'workspaceId',
+  'clientId',
+  'clientSecret',
+  'appId',
+  'appSecret',
+  'clientKey',
+  'botToken',
+  'chatId',
+  'url',
+  'from',
+]);
 
 export interface SettingView {
   key: string;
   value?: Prisma.JsonValue;
   secret: boolean;
   configured: boolean;
+  /** For secret object settings: per-field last-4 of stored string values. */
+  preview?: Record<string, string>;
+}
+
+/** Last-4 preview for each secret string field present in an object value. */
+function previewOf(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof v === 'string' && v.length > 0 && SECRET_STRING_FIELDS.has(k)) {
+        out[k] = v.slice(-4);
+      }
+    }
+  }
+  return out;
 }
 
 @Injectable()
@@ -69,7 +138,8 @@ export class SettingsService {
       const stored = byKey.get(key);
       const configured = stored != null;
       if (spec.secret) {
-        return { key, secret: true, configured };
+        const wrapped = stored as { __preview?: Record<string, string> } | null;
+        return { key, secret: true, configured, preview: wrapped?.__preview ?? {} };
       }
       return { key, secret: false, configured, value: stored ?? null };
     });
@@ -87,19 +157,45 @@ export class SettingsService {
       });
     }
 
-    const stored: Prisma.InputJsonValue = spec.secret
-      ? { __enc: this.crypto.encrypt(JSON.stringify(parsed.data)) }
-      : (parsed.data as Prisma.InputJsonValue);
+    if (!spec.secret) {
+      await this.prisma.client.systemSetting.upsert({
+        where: { key },
+        update: { value: parsed.data as Prisma.InputJsonValue },
+        create: { key, value: parsed.data as Prisma.InputJsonValue },
+      });
+      return { key, secret: false, configured: true, value: parsed.data as Prisma.JsonValue };
+    }
 
+    // Secret object setting: partial-merge over the existing decrypted value so
+    // blank fields don't wipe stored secrets ("paste once"). Empty strings and
+    // undefined are ignored; booleans always apply.
+    const existing = (await this.getDecrypted<Record<string, unknown>>(key)) ?? {};
+    const incoming = parsed.data as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...existing };
+    for (const [k, v] of Object.entries(incoming)) {
+      if (v === undefined) continue;
+      if (typeof v === 'string' && v.trim() === '') continue;
+      merged[k] = v;
+    }
+
+    const stored: Prisma.InputJsonValue = {
+      __enc: this.crypto.encrypt(JSON.stringify(merged)),
+      __preview: previewOf(merged),
+    };
     await this.prisma.client.systemSetting.upsert({
       where: { key },
       update: { value: stored },
       create: { key, value: stored },
     });
 
-    return spec.secret
-      ? { key, secret: true, configured: true }
-      : { key, secret: false, configured: true, value: parsed.data as Prisma.JsonValue };
+    return { key, secret: true, configured: true, preview: previewOf(merged) };
+  }
+
+  /** Demo-data toggle (docs mission §4). Defaults ON until explicitly disabled. */
+  async getDemoMode(): Promise<{ enabled: boolean }> {
+    const row = await this.prisma.client.systemSetting.findUnique({ where: { key: 'demo_mode' } });
+    const value = row?.value as { enabled?: boolean } | null;
+    return { enabled: value?.enabled ?? true };
   }
 
   /**

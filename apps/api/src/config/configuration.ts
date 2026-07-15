@@ -14,6 +14,10 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
   MASTER_KEY: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
+  // Public web origin (used to build OAuth redirect URIs + post-connect redirects).
+  // The browser reaches the API through the web's same-origin /api rewrite, so
+  // OAuth redirect URIs live under the web origin and stay first-party.
+  WEB_APP_URL: z.string().default('http://localhost:3000'),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -34,6 +38,7 @@ export function configuration() {
     databaseUrl: env.DATABASE_URL,
     masterKey: env.MASTER_KEY,
     sessionSecret: env.SESSION_SECRET,
+    webAppUrl: env.WEB_APP_URL.replace(/\/$/, ''),
     isProduction: env.NODE_ENV === 'production',
   };
 }
