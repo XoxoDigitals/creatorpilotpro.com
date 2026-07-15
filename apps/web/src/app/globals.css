@@ -1,11 +1,46 @@
 @import 'tailwindcss';
 
+/*
+ * Design tokens (docs/11-UI-DESIGN.md §2). Tailwind v4 ships the default zinc /
+ * indigo / semantic palettes as `--color-*` custom properties, so pages use
+ * `bg-zinc-50`, `text-indigo-600`, etc. directly. We only override the font and
+ * expose a couple of brand aliases here. Dark mode is deferred — tokens are
+ * named semantically so it drops in later without touching pages.
+ */
+@theme {
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+
+  /* Brand + platform aliases (used by the component kit). */
+  --color-brand: var(--color-indigo-600);
+  --color-platform-youtube: #ff0000;
+  --color-platform-facebook: #1877f2;
+  --color-platform-tiktok: #010101;
+}
+
 :root {
-  --background: #0b0f17;
-  --foreground: #e5e7eb;
+  --background: #fafafa; /* zinc-50  */
+  --foreground: #18181b; /* zinc-900 */
+}
+
+html {
+  color-scheme: light;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+/* Metrics read as aligned columns. */
+.nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle scrollbars inside the dark sidebar + light panes. */
+* {
+  scrollbar-width: thin;
 }
