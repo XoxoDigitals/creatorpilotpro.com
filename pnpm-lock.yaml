@@ -148,6 +148,12 @@ importers:
 
   apps/worker:
     dependencies:
+      '@prisma/client':
+        specifier: ^6.2.1
+        version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
+      '@scp/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@scp/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -234,6 +240,9 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
       rimraf:
         specifier: ^6.0.1
         version: 6.1.3
