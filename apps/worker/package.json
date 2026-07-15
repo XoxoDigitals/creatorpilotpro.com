@@ -15,7 +15,9 @@
   "dependencies": {
     "@prisma/client": "^6.2.1",
     "@scp/db": "workspace:*",
+    "@scp/publish-adapters": "workspace:*",
     "@scp/shared": "workspace:*",
+    "@scp/storage": "workspace:*",
     "dotenv": "^17.4.2",
     "pg-boss": "^10.1.6"
   },

@@ -8,7 +8,11 @@ import os from 'node:os';
 import PgBoss from 'pg-boss';
 import { ALL_QUEUES, QUEUE, QUEUE_CONCURRENCY, type QueueName } from '@scp/shared';
 import { getDatabaseUrl } from './config.js';
-import { processors } from './processors.js';
+import { processors, setBoss } from './processors.js';
+import { PUBLISH_RETRY_LIMIT } from './publish.js';
+import { dispatchDueTargets } from './dispatcher.js';
+
+const DISPATCH_INTERVAL_MS = 60_000;
 
 function resolveConcurrency(queue: QueueName): number {
   const c = QUEUE_CONCURRENCY[queue];
@@ -32,12 +36,22 @@ async function main(): Promise<void> {
   });
 
   await boss.start();
+  setBoss(boss);
   // eslint-disable-next-line no-console
   console.log('[worker] pg-boss started');
 
   for (const queue of ALL_QUEUES) {
-    // Queues must exist before work() in pg-boss v10.
-    await boss.createQueue(queue);
+    // Queues must exist before work() in pg-boss v10. The publish queue carries a
+    // retry policy so retryable publish errors back off automatically (docs/06 §4).
+    if (queue === QUEUE.PUBLISH) {
+      await boss.createQueue(queue, {
+        name: queue,
+        retryLimit: PUBLISH_RETRY_LIMIT,
+        retryBackoff: true,
+      });
+    } else {
+      await boss.createQueue(queue);
+    }
     const batchSize = resolveConcurrency(queue);
     await boss.work(queue, { batchSize }, processors[queue]);
     // eslint-disable-next-line no-console
@@ -50,12 +64,38 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log('[worker] scheduled maintenance cron (*/5 * * * *)');
 
+  // Scheduling dispatcher (docs/06 §3 Layer 2): every minute, enqueue publish
+  // jobs for targets whose scheduledAt has arrived. Runs in-process (it must
+  // SEND jobs, not just handle them) with an overlap guard.
+  let dispatching = false;
+  const dispatchTimer = setInterval(() => {
+    if (dispatching) return;
+    dispatching = true;
+    void dispatchDueTargets(boss)
+      .then((n) => {
+        if (n > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[worker:dispatch] enqueued ${n} due publish target(s)`);
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[worker:dispatch] failed:', err);
+      })
+      .finally(() => {
+        dispatching = false;
+      });
+  }, DISPATCH_INTERVAL_MS);
+  // eslint-disable-next-line no-console
+  console.log(`[worker] scheduling dispatcher started (every ${DISPATCH_INTERVAL_MS / 1000}s)`);
+
   // eslint-disable-next-line no-console
   console.log(`[worker] startup complete — ${ALL_QUEUES.length} queues registered`);
 
   const shutdown = async (signal: string): Promise<void> => {
     // eslint-disable-next-line no-console
     console.log(`[worker] ${signal} received — shutting down gracefully...`);
+    clearInterval(dispatchTimer);
     try {
       await boss.stop({ graceful: true, timeout: 30_000 });
       // eslint-disable-next-line no-console
