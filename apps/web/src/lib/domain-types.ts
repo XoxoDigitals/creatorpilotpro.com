@@ -11,6 +11,9 @@ export type Platform = 'YOUTUBE' | 'FACEBOOK' | 'TIKTOK';
 /** Chosen at connect time; decides which workspace tabs an account exposes. */
 export type ContentType = 'AI' | 'REPURPOSED' | 'MIXED';
 
+/** How the account publishes: through PostQued, or the owner's own platform app. */
+export type ConnectionMethod = 'POSTQUED' | 'OWN_APP';
+
 export type HealthStatus = 'HEALTHY' | 'WARNING' | 'CRITICAL';
 
 /** Connection/token state surfaced by the health monitor (FR-A4). */
@@ -22,6 +25,9 @@ export interface Account {
   handle: string;
   platform: Platform;
   contentType: ContentType;
+  connectionMethod: ConnectionMethod;
+  /** Owner-controlled toggle (wizard or account settings) — independent of contentType. */
+  dramasEnabled: boolean;
   /** null → render initials avatar. */
   avatarUrl: string | null;
   health: HealthStatus;
@@ -136,12 +142,13 @@ export interface WorkerTask {
   dueAt: string | null;
 }
 
-/** Which tabs an account's contentType unlocks (docs/11 §1 table). */
-export const TAB_VISIBILITY: Record<
-  ContentType,
-  { sources: boolean; ideas: boolean; dramas: boolean }
-> = {
-  AI: { sources: false, ideas: true, dramas: true },
-  REPURPOSED: { sources: true, ideas: false, dramas: false },
-  MIXED: { sources: true, ideas: true, dramas: true },
+/**
+ * Which tabs an account's contentType unlocks (docs/11 §1 table).
+ * Ideas is AI-pipeline only; Dramas is a separate per-account toggle
+ * (`account.dramasEnabled`), not derived from contentType.
+ */
+export const TAB_VISIBILITY: Record<ContentType, { sources: boolean; ideas: boolean }> = {
+  AI: { sources: false, ideas: true },
+  REPURPOSED: { sources: true, ideas: false },
+  MIXED: { sources: true, ideas: true },
 };

@@ -10,9 +10,17 @@ import { Avatar } from '@/components/ui/avatar';
 import { HealthDot } from '@/components/ui/health-dot';
 import { ContentTypeBadge, Badge } from '@/components/ui/badge';
 import { PlatformIcon } from '@/components/ui/platform-icon';
+import { EmptyState } from '@/components/ui/empty-state';
 import { ConnectWizard } from '@/components/connect-wizard';
 import { compactNumber } from '@/lib/format';
 import { getAccounts } from '@/lib/mock-data';
+import type { Platform } from '@/lib/domain-types';
+
+const PLATFORM_ORDER: { id: Platform; label: string }[] = [
+  { id: 'YOUTUBE', label: 'YouTube' },
+  { id: 'FACEBOOK', label: 'Facebook' },
+  { id: 'TIKTOK', label: 'TikTok' },
+];
 
 export default function AccountsPage() {
   const accounts = getAccounts();
@@ -22,7 +30,7 @@ export default function AccountsPage() {
     <div>
       <PageHeader
         title="Accounts"
-        description="All connected channels and pages across platforms"
+        description="All connected channels and pages, grouped by platform"
         actions={
           <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
             Connect account
@@ -30,48 +38,78 @@ export default function AccountsPage() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {accounts.map((a) => (
-          <Link key={a.id} href={`/accounts/${a.id}` as Route}>
-            <Card className="p-4 transition-shadow hover:shadow-md">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="relative">
-                    <Avatar name={a.name} size="lg" />
-                    <span className="absolute -bottom-1 -right-1 rounded-full bg-white p-1 shadow-sm">
-                      <PlatformIcon platform={a.platform} size={13} />
-                    </span>
+      {accounts.length === 0 ? (
+        <EmptyState
+          title="No accounts connected"
+          hint="Connect your first YouTube channel, Facebook Page, or TikTok account to start publishing."
+          cta={
+            <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
+              Connect account
+            </Button>
+          }
+        />
+      ) : (
+        <div className="space-y-8">
+          {PLATFORM_ORDER.map(({ id, label }) => {
+            const group = accounts.filter((a) => a.platform === id);
+            if (group.length === 0) return null;
+            return (
+              <section key={id}>
+                <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-900">
+                  <PlatformIcon platform={id} size={18} />
+                  {label}
+                  <span className="nums rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-500">
+                    {group.length}
                   </span>
-                  <div>
-                    <p className="text-sm font-semibold text-zinc-900">{a.name}</p>
-                    <p className="text-xs text-zinc-500">{a.handle}</p>
-                  </div>
+                </h2>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {group.map((a) => (
+                    <Link key={a.id} href={`/accounts/${a.id}` as Route}>
+                      <Card className="p-4 transition-shadow hover:shadow-md">
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-3">
+                            <Avatar name={a.name} size="lg" />
+                            <div>
+                              <p className="text-sm font-semibold text-zinc-900">{a.name}</p>
+                              <p className="text-xs text-zinc-500">{a.handle}</p>
+                            </div>
+                          </div>
+                          <HealthDot status={a.health} />
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                          <ContentTypeBadge type={a.contentType} />
+                          {a.dramasEnabled && <Badge tone="violet">Dramas</Badge>}
+                          {a.monetized && <Badge tone="green">Monetized</Badge>}
+                          {a.connectionMethod === 'POSTQUED' && <Badge tone="neutral">PostQued</Badge>}
+                          {a.paused && <Badge tone="amber">Paused</Badge>}
+                        </div>
+                        <div className="mt-4 grid grid-cols-3 gap-2 border-t border-zinc-100 pt-3 text-center">
+                          <div>
+                            <p className="nums text-sm font-semibold text-zinc-900">
+                              {compactNumber(a.followers)}
+                            </p>
+                            <p className="text-[10px] uppercase tracking-wide text-zinc-400">Followers</p>
+                          </div>
+                          <div>
+                            <p className="nums text-sm font-semibold text-zinc-900">
+                              {compactNumber(a.views30d)}
+                            </p>
+                            <p className="text-[10px] uppercase tracking-wide text-zinc-400">Views 30d</p>
+                          </div>
+                          <div>
+                            <p className="nums text-sm font-semibold text-zinc-900">{a.scheduledCount}</p>
+                            <p className="text-[10px] uppercase tracking-wide text-zinc-400">Scheduled</p>
+                          </div>
+                        </div>
+                      </Card>
+                    </Link>
+                  ))}
                 </div>
-                <HealthDot status={a.health} />
-              </div>
-              <div className="mt-3 flex items-center gap-1.5">
-                <ContentTypeBadge type={a.contentType} />
-                {a.monetized && <Badge tone="green">Monetized</Badge>}
-                {a.paused && <Badge tone="amber">Paused</Badge>}
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-2 border-t border-zinc-100 pt-3 text-center">
-                <div>
-                  <p className="nums text-sm font-semibold text-zinc-900">{compactNumber(a.followers)}</p>
-                  <p className="text-[10px] uppercase tracking-wide text-zinc-400">Followers</p>
-                </div>
-                <div>
-                  <p className="nums text-sm font-semibold text-zinc-900">{compactNumber(a.views30d)}</p>
-                  <p className="text-[10px] uppercase tracking-wide text-zinc-400">Views 30d</p>
-                </div>
-                <div>
-                  <p className="nums text-sm font-semibold text-zinc-900">{a.scheduledCount}</p>
-                  <p className="text-[10px] uppercase tracking-wide text-zinc-400">Scheduled</p>
-                </div>
-              </div>
-            </Card>
-          </Link>
-        ))}
-      </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
 
       <ConnectWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>

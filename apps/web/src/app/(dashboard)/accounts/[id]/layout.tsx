@@ -43,7 +43,8 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
     ...(vis.sources ? [{ href: `${base}/sources`, label: 'Sources' }] : []),
     { href: `${base}/review`, label: 'Review', badge: pendingReviews },
     ...(vis.ideas ? [{ href: `${base}/ideas`, label: 'Ideas' }] : []),
-    ...(vis.dramas ? [{ href: `${base}/dramas`, label: 'Dramas' }] : []),
+    // Dramas is an explicit per-account toggle, not a contentType consequence.
+    ...(account.dramasEnabled ? [{ href: `${base}/dramas`, label: 'Dramas' }] : []),
     { href: `${base}/schedule`, label: 'Schedule' },
     { href: `${base}/analytics`, label: 'Analytics' },
     { href: `${base}/settings`, label: 'Settings' },

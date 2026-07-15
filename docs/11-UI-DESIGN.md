@@ -14,9 +14,12 @@ Sidebar (dark, collapsible)
 │   ├── Workers          /workers            — task board & productivity (role-gated)
 │   └── Analytics        /analytics          — cross-account rollups
 ├── ACCOUNTS                                 — the heart of the app
-│   ├── [account list: avatar, platform icon, name, type badge, health dot]
-│   │       → click = /accounts/[id] workspace
-│   └── + Connect account                    — wizard (platform → content type → auth)
+│   ├── All accounts     /accounts           — dedicated directory page: account cards GROUPED BY
+│   │                                          PLATFORM (YouTube / Facebook / TikTok sections);
+│   │                                          card click → /accounts/[id] workspace
+│   │                                          (Owner adjustment 2026-07-15: no per-account sidebar list)
+│   └── + Connect account                    — wizard (platform → connection method → content type
+│                                              + dramas toggle → schedule → auth)
 └── SYSTEM
     └── Settings         /settings           — tabs: General · AI Providers & Keys · Notifications · Users
 Sidebar footer: user name + role badge, notification bell, logout.
@@ -31,18 +34,20 @@ Horizontal tab nav (tabs depend on `contentType`):
 | Overview | `/accounts/[id]` | ✅ | ✅ | stat cards (followers, views, scheduled, incidents), recent posts, health |
 | Sources | `…/sources` | — | ✅ | watched profiles + bulk URL import for THIS account |
 | Review | `…/review` | ✅ | ✅ | this account's review queue |
-| Ideas | `…/ideas` | ✅ | — | idea board (kanban) scoped to account |
-| Dramas | `…/dramas` | ✅ | — | drama series list (TikTok accounts primarily) |
+| Ideas | `…/ideas` | ✅ | — | idea board (kanban) — **AI pipeline only** (Owner adjustment 2026-07-15) |
+| Dramas | `…/dramas` | toggle | toggle | shown only when `account.dramasEnabled` — an explicit per-account toggle (wizard + settings), NOT derived from contentType (Owner adjustment 2026-07-15) |
 | Schedule | `…/schedule` | ✅ | ✅ | account calendar + slot rules |
-| Analytics | `…/analytics` | ✅ | ✅ | account + per-post metrics, revenue if monetized |
-| Settings | `…/settings` | ✅ | ✅ | channel profile: master prompt, styles, voice, templates, approval policy, scheduling prefs |
+| Analytics | `…/analytics` | ✅ | ✅ | date-range picker (7/30/90d + custom from–to) · per-video table with click-through drill-down (views timeline, retention, CTR, revenue) — controls real now, data mock until Phase 6 |
+| Settings | `…/settings` | ✅ | ✅ | channel profile: master prompt, styles, voice, templates, approval policy, scheduling prefs, dramas toggle |
 
-`contentType` enum on the account: `AI` | `REPURPOSED` | `MIXED` (MIXED shows all tabs). Chosen in the connect wizard; editable later in account settings. **Schema note:** lands as `social_accounts.contentType` in the Phase 1 migration.
+`contentType` enum on the account: `AI` | `REPURPOSED` | `MIXED` (MIXED shows all pipeline tabs). Chosen in the connect wizard; editable later in account settings. **Schema note:** Phase 1 migration adds `social_accounts.contentType`, `dramasEnabled`, and `connectionMethod` (`POSTQUED` | `OWN_APP`).
 
-### Connect wizard (modal, 3 steps)
+### Connect wizard (modal, 5 steps — Owner adjustments 2026-07-15)
 1. Platform: YouTube / Facebook Page / TikTok (cards with logos).
-2. Content type: AI content / Repurposed content / Both — with one-line explanations of what each enables.
-3. Authorize: platform-specific (OAuth redirect or PostQued import) — Phase 1 wires this; until then the step shows a "connection arrives in Phase 1" state.
+2. **Connection method:** PostQued bridge (recommended for YouTube + TikTok) or the owner's OWN platform app (own Google app for direct YouTube upload — quota caveat shown; own TikTok app via Content Posting API — audit caveat shown). Facebook is always the owner's Meta app. Credentials live once in Settings → Platform Apps.
+3. Content type + **dramas toggle**.
+4. **Schedule:** cadence (every day w/ videos-per-day OR specific weekdays), post time(s), randomize-window toggle.
+5. Authorize: platform-specific (OAuth redirect or PostQued import) — Phase 1 wires this.
 
 ## 2. Design Tokens (Tailwind v4 `@theme` in globals.css)
 

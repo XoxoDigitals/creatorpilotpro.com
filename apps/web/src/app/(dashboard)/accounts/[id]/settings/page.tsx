@@ -16,6 +16,7 @@ export default function AccountSettingsPage() {
   const toast = useToast();
 
   const [contentType, setContentType] = useState<ContentType>(account?.contentType ?? 'AI');
+  const [dramasEnabled, setDramasEnabled] = useState(account?.dramasEnabled ?? false);
   const [masterPrompt, setMasterPrompt] = useState(
     'You write for a fast-paced short-form channel. Tone: energetic, plain language, hook in the first sentence…',
   );
@@ -58,6 +59,17 @@ export default function AccountSettingsPage() {
               <option value="hi">Hindi</option>
             </Select>
           </Field>
+          <div className="sm:col-span-2">
+            <Toggle
+              checked={dramasEnabled}
+              onChange={setDramasEnabled}
+              label="Enable AI drama series (adds the Dramas tab to this account)"
+            />
+            <p className="mt-1 text-xs text-zinc-500">
+              Ideas generation is available on AI and Mixed accounts only; Dramas is this separate
+              toggle and works on any account type.
+            </p>
+          </div>
         </div>
       </Card>
 

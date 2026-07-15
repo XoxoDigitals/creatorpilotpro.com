@@ -9,9 +9,6 @@ import { cn } from '@/lib/cn';
 import { RoleBadge } from '@/components/role-badge';
 import { ConnectWizard } from '@/components/connect-wizard';
 import { Avatar } from '@/components/ui/avatar';
-import { HealthDot } from '@/components/ui/health-dot';
-import { ContentTypeBadge } from '@/components/ui/badge';
-import { PlatformIcon } from '@/components/ui/platform-icon';
 import { getAccounts, getRollups } from '@/lib/mock-data';
 import type { SessionUser } from '@/lib/types';
 
@@ -22,6 +19,7 @@ const ICONS: Record<string, ReactNode> = {
   review: <path d="M9 11l3 3 6-6M4 6h9M4 12h4M4 18h7" />,
   incidents: <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />,
   workers: <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm14 10v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" />,
+  accounts: <path d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm12.5 0v7M13 16.5h7" />,
   analytics: <path d="M3 3v18h18M7 15l4-4 3 3 5-6" />,
   settings: <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 12H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 5L4.5 5a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 3.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8Z" />,
   connect: <path d="M12 5v14M5 12h14" />,
@@ -149,46 +147,16 @@ export function Sidebar({ user }: { user: SessionUser }) {
           ))}
         </NavSection>
 
-        {/* ACCOUNTS */}
+        {/* ACCOUNTS — dedicated pages; the full platform-grouped directory lives at /accounts */}
         <NavSection label="Accounts" collapsed={collapsed}>
-          {accounts.map((acc) => {
-            const href = `/accounts/${acc.id}`;
-            const active = pathname === href || pathname.startsWith(`${href}/`);
-            return (
-              <Link
-                key={acc.id}
-                href={href as Route}
-                title={collapsed ? acc.name : undefined}
-                className={cn(
-                  'group flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors',
-                  active ? 'bg-zinc-800 text-white' : 'hover:bg-zinc-800/60',
-                )}
-              >
-                <span className="relative shrink-0">
-                  <Avatar name={acc.name} size="sm" />
-                  <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-zinc-950 p-0.5">
-                    <PlatformIcon platform={acc.platform} size={11} mono />
-                  </span>
-                </span>
-                {!collapsed && (
-                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate text-[13px] font-medium text-zinc-200">
-                          {acc.name}
-                        </span>
-                        <HealthDot status={acc.health} />
-                      </span>
-                      <span className="mt-0.5 block">
-                        <ContentTypeBadge type={acc.contentType} />
-                      </span>
-                    </span>
-                  </span>
-                )}
-              </Link>
-            );
-          })}
-
+          <NavLink
+            href="/accounts"
+            label="All accounts"
+            icon={<Icon name="accounts" />}
+            badge={accounts.length}
+            active={pathname === '/accounts' || pathname.startsWith('/accounts/')}
+            collapsed={collapsed}
+          />
           <button
             onClick={() => setWizardOpen(true)}
             title={collapsed ? 'Connect account' : undefined}
