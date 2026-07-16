@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { ContentItemStatus, Prisma } from '@scp/db';
 import { PrismaService } from '../../prisma/prisma.service';
+import { QueueProducer } from '../../common/queue/queue.producer';
 import { assertTransition } from './content-state';
 import {
   toContentItemView,
@@ -12,7 +13,10 @@ import type { CreateContentDto } from './dto/content.dto';
 
 @Injectable()
 export class ContentService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly queue: QueueProducer,
+  ) {}
 
   async create(dto: CreateContentDto): Promise<ContentItemView> {
     const item = await this.prisma.client.contentItem.create({
@@ -41,7 +45,6 @@ export class ContentService {
     return toContentItemView(item);
   }
 
-  /** Items awaiting review, optionally scoped to accounts they target. */
   async listReview(accountId?: string): Promise<ReviewItemView[]> {
     const where: Prisma.ContentItemWhereInput = {
       deletedAt: null,
@@ -65,6 +68,10 @@ export class ContentService {
     return this.transition(id, 'APPROVED');
   }
 
+  async approveScript(id: string): Promise<ContentItemView> {
+    return this.transition(id, 'SCRIPT_APPROVED');
+  }
+
   async reject(id: string, reason?: string): Promise<ContentItemView> {
     return this.transition(id, 'REJECTED', reason);
   }
@@ -86,6 +93,14 @@ export class ContentService {
       data: { status: to, statusReason: statusReason ?? null },
       include: { assets: true },
     });
+
+    // Auto-enqueue AI/TTS pipelines on state transitions
+    if (to === 'APPROVED') {
+      await this.queue.enqueueAi(id, 'analyze');
+    } else if (to === 'SCRIPT_APPROVED') {
+      await this.queue.enqueueTts(id);
+    }
+
     return toContentItemView(updated);
   }
 }

@@ -51,13 +51,23 @@ export const DHASH_FRAME_HEIGHT = 8;
 export class Ffmpeg {
   constructor(
     private readonly binary: string = process.env.FFMPEG_PATH ?? 'ffmpeg',
-    private readonly run: CommandRunner = spawnRunner,
+    private readonly runner: CommandRunner = spawnRunner,
   ) {}
+
+  /** Run an arbitrary ffmpeg command with the configured binary. */
+  async exec(args: string[]): Promise<RunResult> {
+    await this.ensureAvailable();
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(`ffmpeg failed (${res.code}): ${res.stderr.slice(0, 300)}`);
+    }
+    return res;
+  }
 
   /** True if the ffmpeg binary responds to -version. */
   async available(): Promise<boolean> {
     try {
-      const res = await this.run(this.binary, ['-version']);
+      const res = await this.runner(this.binary, ['-version']);
       return res.code === 0;
     } catch {
       return false;
@@ -96,7 +106,7 @@ export class Ffmpeg {
       '-y',
       destPath,
     ];
-    const res = await this.run(this.binary, args);
+    const res = await this.runner(this.binary, args);
     if (res.code !== 0) {
       throw new Error(
         `ffmpeg trim/normalize failed (${res.code}) for ${srcPath}: ${res.stderr.slice(0, 300)}`,
@@ -133,7 +143,7 @@ export class Ffmpeg {
       '-y',
       destRawPath,
     ];
-    const res = await this.run(this.binary, args);
+    const res = await this.runner(this.binary, args);
     if (res.code !== 0) {
       throw new Error(
         `ffmpeg frame extract failed (${res.code}) for ${srcPath}: ${res.stderr.slice(0, 300)}`,

@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { TaskTypeSchema } from '@scp/shared';
+
+// ── Keys ────────────────────────────────────────────────────────────────────
 
 export const createKeySchema = z.object({
   label: z.string().min(1).max(120),
@@ -16,3 +19,39 @@ export type SetKeyStatusDto = z.infer<typeof setKeyStatusSchema>;
 
 export const reorderKeySchema = z.object({ direction: z.enum(['up', 'down']) });
 export type ReorderKeyDto = z.infer<typeof reorderKeySchema>;
+
+// ── Prompt versions ─────────────────────────────────────────────────────────
+
+export const createPromptVersionSchema = z.object({
+  accountId: z.string().nullable().optional(),
+  task: TaskTypeSchema,
+  name: z.string().min(1).max(120),
+  template: z.string().min(1).max(50000),
+  schemaHint: z.unknown().optional(),
+});
+export type CreatePromptVersionDto = z.infer<typeof createPromptVersionSchema>;
+
+export const setPromptActiveSchema = z.object({ isActive: z.boolean() });
+export type SetPromptActiveDto = z.infer<typeof setPromptActiveSchema>;
+
+// ── Playground ──────────────────────────────────────────────────────────────
+
+export const playgroundSchema = z.object({
+  task: TaskTypeSchema,
+  model: z.string().min(1).max(200),
+  system: z.string().max(50000).optional(),
+  input: z.union([z.string(), z.record(z.string(), z.unknown())]),
+  promptVersion: z.number().int().min(1).optional(),
+  styleVersion: z.number().int().min(1).optional(),
+  skipCache: z.boolean().optional(),
+});
+export type PlaygroundDto = z.infer<typeof playgroundSchema>;
+
+// ── Usage stats ─────────────────────────────────────────────────────────────
+
+export const usageStatsQuerySchema = z.object({
+  providerId: z.string().optional(),
+  since: z.coerce.date().optional(),
+  until: z.coerce.date().optional(),
+});
+export type UsageStatsQueryDto = z.infer<typeof usageStatsQuerySchema>;

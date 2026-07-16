@@ -69,4 +69,30 @@ export class QueueProducer implements OnModuleInit, OnModuleDestroy {
       { singletonKey: sourceVideoId },
     );
   }
+
+  /** Enqueue an AI job (analyze/narration/metadata) for a content item (docs/05 §2). */
+  async enqueueAi(contentItemId: string, kind: 'analyze' | 'narration' | 'metadata'): Promise<void> {
+    if (!this.boss) {
+      this.logger.warn(`enqueueAi(${kind}, ${contentItemId}) skipped — producer not started.`);
+      return;
+    }
+    await this.boss.send(
+      QUEUE.AI,
+      { kind, contentItemId },
+      { singletonKey: `${kind}-${contentItemId}` },
+    );
+  }
+
+  /** Enqueue TTS synthesis for a content item (docs/05 §6). */
+  async enqueueTts(contentItemId: string): Promise<void> {
+    if (!this.boss) {
+      this.logger.warn(`enqueueTts(${contentItemId}) skipped — producer not started.`);
+      return;
+    }
+    await this.boss.send(
+      QUEUE.TTS,
+      { kind: 'tts', contentItemId },
+      { singletonKey: `tts-${contentItemId}` },
+    );
+  }
 }

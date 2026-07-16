@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.2.1",
+    "@scp/ai-providers": "workspace:*",
     "@scp/db": "workspace:*",
     "@scp/publish-adapters": "workspace:*",
     "@scp/shared": "workspace:*",

@@ -9,6 +9,10 @@ import { runWatch } from './watcher.js';
 import { runDownload } from './download.js';
 import { runMedia } from './media-process.js';
 import { isWatchJob, isDownloadJob, isMediaJob } from './ingestion-jobs.js';
+import { runAi } from './ai-process.js';
+import { runTts } from './tts-process.js';
+import { runRender } from './render-process.js';
+import { isAiJob, isTtsJob, isRenderJob } from './ai-jobs.js';
 
 /** pg-boss batch handler shape: receives an array of jobs per fetch. */
 export type Processor = (jobs: Job[]) => Promise<void>;
@@ -28,7 +32,6 @@ function noop(queue: QueueName): Processor {
     for (const job of jobs) {
       // eslint-disable-next-line no-console
       console.log(`[worker:${queue}] received job ${job.id} (${job.name}) — no-op stub`);
-      // TODO(phase 1+): implement real pipeline steps per docs/02 §5 & docs/04.
     }
   };
 }
@@ -104,19 +107,52 @@ const mediaProcessor: Processor = async (jobs: Job[]) => {
   }
 };
 
+/** AI queue (docs/05, Phase 3.4): analyze, narration, metadata jobs. */
+const aiProcessor: Processor = async (jobs: Job[]) => {
+  if (!boss) throw new Error('[worker:ai] boss handle not set — call setBoss() at startup.');
+  for (const job of jobs) {
+    const data = job.data as unknown;
+    if (isAiJob(data)) await runAi(data, boss);
+    else console.warn(`[worker:ai] job ${job.id} has an unrecognized payload — skipping`);
+  }
+};
+
+/** TTS queue (docs/05 §6, Phase 3.5): synthesize voiceover from approved script. */
+const ttsProcessor: Processor = async (jobs: Job[]) => {
+  if (!boss) throw new Error('[worker:tts] boss handle not set — call setBoss() at startup.');
+  for (const job of jobs) {
+    const data = job.data as unknown;
+    if (isTtsJob(data)) await runTts(data.contentItemId, boss);
+    else console.warn(`[worker:tts] job ${job.id} has an unrecognized payload — skipping`);
+  }
+};
+
+/** Storage queue: render jobs ride here (Phase 3.6). */
+const storageProcessor: Processor = async (jobs: Job[]) => {
+  if (!boss) throw new Error('[worker:storage] boss handle not set — call setBoss() at startup.');
+  for (const job of jobs) {
+    const data = job.data as unknown;
+    if (isRenderJob(data)) await runRender(data.contentItemId, boss);
+    else {
+      // eslint-disable-next-line no-console
+      console.log(`[worker:storage] received job ${job.id} (${job.name}) — no-op stub`);
+    }
+  }
+};
+
 /**
- * Processor registry (docs/02 §5). PUBLISH runs the publish/verify engine and
- * WATCHER/DOWNLOAD/MEDIA run the ingestion pipeline; the remaining pipelines are
- * no-op stubs until their phases land.
+ * Processor registry (docs/02 §5). Full pipeline: WATCHER→DOWNLOAD→MEDIA
+ * (ingestion), AI (analyze→narration→metadata), TTS (voiceover synth),
+ * STORAGE (render/merge), PUBLISH (publish/verify).
  */
 export const processors: Record<QueueName, Processor> = {
   [QUEUE.WATCHER]: watcherProcessor,
   [QUEUE.DOWNLOAD]: downloadProcessor,
   [QUEUE.MEDIA]: mediaProcessor,
-  [QUEUE.AI]: noop(QUEUE.AI),
-  [QUEUE.TTS]: noop(QUEUE.TTS),
+  [QUEUE.AI]: aiProcessor,
+  [QUEUE.TTS]: ttsProcessor,
   [QUEUE.PUBLISH]: publishProcessor,
   [QUEUE.ANALYTICS]: noop(QUEUE.ANALYTICS),
-  [QUEUE.STORAGE]: noop(QUEUE.STORAGE),
+  [QUEUE.STORAGE]: storageProcessor,
   [QUEUE.MAINTENANCE]: maintenanceProcessor,
 };

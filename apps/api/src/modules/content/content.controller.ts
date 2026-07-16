@@ -52,6 +52,13 @@ export class ContentController {
     return this.content.approve(id);
   }
 
+  @Post(':id/approve-script')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.approve_script', 'ContentItem')
+  approveScript(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.approveScript(id);
+  }
+
   @Post(':id/reject')
   @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.reject', 'ContentItem')
