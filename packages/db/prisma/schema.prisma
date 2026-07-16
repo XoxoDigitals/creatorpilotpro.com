@@ -591,6 +591,11 @@ model AiProvider {
 /// A single API key in a provider's pool. The secret is AES-256-GCM encrypted
 /// (keyEnc, `v1:<iv>:<tag>:<ciphertext>`); only the last-4 is kept in clear for
 /// display. keyEnc is NEVER returned by the API (docs/08 §2, write-only from UI).
+///
+/// Rolling usage windows (docs/05 §4) live inline: {minute,day} counters + their
+/// window-start timestamps + lastUsedAt for LRU selection. `limits` holds the
+/// per-key headroom (rpm/rpd/tpm) mirroring the provider's published free-tier
+/// limits — editable per key.
 model AiKey {
   id            String      @id @default(cuid())
   providerId    String
@@ -603,12 +608,108 @@ model AiKey {
   cooldownUntil DateTime?
   limits        Json        @default("{}")
 
+  minuteWindowStartAt DateTime?
+  requestsInMinute    Int       @default(0)
+  tokensInMinute      Int       @default(0)
+  dayWindowStartAt    DateTime?
+  requestsInDay       Int       @default(0)
+  lastUsedAt          DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  usageLogs AiUsageLog[]
+
   @@index([providerId, priority])
   @@index([status])
+  @@index([providerId, status, lastUsedAt])
   @@map("ai_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 7 — AI cache, usage log, prompt versions (docs/05 §5, §7)
+// ---------------------------------------------------------------------------
+
+/// Deterministic content cache in front of every provider call (docs/05 §5).
+/// The `cacheKey` hashes together inputContentHash + task + model + promptVersion
+/// + channelStyleVersion so prompt/style edits naturally invalidate the affected
+/// entries. Cross-posting one video → analyzed once, only per-channel work per
+/// channel. `hitCount`/`lastHitAt` fuel the cost dashboard.
+model AiOutput {
+  id            String    @id @default(cuid())
+  cacheKey      String    @unique
+  task          String
+  providerId    String?
+  model         String
+  promptVersion Int       @default(1)
+  output        Json
+  audioRef      String?
+  tokensIn      Int?
+  tokensOut     Int?
+  ttsSeconds    Float?
+  contentItemId String?
+  hitCount      Int       @default(0)
+  lastHitAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([task, model])
+  @@index([contentItemId])
+  @@map("ai_outputs")
+}
+
+/// One row per provider call — the source of truth for the cost dashboard
+/// (docs/05 §8) and for FR-C7 per-video cost visibility. Immutable log; no
+/// updatedAt column. `cacheHit=true` rows record cache serves (0 tokens, 0 cost).
+model AiUsageLog {
+  id               String   @id @default(cuid())
+  task             String
+  providerId       String?
+  keyId            String?
+  key              AiKey?   @relation(fields: [keyId], references: [id], onDelete: SetNull)
+  model            String
+  contentItemId    String?
+  cacheHit         Boolean  @default(false)
+  tokensIn         Int?
+  tokensOut        Int?
+  ttsSeconds       Float?
+  estimatedCostUsd Decimal? @db.Decimal(10, 6)
+  errorClass       String?
+  latencyMs        Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([providerId, createdAt])
+  @@index([contentItemId])
+  @@index([keyId])
+  @@map("ai_usage_log")
+}
+
+/// Versioned master prompts + narration/writing style bodies (docs/05 §7).
+/// A `null` accountId is a platform-wide default template for the task;
+/// account-scoped rows are the channel master prompt or per-channel style
+/// override. Exactly one row per (accountId, task, name) is `isActive`; version
+/// increments on each edit so `AiOutput.promptVersion` invalidates cache
+/// entries touched by the change.
+model PromptVersion {
+  id          String  @id @default(cuid())
+  accountId   String?
+  task        String
+  name        String
+  version     Int     @default(1)
+  template    String
+  schemaHint  Json?
+  isActive    Boolean @default(true)
+  createdById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, task, name, version])
+  @@index([accountId, task, isActive])
+  @@map("prompt_versions")
 }
 
 // ---------------------------------------------------------------------------
