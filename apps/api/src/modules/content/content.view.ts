@@ -41,10 +41,18 @@ export interface ReviewItemView {
   submittedAt: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   durationSec: number | null;
+  /** Ingested items carry their source video (for the rights-note gate, docs/04 §3). */
+  sourceVideoId: string | null;
+  sourceUrl: string | null;
+  rightsNote: string | null;
 }
 
 export function toReviewItemView(
-  c: ContentItem & { assets?: Asset[]; publishTargets?: { accountId: string }[] },
+  c: ContentItem & {
+    assets?: Asset[];
+    publishTargets?: { accountId: string }[];
+    sourceVideo?: { id: string; sourceUrl: string; rightsNote: string | null } | null;
+  },
 ): ReviewItemView {
   const statusMap: Record<string, ReviewItemView['status']> = {
     REVIEW_PENDING: 'PENDING',
@@ -60,5 +68,8 @@ export function toReviewItemView(
     submittedAt: c.createdAt.toISOString(),
     status: statusMap[c.status] ?? 'PENDING',
     durationSec: duration,
+    sourceVideoId: c.sourceVideo?.id ?? null,
+    sourceUrl: c.sourceVideo?.sourceUrl ?? null,
+    rightsNote: c.sourceVideo?.rightsNote ?? null,
   };
 }

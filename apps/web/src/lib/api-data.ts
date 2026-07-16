@@ -13,6 +13,7 @@ import {
   getIncidents as mockIncidents,
   getPosts as mockPosts,
   getReviewItems as mockReviewItems,
+  getSources as mockSources,
 } from './mock-data';
 import type {
   Account,
@@ -27,6 +28,9 @@ import type {
   PostStatus,
   ReviewItem,
   ReviewStatus,
+  Source,
+  SourceStatus,
+  SourceType,
 } from './domain-types';
 
 /** Shape returned by GET /accounts (see apps/api account.view.ts). Never carries secrets. */
@@ -317,6 +321,9 @@ interface ApiReviewItem {
   submittedAt: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   durationSec: number | null;
+  sourceVideoId: string | null;
+  sourceUrl: string | null;
+  rightsNote: string | null;
 }
 
 function mapReviewItem(r: ApiReviewItem): ReviewItem {
@@ -327,9 +334,10 @@ function mapReviewItem(r: ApiReviewItem): ReviewItem {
     title: r.title,
     submittedAt: r.submittedAt,
     status: r.status,
-    sourceUrl: null,
-    rightsNote: null,
+    sourceUrl: r.sourceUrl,
+    rightsNote: r.rightsNote,
     durationSec: r.durationSec,
+    sourceVideoId: r.sourceVideoId,
   };
 }
 
@@ -348,6 +356,104 @@ export async function getReviewView(accountId?: string): Promise<ReviewResult> {
 export async function decideReview(id: string, status: ReviewStatus): Promise<void> {
   if (status === 'APPROVED') await api.post(`/content/${id}/approve`);
   else await api.post(`/content/${id}/reject`, {});
+}
+
+/** Set the rights note on a source video (lifts the review approval gate, docs/04 §3). */
+export async function setSourceRights(sourceVideoId: string, rightsNote: string): Promise<void> {
+  await api.patch(`/sources/video/${encodeURIComponent(sourceVideoId)}/rights`, { rightsNote });
+}
+
+// --- Watched sources (ingestion) -------------------------------------------
+
+interface ApiWatchedSource {
+  id: string;
+  type: 'KUAISHOU_PROFILE' | 'GENERIC_URL';
+  url: string;
+  label: string | null;
+  checkIntervalMin: number;
+  trimStartMs: number;
+  status: 'ACTIVE' | 'PAUSED' | 'ERROR';
+  lastCheckedAt: string | null;
+  consecutiveFailures: number;
+  errorNote: string | null;
+  targetAccountId: string | null;
+  videoCount: number;
+  createdAt: string;
+}
+
+const SOURCE_TYPE: Record<ApiWatchedSource['type'], SourceType> = {
+  KUAISHOU_PROFILE: 'WATCHED_PROFILE',
+  GENERIC_URL: 'BULK_IMPORT',
+};
+
+/** Map an API watched source to the UI `Source` view (interval min→hours). */
+function mapSource(s: ApiWatchedSource): Source {
+  return {
+    id: s.id,
+    accountId: s.targetAccountId ?? '',
+    type: SOURCE_TYPE[s.type],
+    url: s.url,
+    label: s.label ?? s.url,
+    // A bulk-import batch never polls, so its interval reads as 0 ("—") in the UI.
+    checkIntervalHours: s.type === 'GENERIC_URL' ? 0 : Math.round(s.checkIntervalMin / 60),
+    lastCheckedAt: s.lastCheckedAt,
+    newItems: s.videoCount,
+    status: s.status as SourceStatus,
+  };
+}
+
+export interface SourcesResult {
+  sources: Source[];
+  demo: boolean;
+}
+
+export async function getSourcesView(accountId: string): Promise<SourcesResult> {
+  if (await inDemoMode()) return { sources: mockSources(accountId), demo: true };
+  const raw = await api.get<ApiWatchedSource[]>(
+    `/sources?accountId=${encodeURIComponent(accountId)}`,
+  );
+  return { sources: raw.map(mapSource), demo: false };
+}
+
+export interface AddWatchedProfileInput {
+  url: string;
+  label?: string;
+  checkIntervalHours: number;
+  targetAccountId: string;
+}
+
+export async function addWatchedProfile(input: AddWatchedProfileInput): Promise<void> {
+  await api.post('/sources', {
+    type: 'KUAISHOU_PROFILE',
+    url: input.url,
+    ...(input.label ? { label: input.label } : {}),
+    checkIntervalMin: Math.max(15, Math.round(input.checkIntervalHours * 60)),
+    targetAccountId: input.targetAccountId,
+  });
+}
+
+export async function bulkImportSources(input: {
+  urls: string[];
+  label?: string;
+  targetAccountId: string;
+}): Promise<void> {
+  await api.post('/sources/import', {
+    urls: input.urls,
+    ...(input.label ? { label: input.label } : {}),
+    targetAccountId: input.targetAccountId,
+  });
+}
+
+export async function checkSourceNow(id: string): Promise<void> {
+  await api.post(`/sources/${encodeURIComponent(id)}/check`);
+}
+
+export async function setSourcePaused(id: string, paused: boolean): Promise<void> {
+  await api.patch(`/sources/${encodeURIComponent(id)}`, { status: paused ? 'PAUSED' : 'ACTIVE' });
+}
+
+export async function deleteSource(id: string): Promise<void> {
+  await api.del(`/sources/${encodeURIComponent(id)}`);
 }
 
 // --- Scheduling (upcoming queue + free slots) ------------------------------

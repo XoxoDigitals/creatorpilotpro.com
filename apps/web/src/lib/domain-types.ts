@@ -70,6 +70,8 @@ export interface ReviewItem {
   sourceUrl: string | null;
   rightsNote: string | null;
   durationSec: number | null;
+  /** For ingested items: the source video the rights note attaches to (docs/04 §3). */
+  sourceVideoId: string | null;
 }
 
 export type IdeaStage = 'SUGGESTED' | 'APPROVED' | 'IN_PRODUCTION' | 'UPLOADED' | 'PUBLISHED';

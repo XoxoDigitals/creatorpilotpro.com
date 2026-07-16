@@ -50,7 +50,11 @@ export class ContentService {
     };
     const items = await this.prisma.client.contentItem.findMany({
       where,
-      include: { assets: true, publishTargets: { select: { accountId: true } } },
+      include: {
+        assets: true,
+        publishTargets: { select: { accountId: true } },
+        sourceVideo: { select: { id: true, sourceUrl: true, rightsNote: true } },
+      },
       orderBy: { createdAt: 'asc' },
       take: 200,
     });

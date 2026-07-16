@@ -147,12 +147,12 @@ export const posts: Post[] = [
 ];
 
 export const reviewItems: ReviewItem[] = [
-  { id: 'r1', accountId: 'viral-clips-daily', kind: 'INGESTED_VIDEO', title: 'Kuaishou clip — parkour rooftop', submittedAt: from(-3 * HOUR), status: 'PENDING', sourceUrl: 'https://kuaishou.example/v/8812', rightsNote: null, durationSec: 47 },
-  { id: 'r2', accountId: 'viral-clips-daily', kind: 'INGESTED_VIDEO', title: 'Kuaishou clip — kitten vs cucumber', submittedAt: from(-5 * HOUR), status: 'PENDING', sourceUrl: 'https://kuaishou.example/v/8813', rightsNote: 'Licensed via SourcePack A', durationSec: 32 },
-  { id: 'r3', accountId: 'daily-recipes', kind: 'INGESTED_VIDEO', title: 'One-pan pasta short', submittedAt: from(-8 * HOUR), status: 'PENDING', sourceUrl: 'https://kuaishou.example/v/8820', rightsNote: null, durationSec: 58 },
-  { id: 'r4', accountId: 'mindful-minutes', kind: 'PRODUCED_VIDEO', title: 'Anxiety Off-Ramp (final render)', submittedAt: from(-2 * HOUR), status: 'PENDING', sourceUrl: null, rightsNote: null, durationSec: 312 },
-  { id: 'r5', accountId: 'neon-drama-shorts', kind: 'IDEA', title: 'Idea: rival crew betrayal arc', submittedAt: from(-26 * HOUR), status: 'PENDING', sourceUrl: null, rightsNote: null, durationSec: null },
-  { id: 'r6', accountId: 'trendy-bytes', kind: 'METADATA', title: 'Metadata: Trend Recap Week 28', submittedAt: from(-30 * HOUR), status: 'PENDING', sourceUrl: null, rightsNote: null, durationSec: null },
+  { id: 'r1', accountId: 'viral-clips-daily', kind: 'INGESTED_VIDEO', title: 'Kuaishou clip — parkour rooftop', submittedAt: from(-3 * HOUR), status: 'PENDING', sourceUrl: 'https://kuaishou.example/v/8812', rightsNote: null, durationSec: 47, sourceVideoId: null },
+  { id: 'r2', accountId: 'viral-clips-daily', kind: 'INGESTED_VIDEO', title: 'Kuaishou clip — kitten vs cucumber', submittedAt: from(-5 * HOUR), status: 'PENDING', sourceUrl: 'https://kuaishou.example/v/8813', rightsNote: 'Licensed via SourcePack A', durationSec: 32, sourceVideoId: null },
+  { id: 'r3', accountId: 'daily-recipes', kind: 'INGESTED_VIDEO', title: 'One-pan pasta short', submittedAt: from(-8 * HOUR), status: 'PENDING', sourceUrl: 'https://kuaishou.example/v/8820', rightsNote: null, durationSec: 58, sourceVideoId: null },
+  { id: 'r4', accountId: 'mindful-minutes', kind: 'PRODUCED_VIDEO', title: 'Anxiety Off-Ramp (final render)', submittedAt: from(-2 * HOUR), status: 'PENDING', sourceUrl: null, rightsNote: null, durationSec: 312, sourceVideoId: null },
+  { id: 'r5', accountId: 'neon-drama-shorts', kind: 'IDEA', title: 'Idea: rival crew betrayal arc', submittedAt: from(-26 * HOUR), status: 'PENDING', sourceUrl: null, rightsNote: null, durationSec: null, sourceVideoId: null },
+  { id: 'r6', accountId: 'trendy-bytes', kind: 'METADATA', title: 'Metadata: Trend Recap Week 28', submittedAt: from(-30 * HOUR), status: 'PENDING', sourceUrl: null, rightsNote: null, durationSec: null, sourceVideoId: null },
 ];
 
 export const ideas: Idea[] = [
