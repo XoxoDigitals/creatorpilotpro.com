@@ -1,8 +1,14 @@
 import { Module } from '@nestjs/common';
+import { SourcesController } from './sources.controller';
+import { SourcesService } from './sources.service';
 
 /**
- * Sources module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
+ * Sources module (docs/04 §1–3). Watched-source CRUD + bulk import + ingestion
+ * review. QueueModule (producer) is global, so no imports are needed.
  */
-@Module({})
+@Module({
+  controllers: [SourcesController],
+  providers: [SourcesService],
+  exports: [SourcesService],
+})
 export class SourcesModule {}

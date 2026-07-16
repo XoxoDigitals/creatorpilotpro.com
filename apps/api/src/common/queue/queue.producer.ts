@@ -43,4 +43,30 @@ export class QueueProducer implements OnModuleInit, OnModuleDestroy {
       { singletonKey: publishTargetId },
     );
   }
+
+  /** Enqueue an immediate poll of a watched source (docs/04 §1; dedup via singletonKey). */
+  async enqueueWatch(watchedSourceId: string): Promise<void> {
+    if (!this.boss) {
+      this.logger.warn(`enqueueWatch(${watchedSourceId}) skipped — producer not started.`);
+      return;
+    }
+    await this.boss.send(
+      QUEUE.WATCHER,
+      { kind: 'watch', watchedSourceId },
+      { singletonKey: watchedSourceId },
+    );
+  }
+
+  /** Enqueue a download for a discovered source video (docs/04 §2; dedup via singletonKey). */
+  async enqueueDownload(sourceVideoId: string): Promise<void> {
+    if (!this.boss) {
+      this.logger.warn(`enqueueDownload(${sourceVideoId}) skipped — producer not started.`);
+      return;
+    }
+    await this.boss.send(
+      QUEUE.DOWNLOAD,
+      { kind: 'download', sourceVideoId },
+      { singletonKey: sourceVideoId },
+    );
+  }
 }
