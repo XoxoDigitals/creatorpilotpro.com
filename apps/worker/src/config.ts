@@ -28,3 +28,16 @@ export function getDatabaseUrl(): string {
 export function getDefaultConcurrency(): number {
   return Number(process.env.WORKER_CONCURRENCY ?? '4');
 }
+
+/**
+ * Storage hot-tier root (env STORAGE_ROOT) — where downloaded/processed media is
+ * written. Read lazily so importing this module never requires it; the ingestion
+ * processors call it only when they actually touch disk.
+ */
+export function getStorageRoot(): string {
+  const root = process.env.STORAGE_ROOT;
+  if (!root) {
+    throw new Error('STORAGE_ROOT is required for media ingestion (download/process).');
+  }
+  return root;
+}

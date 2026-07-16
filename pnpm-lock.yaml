@@ -172,6 +172,9 @@ importers:
       '@scp/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@scp/source-adapters':
+        specifier: workspace:*
+        version: link:../../packages/source-adapters
       '@scp/storage':
         specifier: workspace:*
         version: link:../../packages/storage

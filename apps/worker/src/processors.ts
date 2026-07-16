@@ -5,6 +5,10 @@ import { refreshExpiringGoogleTokens } from './maintenance.js';
 import { runPublish } from './publish.js';
 import { runVerify } from './verify.js';
 import { isPublishJob, isVerifyJob } from './publish-jobs.js';
+import { runWatch } from './watcher.js';
+import { runDownload } from './download.js';
+import { runMedia } from './media-process.js';
+import { isWatchJob, isDownloadJob, isMediaJob } from './ingestion-jobs.js';
 
 /** pg-boss batch handler shape: receives an array of jobs per fetch. */
 export type Processor = (jobs: Job[]) => Promise<void>;
@@ -69,13 +73,46 @@ const publishProcessor: Processor = async (jobs: Job[]) => {
 };
 
 /**
- * Processor registry (docs/02 §5). PUBLISH runs the real publish/verify engine;
- * the remaining pipelines are no-op stubs until their phases land.
+ * Ingestion queues (docs/04 §1–3): WATCHER → DOWNLOAD → MEDIA. Each carries its
+ * own single job kind; every job is handled independently so one failure doesn't
+ * sink the batch. WATCHER/DOWNLOAD enqueue the next stage, so they need `boss`.
+ */
+const watcherProcessor: Processor = async (jobs: Job[]) => {
+  if (!boss) throw new Error('[worker:watcher] boss handle not set — call setBoss() at startup.');
+  for (const job of jobs) {
+    const data = job.data as unknown;
+    if (isWatchJob(data)) await runWatch(data.watchedSourceId, boss);
+    else console.warn(`[worker:watcher] job ${job.id} has an unrecognized payload — skipping`);
+  }
+};
+
+const downloadProcessor: Processor = async (jobs: Job[]) => {
+  if (!boss) throw new Error('[worker:download] boss handle not set — call setBoss() at startup.');
+  for (const job of jobs) {
+    const data = job.data as unknown;
+    if (isDownloadJob(data)) await runDownload(data.sourceVideoId, boss);
+    else console.warn(`[worker:download] job ${job.id} has an unrecognized payload — skipping`);
+  }
+};
+
+const mediaProcessor: Processor = async (jobs: Job[]) => {
+  if (!boss) throw new Error('[worker:media] boss handle not set — call setBoss() at startup.');
+  for (const job of jobs) {
+    const data = job.data as unknown;
+    if (isMediaJob(data)) await runMedia(data.sourceVideoId, boss);
+    else console.warn(`[worker:media] job ${job.id} has an unrecognized payload — skipping`);
+  }
+};
+
+/**
+ * Processor registry (docs/02 §5). PUBLISH runs the publish/verify engine and
+ * WATCHER/DOWNLOAD/MEDIA run the ingestion pipeline; the remaining pipelines are
+ * no-op stubs until their phases land.
  */
 export const processors: Record<QueueName, Processor> = {
-  [QUEUE.WATCHER]: noop(QUEUE.WATCHER),
-  [QUEUE.DOWNLOAD]: noop(QUEUE.DOWNLOAD),
-  [QUEUE.MEDIA]: noop(QUEUE.MEDIA),
+  [QUEUE.WATCHER]: watcherProcessor,
+  [QUEUE.DOWNLOAD]: downloadProcessor,
+  [QUEUE.MEDIA]: mediaProcessor,
   [QUEUE.AI]: noop(QUEUE.AI),
   [QUEUE.TTS]: noop(QUEUE.TTS),
   [QUEUE.PUBLISH]: publishProcessor,

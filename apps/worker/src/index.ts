@@ -11,8 +11,10 @@ import { getDatabaseUrl } from './config.js';
 import { processors, setBoss } from './processors.js';
 import { PUBLISH_RETRY_LIMIT } from './publish.js';
 import { dispatchDueTargets } from './dispatcher.js';
+import { dispatchDueSources } from './watcher.js';
 
 const DISPATCH_INTERVAL_MS = 60_000;
+const WATCHER_DISPATCH_INTERVAL_MS = 60_000;
 
 function resolveConcurrency(queue: QueueName): number {
   const c = QUEUE_CONCURRENCY[queue];
@@ -89,6 +91,31 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`[worker] scheduling dispatcher started (every ${DISPATCH_INTERVAL_MS / 1000}s)`);
 
+  // Watcher dispatcher (docs/04 §1): every minute, enqueue a WATCHER job for each
+  // ACTIVE source whose check interval has elapsed. Mirrors the publish dispatcher
+  // (must SEND jobs) with its own overlap guard.
+  let watching = false;
+  const watcherTimer = setInterval(() => {
+    if (watching) return;
+    watching = true;
+    void dispatchDueSources(boss)
+      .then((n) => {
+        if (n > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[worker:watcher] enqueued ${n} due source poll(s)`);
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[worker:watcher] dispatch failed:', err);
+      })
+      .finally(() => {
+        watching = false;
+      });
+  }, WATCHER_DISPATCH_INTERVAL_MS);
+  // eslint-disable-next-line no-console
+  console.log(`[worker:watcher] source dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`);
+
   // eslint-disable-next-line no-console
   console.log(`[worker] startup complete — ${ALL_QUEUES.length} queues registered`);
 
@@ -96,6 +123,7 @@ async function main(): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`[worker] ${signal} received — shutting down gracefully...`);
     clearInterval(dispatchTimer);
+    clearInterval(watcherTimer);
     try {
       await boss.stop({ graceful: true, timeout: 30_000 });
       // eslint-disable-next-line no-console
