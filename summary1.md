@@ -10,7 +10,7 @@ Self-hosted bulk social manager (YouTube / Facebook Reels / TikTok), 3 pipelines
 
 ---
 
-## COMMITTED on `master` (18 commits this session, `326ff49` → `7fb1db5`)
+## COMMITTED on `master` (21 commits this session, `326ff49` → `431c776`)
 
 ### Phase 1a — Accounts & connect flows (5 commits, DONE)
 Picked up half-finished/uncommitted from the prior session and completed it. SocialAccount/ChannelProfile schema+migration (`phase1_accounts`, live), AES-256-GCM crypto helpers, API accounts module (PostQued import + Google/Meta OAuth connect w/ HMAC state + Meta page-picker session + TikTok own-app 501 stub), web wiring + finished the 5-step connect wizard + `/accounts/connect/meta` page-picker page, worker Google token-refresh maintenance job. **Fixed a real bug**: `connectMeta` ignored the wizard choices stored in the OAuth session — now applies them (matching `googleCallback`); `metaConnectSchema` narrowed to `{session, pageId}`.
@@ -50,7 +50,7 @@ Picked up half-finished/uncommitted from the prior session and completed it. Soc
 
 ## Verification status
 
-**Whole monorepo green**: 9/9 typecheck clean, all tests pass (storage 7 + publish-adapters 10 + **source-adapters 15** + **worker 14** + api 22). Web + api build clean.
+**Whole monorepo green**: 9/9 typecheck clean, all tests pass (storage 7 + publish-adapters 10 + source-adapters 15 + **ai-providers 30** + worker 14 + api 22). Web + api build clean.
 
 **Phase 2 ingestion verified live** (yt-dlp/ffmpeg absent → graceful-degradation paths): worker pipeline 12/12 (watcher auto-pause after 3 failures, generic-url self-ref discovery + no-dup re-poll, download FAILED+incident, no MEDIA on failure) and API sources service 11/11 (create/resume-latch/check-now guards/bulk-import dedupe 3→2/rights note/list) — both driven against the real DB via the compiled code with a stub queue, **all test data cleaned up**. Smoke scripts in the session scratchpad. Unexercised: the real yt-dlp/ffmpeg binaries and the browser render of the new sources page (client-rendered + auth; build validates compile).
 
@@ -62,10 +62,32 @@ Picked up half-finished/uncommitted from the prior session and completed it. Soc
 - **#7 owner externals — DEFERRED to the end by owner** (PostQued API key + connected accounts, Google Cloud read-only app, Meta app + testers, optional Telegram). Guide: `docs/OWNER-SETUP.md`. **Also needed operationally: install `yt-dlp` + `ffmpeg` on the worker host** (Phase 2/3 use them; neither is on this machine).
 - **#8 Phase 1a + 1b — DONE.**
 - **#9 Phase 2 — DONE** (all 6 layers 2.1–2.6 committed + verified). Operational prereqs for it to actually run: install `yt-dlp` + `ffmpeg` on the worker host, and set `STORAGE_ROOT` in root `.env`.
-- **#10 Phase 3 — NEXT.** #11–14 Phases 4–7 pending. #1–6, #15 done.
+- **#10 Phase 3 — IN PROGRESS.** 3.1 db + 3.2 ai-providers landed (see below). #11–14 Phases 4–7 pending. #1–6, #15 done.
 
-### Next session: Phase 3 = AI layer & repurposing pipeline (the MVP milestone)
-Provider adapters (Gemini/OpenAI/Kokoro/Whisper), key pool + rotation + metering + routing + cache, analysis→narration→script gate→TTS→Demucs merge→render→auto-metadata. See docs/05 + docs/09. `packages/ai-providers` already exists as a scaffold (it's in the 9-project typecheck). Follow the same layer cadence: build each layer with graceful degradation when a provider key is absent (clear error→incident→UI), inline in the main session (background Opus agents die on usage limits), commit per layer with typecheck+lint+build+test green and a live DB smoke where feasible. The AI/TTS pg-boss queues (`ai`, `tts`) are still `noop` stubs in `apps/worker/src/processors.ts` — wire them with the same discriminated-job pattern used for publish + ingestion.
+## Phase 3 progress — AI layer & repurposing pipeline (MVP milestone)
+
+### Committed
+- **3.1 db** (`f66bc6f`): AI cache + usage log + prompt versions + key window counters (docs/05 §4–5, §7). AiKey gained `{minute,day}WindowStartAt` + counters + `lastUsedAt` for LRU. New `AiOutput` (unique `cacheKey`, hitCount/lastHitAt), `AiUsageLog` (immutable per-call log, `Decimal(10,6)` cost, keyId SetNull on key delete), `PromptVersion` (unique `(accountId,task,name,version)`; null accountId = global default, app-layer `isActive`). Migration `phase3_ai_cache_usage_prompts` **live**. Live schema smoke 9/9 (defaults, unique constraints, Decimal, SetNull), all rows cleaned up.
+- **3.2 packages/ai-providers** (`431c776`): the core abstraction (docs/05 §2, §4–5). Storage-agnostic behind small ports (`KeyStore`/`CacheStore`/`UsageLogger`/`ProviderRegistry`) so the same code path runs in the worker (Prisma-backed) and the API playground (in-memory). Files:
+  - `cache-key.ts` — deterministic sha256(task|model|promptVersion|styleVersion|inputContentHash)
+  - `key-pool.ts` — `KeyPool` w/ LRU selection, `rollWindows`/`hasHeadroom`, `recordError` mapping AIErrorClass → status transitions (RATE_LIMITED→COOLDOWN[retry-after|60s], QUOTA_EXHAUSTED→EXHAUSTED, INVALID_KEY→DISABLED; TRANSIENT/FATAL/CONTENT_BLOCKED leave status untouched)
+  - `router.ts` — `AIRouter` end-to-end: cache lookup → chain iteration → key checkout → provider call → log usage/cost → save to cache; rotates on key errors, retries TRANSIENT same-key
+  - `gemini.ts` — real fetch-based AI Studio v1beta adapter (no SDK). Structured JSON via `responseMimeType` + zod parse w/ one repair-retry; classifyError matrix; multimodal `fileData` + inline audio (TTS). Kokoro/OpenAI/Whisper stubs unchanged (real impls in 3.5).
+  - Package gained `@types/node` + vitest + `"default"` export condition; 30 tests (cache-key determinism, KeyPool selection under every status, recordError transitions, router cache/chain/counter, Gemini classifyError + JSON path + repair-retry).
+
+### Remaining layers (my design decisions, follow these)
+- **3.3 API ai module** (`apps/api/src/modules/ai/`): providers listing (`GET /ai/providers`), keys CRUD (encrypted at rest via existing CryptoService; only `keyLast4` returned — never `keyEnc`), kill switches via `system_settings.ai.kill_switches.*`, playground endpoint that dry-runs a task against a channel profile using the router with **in-memory** cache/logger ports (no persistence). RBAC OWNER/ADMIN, `@Audit` on mutations. Also implement `PrismaKeyStore`/`PrismaCacheStore`/`PrismaUsageLogger` as thin adapters — probably in `apps/api/src/modules/ai/store/` (or a tiny `@scp/ai-store` package if the worker needs to import them too; worker + api sharing them is the deciding factor). If worker needs them → make a package; else keep in api and dupe when worker lands.
+- **3.4 worker AI processor** (`apps/worker/src/ai.ts` + wire in `processors.ts`): consume the `ai` queue with discriminated jobs `{kind:'analyze',contentItemId}` / `{kind:'narration',contentItemId}` / `{kind:'metadata',contentItemId}` — router-driven. Advances the state machine: REVIEW_PENDING↛APPROVED (user) → ANALYZING → SCRIPT_READY → SCRIPT_APPROVED (auto if channel policy=auto, else manual gate) → enqueue TTS. All content-item state transitions must go through the existing content-state service. Use the same `boss` handle pattern.
+- **3.5 TTS** (`tts` queue): Kokoro (self-hosted default, POST to KOKORO_URL) → Gemini TTS → OpenAI TTS chain via the router. Chunk long scripts at sentence boundaries, synth in parallel, concat WAVs + silence padding, EBU R128 normalize (worker already has ffmpeg wrapper — reuse). Voiceover archived as VOICEOVER asset; TTS_DONE.
+- **3.6 render/merge** (extend media pipeline): Demucs split (NOT installed → graceful path = keep original audio muted + VO overlay only), overlay VO, loudness normalize, mux → FINAL asset. Then auto-metadata (router METADATA task) → METADATA_READY.
+- **3.7 web**: AI keys page (per provider, add/remove w/ last-4 display + `revealOnce`-style write-only inputs), Prompt playground page (task picker + channel profile picker + input + streamed output), cost dashboard on account details (from `ai_usage_log` aggregations, joined with `AiOutput.hitCount` for cache-serve counts).
+
+### Phase 3 type/shape decisions (don't re-litigate)
+- **Router is the single entry point** — feature code never calls a provider directly. It only names a `TaskType`. Adding a provider = one adapter file + registry chain entry.
+- **PromptVersion.accountId=NULL** rows are the platform defaults; account-scoped rows override. Postgres NULLS DISTINCT means the unique constraint doesn't police NULLs — the app layer's `isActive` flag polices "one default per (task, name)".
+- **AIUsageLog is append-only** (no updatedAt). Every provider call OR cache hit writes a row (cache hits = zero tokens/cost). Cost aggregation lives in SQL (SUM over date ranges), not in-memory.
+- **Cache-miss & save races**: not yet handled. When 3.3/3.4 land, add a Postgres advisory lock keyed on cacheKey (`pg_advisory_xact_lock(hashtext(cacheKey))`) around the router's lookup→call→save so identical concurrent requests coalesce to one provider call (docs/05 §5 in-flight dedupe). Test this with a real Postgres in the 3.4 smoke.
+- **`STORAGE_ROOT` still not in root `.env`** (called out in the Phase 2 section) — Phase 3 TTS/render will also need it.
 
 ---
 
