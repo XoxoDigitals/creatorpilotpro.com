@@ -7,7 +7,7 @@
  */
 import { PrismaClient } from '@scp/db';
 import { rm } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 const prisma = new PrismaClient();
 const storageRoot = process.env.STORAGE_ROOT ? resolve(process.env.STORAGE_ROOT) : null;
