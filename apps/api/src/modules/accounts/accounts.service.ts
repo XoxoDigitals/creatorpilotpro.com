@@ -8,10 +8,11 @@ import { ConfigService } from '@nestjs/config';
 import type { AccountKind, Platform, Prisma, SocialAccount } from '@scp/db';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CryptoService } from '../../common/crypto/crypto.service';
-import { SettingsService } from '../system/settings.service';
-import { PostQuedClient, type PqPlatformAccount } from './postqued.client';
+import { AccountAccessService } from '../../common/account-access/account-access.service';
+import type { SessionUser } from '../../common/session/session.types';
 import { GoogleOAuthService, type GoogleTokenBundle } from './oauth/google.service';
 import { MetaOAuthService, type MetaPage } from './oauth/meta.service';
+import { TikTokOAuthService, type TikTokTokenBundle } from './oauth/tiktok.service';
 import { signState, verifyState } from './oauth/oauth-state.util';
 import {
   type AccountView,
@@ -23,18 +24,17 @@ import type {
   SchedulingPrefs,
   WizardChoices,
 } from './dto/account.dto';
+import {
+  composeChannelStyles,
+  parseStyleProfile,
+  styleProfileSchema,
+  defaultVoiceForLanguage,
+} from '@scp/shared';
 
 const KIND_BY_PLATFORM: Record<Platform, AccountKind> = {
   YOUTUBE: 'YT_CHANNEL',
   FACEBOOK: 'FB_PAGE',
   TIKTOK: 'TIKTOK_ACCOUNT',
-};
-
-/** PostQued lowercase platform → our enum. */
-const PLATFORM_BY_PQ: Record<string, Platform | undefined> = {
-  youtube: 'YOUTUBE',
-  facebook: 'FACEBOOK',
-  tiktok: 'TIKTOK',
 };
 
 const DEFAULT_SCHEDULING: SchedulingPrefs = {
@@ -65,25 +65,30 @@ export class AccountsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
-    private readonly settings: SettingsService,
-    private readonly postqued: PostQuedClient,
     private readonly google: GoogleOAuthService,
     private readonly meta: MetaOAuthService,
+    private readonly tiktok: TikTokOAuthService,
     private readonly config: ConfigService,
+    private readonly accountAccess: AccountAccessService,
   ) {}
 
   // --- CRUD -----------------------------------------------------------------
 
-  async list(): Promise<AccountView[]> {
+  async list(actor: SessionUser): Promise<AccountView[]> {
+    const idFilter = await this.accountAccess.accountIdFilter(actor);
     const rows = await this.prisma.client.socialAccount.findMany({
-      where: { deletedAt: null },
+      where: {
+        deletedAt: null,
+        ...(idFilter ? { id: idFilter } : {}),
+      },
       include: { profile: true },
       orderBy: { createdAt: 'asc' },
     });
     return rows.map(toAccountView);
   }
 
-  async get(id: string): Promise<AccountView> {
+  async get(id: string, actor: SessionUser): Promise<AccountView> {
+    await this.accountAccess.assertCanAccess(actor, id);
     const row = await this.loadActive(id);
     return toAccountView(row);
   }
@@ -105,15 +110,50 @@ export class AccountsService {
   }
 
   async patchProfile(id: string, dto: PatchProfileDto): Promise<AccountView> {
-    await this.loadActive(id);
+    const account = await this.loadActive(id);
+    const existing = account.profile;
+
+    let masterPrompt = dto.masterPrompt;
+    let writingStyle = dto.writingStyle;
+    let narrationStyle = dto.narrationStyle;
+    let styleProfileJson: Prisma.InputJsonValue | undefined;
+
+    if (dto.styleProfile !== undefined) {
+      const parsed = styleProfileSchema.safeParse(dto.styleProfile);
+      if (!parsed.success) {
+        throw new BadRequestException('Invalid styleProfile questionnaire payload');
+      }
+      styleProfileJson = parsed.data as unknown as Prisma.InputJsonValue;
+      const language = dto.language ?? existing?.language ?? 'en';
+      if (!parsed.data.masterPromptOverridden) {
+        const composed = composeChannelStyles(parsed.data.answers, language);
+        masterPrompt = composed.masterPrompt;
+        writingStyle = composed.writingStyle;
+        narrationStyle = composed.narrationStyle;
+      }
+    } else if (dto.language !== undefined && existing?.styleProfile) {
+      // Language change with an existing questionnaire: refresh composed fields
+      // unless the owner overrode the freeform master prompt.
+      const parsed = parseStyleProfile(existing.styleProfile);
+      if (!parsed.masterPromptOverridden) {
+        const composed = composeChannelStyles(parsed.answers, dto.language);
+        masterPrompt = composed.masterPrompt;
+        writingStyle = composed.writingStyle;
+        narrationStyle = composed.narrationStyle;
+      }
+    }
+
     const data: Prisma.ChannelProfileUpdateInput = {
-      masterPrompt: dto.masterPrompt,
-      writingStyle: dto.writingStyle,
-      narrationStyle: dto.narrationStyle,
+      masterPrompt,
+      writingStyle,
+      narrationStyle,
+      ...(styleProfileJson !== undefined ? { styleProfile: styleProfileJson } : {}),
       language: dto.language,
       voiceSettings: dto.voiceSettings as Prisma.InputJsonValue | undefined,
       titleTemplate: dto.titleTemplate,
       descriptionTemplate: dto.descriptionTemplate,
+      thumbnailReferencePrompt: dto.thumbnailReferencePrompt,
+      animationReferencePrompt: dto.animationReferencePrompt,
       defaultTags: dto.defaultTags,
       aiLabelDefault: dto.aiLabelDefault,
       approvalPolicy: dto.approvalPolicy as Prisma.InputJsonValue | undefined,
@@ -144,95 +184,6 @@ export class AccountsService {
     return row;
   }
 
-  // --- PostQued -------------------------------------------------------------
-
-  /** Integrations connected in PostQued that are not yet imported here. */
-  async listAvailablePostqued(platform?: Platform): Promise<
-    Array<{
-      pqAccountId: string;
-      platform: Platform;
-      username: string;
-      displayName: string | null;
-      avatarUrl: string | null;
-    }>
-  > {
-    const workspaceId = await this.postquedWorkspaceId();
-    const integrations = await this.postqued.listIntegrations(workspaceId);
-
-    const imported = new Set(
-      (
-        await this.prisma.client.socialAccount.findMany({
-          where: { connectionMethod: 'POSTQUED', deletedAt: null },
-          select: { externalId: true },
-        })
-      ).map((r) => r.externalId),
-    );
-
-    const out: Array<{
-      pqAccountId: string;
-      platform: Platform;
-      username: string;
-      displayName: string | null;
-      avatarUrl: string | null;
-    }> = [];
-    for (const acc of integrations as PqPlatformAccount[]) {
-      const p = PLATFORM_BY_PQ[acc.platform];
-      if (!p) continue; // platform we don't model (instagram, linkedin, …)
-      if (platform && p !== platform) continue;
-      if (imported.has(acc.id)) continue;
-      out.push({
-        pqAccountId: acc.id,
-        platform: p,
-        username: acc.username,
-        displayName: acc.displayName,
-        avatarUrl: acc.avatarUrl,
-      });
-    }
-    return out;
-  }
-
-  async connectPostqued(
-    dto: {
-      pqAccountId: string;
-      platform: Platform;
-      contentType: WizardChoices['contentType'];
-      dramasEnabled: boolean;
-      schedulingPrefs?: SchedulingPrefs;
-    },
-    addedById: string,
-  ): Promise<AccountView> {
-    const workspaceId = await this.postquedWorkspaceId();
-    const integrations = await this.postqued.listIntegrations(workspaceId);
-    const match = (integrations as PqPlatformAccount[]).find((a) => a.id === dto.pqAccountId);
-    if (!match) {
-      throw new BadRequestException('That PostQued integration was not found in the workspace.');
-    }
-    const platform = PLATFORM_BY_PQ[match.platform] ?? dto.platform;
-
-    return this.createAccountWithProfile({
-      platform,
-      kind: KIND_BY_PLATFORM[platform],
-      externalId: match.id,
-      name: match.displayName || match.username,
-      handle: match.username ? `@${match.username.replace(/^@/, '')}` : null,
-      avatarUrl: match.avatarUrl,
-      connectionMethod: 'POSTQUED',
-      authPayload: { pqAccountId: match.id, workspaceId: workspaceId ?? null },
-      tokenExpiresAt: null,
-      contentType: dto.contentType,
-      dramasEnabled: dto.dramasEnabled,
-      schedulingPrefs: dto.schedulingPrefs,
-      addedById,
-    });
-  }
-
-  private async postquedWorkspaceId(): Promise<string | undefined> {
-    const cfg = await this.settings.getDecrypted<{ workspaceId?: string }>(
-      'platform_apps.postqued',
-    );
-    return cfg?.workspaceId;
-  }
-
   // --- Google OAuth ---------------------------------------------------------
 
   async googleStartUrl(userId: string, wizard: WizardChoices): Promise<string> {
@@ -249,8 +200,11 @@ export class AccountsService {
     });
   }
 
-  /** Handle the Google callback; returns the created account id for redirect. */
-  async googleCallback(code: string, state: string): Promise<string> {
+  /** Handle the Google callback; returns account id + contentType for post-connect redirect. */
+  async googleCallback(
+    code: string,
+    state: string,
+  ): Promise<{ id: string; contentType: WizardChoices['contentType'] }> {
     const payload = verifyState<{ userId: string; wizard: WizardChoices }>(
       state,
       this.sessionSecret(),
@@ -275,7 +229,7 @@ export class AccountsService {
       schedulingPrefs: payload.wizard.schedulingPrefs,
       addedById: payload.userId,
     });
-    return view.id;
+    return { id: view.id, contentType: payload.wizard.contentType };
   }
 
   private googleAuthPayload(bundle: GoogleTokenBundle): Record<string, unknown> {
@@ -353,6 +307,98 @@ export class AccountsService {
     });
   }
 
+  // --- Manual connection (Phase 10) -----------------------------------------
+
+  async connectManual(
+    dto: {
+      platform: Platform;
+      name: string;
+      handle?: string;
+      externalId?: string;
+      contentType: WizardChoices['contentType'];
+      dramasEnabled: boolean;
+      schedulingPrefs?: SchedulingPrefs;
+    },
+    addedById: string,
+  ): Promise<AccountView> {
+    // Synthesise a unique-per-account external id when the Owner doesn't
+    // supply one — keeps `(platform, externalId)` unique constraints happy.
+    const externalId = dto.externalId?.trim() || `manual-${dto.platform.toLowerCase()}-${Date.now().toString(36)}`;
+
+    return this.createAccountWithProfile({
+      platform: dto.platform,
+      kind: KIND_BY_PLATFORM[dto.platform],
+      externalId,
+      name: dto.name.trim(),
+      handle: dto.handle?.trim() || null,
+      avatarUrl: null,
+      connectionMethod: 'MANUAL',
+      // No tokens — the Owner uploads by hand.
+      authPayload: { provider: 'manual' },
+      tokenExpiresAt: null,
+      contentType: dto.contentType,
+      dramasEnabled: dto.dramasEnabled,
+      schedulingPrefs: dto.schedulingPrefs,
+      addedById,
+    });
+  }
+
+  // --- TikTok OAuth ---------------------------------------------------------
+
+  async tiktokStartUrl(userId: string, wizard: WizardChoices): Promise<string> {
+    const cfg = await this.tiktok.getConfig();
+    const state = signState({ userId, provider: 'tiktok', wizard }, this.sessionSecret());
+    return this.tiktok.buildAuthUrl({
+      clientKey: cfg.clientKey,
+      redirectUri: this.redirectUri('tiktok'),
+      state,
+    });
+  }
+
+  /** Handle the TikTok callback; returns account id + contentType for post-connect redirect. */
+  async tiktokCallback(
+    code: string,
+    state: string,
+  ): Promise<{ id: string; contentType: WizardChoices['contentType'] }> {
+    const payload = verifyState<{ userId: string; wizard: WizardChoices }>(
+      state,
+      this.sessionSecret(),
+    );
+    if (!payload) throw new BadRequestException('Invalid or expired OAuth state.');
+
+    const bundle = await this.tiktok.exchangeCode(code, this.redirectUri('tiktok'));
+    const user = await this.tiktok.fetchUserInfo(bundle.accessToken);
+
+    const view = await this.createAccountWithProfile({
+      platform: 'TIKTOK',
+      kind: 'TIKTOK_ACCOUNT',
+      externalId: user.openId,
+      name: user.displayName,
+      handle: null,
+      avatarUrl: user.avatarUrl,
+      connectionMethod: 'OWN_APP',
+      authPayload: this.tiktokAuthPayload(bundle),
+      tokenExpiresAt: new Date(bundle.expiryDate),
+      contentType: payload.wizard.contentType,
+      dramasEnabled: payload.wizard.dramasEnabled,
+      schedulingPrefs: payload.wizard.schedulingPrefs,
+      addedById: payload.userId,
+    });
+    return { id: view.id, contentType: payload.wizard.contentType };
+  }
+
+  private tiktokAuthPayload(bundle: TikTokTokenBundle): Record<string, unknown> {
+    return {
+      provider: 'tiktok',
+      accessToken: bundle.accessToken,
+      refreshToken: bundle.refreshToken,
+      openId: bundle.openId,
+      scope: bundle.scope,
+      tokenType: bundle.tokenType,
+      expiryDate: bundle.expiryDate,
+    };
+  }
+
   // --- shared create ---------------------------------------------------------
 
   private async createAccountWithProfile(params: CreateAccountParams): Promise<AccountView> {
@@ -382,7 +428,12 @@ export class AccountsService {
         contentType: params.contentType,
         dramasEnabled: params.dramasEnabled,
         addedById: params.addedById,
-        profile: { create: { schedulingPrefs: scheduling } },
+        profile: {
+          create: {
+            schedulingPrefs: scheduling,
+            voiceSettings: defaultVoiceForLanguage('en') as unknown as Prisma.InputJsonValue,
+          },
+        },
       },
       update: {
         // Re-importing a previously disconnected account.
@@ -405,14 +456,18 @@ export class AccountsService {
     // Ensure a profile exists when we took the `update` branch (re-import).
     if (!row.profile) {
       await this.prisma.client.channelProfile.create({
-        data: { accountId: row.id, schedulingPrefs: scheduling },
+        data: {
+          accountId: row.id,
+          schedulingPrefs: scheduling,
+          voiceSettings: defaultVoiceForLanguage('en') as unknown as Prisma.InputJsonValue,
+        },
       });
       return toAccountView(await this.loadActive(row.id));
     }
     return toAccountView(row);
   }
 
-  private redirectUri(provider: 'google' | 'meta'): string {
+  private redirectUri(provider: 'google' | 'meta' | 'tiktok'): string {
     const web = this.config.get<string>('webAppUrl');
     return `${web}/api/v1/accounts/connect/${provider}/callback`;
   }

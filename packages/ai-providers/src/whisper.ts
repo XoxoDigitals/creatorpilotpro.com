@@ -8,6 +8,7 @@ import type { AIProvider, AIRequest, AIResult, AIErrorClass, PooledKey } from '.
 export class WhisperProvider implements AIProvider {
   readonly id = 'whisper';
   readonly supports: TaskType[] = [TaskType.TRANSCRIBE];
+  readonly requiresKey = false;
 
   async generate(_req: AIRequest, _key: PooledKey): Promise<AIResult> {
     throw new Error('TODO(ai-layer): WhisperProvider.generate not implemented yet');

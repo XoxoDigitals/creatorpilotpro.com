@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma, ScheduleSlot } from '@scp/db';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveTargetCopy } from '../publishing/publish-target.view';
 import { SlotPlannerService } from './slot-planner.service';
 import type { CreateSlotDto, PatchSlotDto } from './dto/schedule.dto';
 
@@ -25,7 +26,13 @@ function toSlotView(s: ScheduleSlot): ScheduleSlotView {
 }
 
 export interface UpcomingView {
-  scheduled: Array<{ publishTargetId: string; contentItemId: string; title: string; scheduledAt: string }>;
+  scheduled: Array<{
+    publishTargetId: string;
+    contentItemId: string;
+    title: string;
+    scheduledAt: string;
+    status: 'PENDING' | 'SCHEDULED' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | 'DRAFT';
+  }>;
   freeSlots: string[];
 }
 
@@ -83,18 +90,28 @@ export class SchedulingService {
   async upcoming(accountId: string): Promise<UpcomingView> {
     const targets = await this.prisma.client.publishTarget.findMany({
       where: { accountId, status: 'SCHEDULED', scheduledAt: { not: null } },
-      include: { contentItem: { select: { title: true } } },
+      include: {
+        contentItem: { select: { title: true, currentStep: true } },
+      },
       orderBy: { scheduledAt: 'asc' },
       take: 100,
     });
     const freeSlots = await this.planner.nextSlots(accountId, 10);
     return {
-      scheduled: targets.map((t) => ({
-        publishTargetId: t.id,
-        contentItemId: t.contentItemId,
-        title: t.contentItem.title,
-        scheduledAt: (t.scheduledAt as Date).toISOString(),
-      })),
+      scheduled: targets.map((t) => {
+        const copy = resolveTargetCopy(
+          t.metadataOverride,
+          t.contentItem.currentStep,
+          t.contentItem.title,
+        );
+        return {
+          publishTargetId: t.id,
+          contentItemId: t.contentItemId,
+          title: copy.title,
+          scheduledAt: (t.scheduledAt as Date).toISOString(),
+          status: t.status,
+        };
+      }),
       freeSlots: freeSlots.map((d) => d.toISOString()),
     };
   }

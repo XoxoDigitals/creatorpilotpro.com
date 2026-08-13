@@ -7,9 +7,16 @@
  * Uses the @scp/ai-providers router with Prisma-backed stores for keys, cache,
  * and usage logging. Kill switches checked before every call.
  */
+import { stat } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
-import { QUEUE, TaskType } from '@scp/shared';
-import { decryptSecret, loadMasterKey } from '@scp/shared';
+import {
+  QUEUE,
+  TaskType,
+  styleVersionFromProfile,
+  withChannelStyle,
+  type ChannelStyleFields,
+} from '@scp/shared';
+import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
 import {
   AIRouter,
   KeyPool,
@@ -20,6 +27,7 @@ import {
   cacheKeyFor,
   hashText,
   AllProvidersExhaustedError,
+  DEFAULT_GEMINI_TEXT_MODEL,
   type CacheStore,
   type UsageLogger,
   type ProviderRegistry,
@@ -27,22 +35,36 @@ import {
   type KeyState,
   type AIProvider,
   type AIResult,
+  type AIInput,
 } from '@scp/ai-providers';
 import type { AiJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.js';
+import {
+  builtinSystemPrompt,
+  extractNarrationScript,
+  repurposePromptVersion,
+  schemaForRepurposeTask,
+} from './repurpose-prompts.js';
+import {
+  peekGeminiApiKey,
+  prepareAnalysisMedia,
+  type PreparedAnalysisMedia,
+} from './video-for-analysis.js';
 
 // ── Worker-side Prisma stores ───────────────────────────────────────────────
 
 function buildKeyStore(prisma: PrismaClient, masterKey: Buffer): KeyStore {
   return {
     async listByProvider(providerId: string): Promise<KeyState[]> {
+      // `providerId` is the provider slug ("gemini"), not the ai_providers cuid —
+      // match on the relation's name, not the raw FK.
       const rows = await prisma.aiKey.findMany({
-        where: { providerId, status: { not: 'DISABLED' } },
+        where: { provider: { name: providerId }, status: { not: 'DISABLED' } },
         orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
       });
       return rows.map((r) => ({
         id: r.id,
-        providerId: r.providerId,
+        providerId,
         secret: decryptSecret(r.keyEnc, masterKey),
         label: r.label,
         status: r.status as KeyState['status'],
@@ -208,14 +230,72 @@ async function getActivePrompt(
   return global ? { template: global.template, version: global.version } : null;
 }
 
-// ── Resolve accountId from content item's publish targets ────────────────────
+// ── Resolve accountId (+ platform) for channel style & metadata ──────────────
 
-async function resolveAccountId(prisma: PrismaClient, contentItemId: string): Promise<string | null> {
+/**
+ * Prefer an existing publish target, then the watched-source target account
+ * (REPURPOSED ingest), then the linked idea's account (AI packages).
+ */
+async function resolveAccountContext(
+  prisma: PrismaClient,
+  contentItemId: string,
+): Promise<{ accountId: string; platform: string } | null> {
   const target = await prisma.publishTarget.findFirst({
     where: { contentItemId },
-    select: { accountId: true },
+    select: { accountId: true, account: { select: { platform: true } } },
   });
-  return target?.accountId ?? null;
+  if (target?.accountId) {
+    return { accountId: target.accountId, platform: target.account.platform };
+  }
+
+  const item = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    select: {
+      idea: { select: { accountId: true, account: { select: { platform: true } } } },
+      sourceVideo: {
+        select: {
+          watchedSource: {
+            select: {
+              targetAccountId: true,
+              targetAccount: { select: { platform: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const watchedId = item?.sourceVideo?.watchedSource?.targetAccountId;
+  const watchedPlatform = item?.sourceVideo?.watchedSource?.targetAccount?.platform;
+  if (watchedId && watchedPlatform) {
+    return { accountId: watchedId, platform: watchedPlatform };
+  }
+
+  const ideaId = item?.idea?.accountId;
+  const ideaPlatform = item?.idea?.account?.platform;
+  if (ideaId && ideaPlatform) {
+    return { accountId: ideaId, platform: ideaPlatform };
+  }
+
+  return null;
+}
+
+async function loadChannelStyle(
+  prisma: PrismaClient,
+  accountId: string | null,
+): Promise<ChannelStyleFields | null> {
+  if (!accountId) return null;
+  const profile = await prisma.channelProfile.findUnique({ where: { accountId } });
+  if (!profile) return null;
+  return {
+    masterPrompt: profile.masterPrompt,
+    writingStyle: profile.writingStyle,
+    narrationStyle: profile.narrationStyle,
+    language: profile.language,
+    styleProfile: profile.styleProfile,
+    thumbnailReferencePrompt: profile.thumbnailReferencePrompt,
+    animationReferencePrompt: profile.animationReferencePrompt,
+  };
 }
 
 // ── Main AI processor ───────────────────────────────────────────────────────
@@ -226,7 +306,13 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
 
   const item = await prisma.contentItem.findUnique({
     where: { id: contentItemId },
-    include: { sourceVideo: true },
+    include: {
+      sourceVideo: true,
+      // Load FINAL + ORIGINAL for VIDEO_ANALYSIS — analyze reads the actual
+      // pixels, not just the title/URL, so we can identify beats, characters,
+      // pacing, etc. (docs/05 §3 — Gemini multimodal input).
+      assets: { where: { kind: { in: ['FINAL', 'ORIGINAL'] } } },
+    },
   });
   if (!item) {
     // eslint-disable-next-line no-console
@@ -290,56 +376,154 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
     registry: buildRegistry(),
   });
 
-  const accountId = await resolveAccountId(prisma, contentItemId);
+  const accountCtx = await resolveAccountContext(prisma, contentItemId);
+  const accountId = accountCtx?.accountId ?? null;
+  const platform = accountCtx?.platform ?? null;
+  const channelStyle = await loadChannelStyle(prisma, accountId);
   const prompt = await getActivePrompt(prisma, spec.task, 'default', accountId);
-  const systemPrompt = prompt?.template ?? `You are a video content processing AI. Task: ${spec.task}`;
-  const promptVersion = prompt?.version ?? 1;
+  const systemPrompt = withChannelStyle(
+    prompt?.template ??
+      builtinSystemPrompt(spec.task, channelStyle?.language, platform),
+    channelStyle,
+  );
+  const promptVersion = repurposePromptVersion(prompt?.version);
 
   // Use currentStep (Json) to store/retrieve AI results
   const currentStep = (item.currentStep ?? {}) as Record<string, unknown>;
 
+  let media: PreparedAnalysisMedia | null = null;
   let inputText: string;
+  let runInput: AIInput;
+
   if (kind === 'analyze') {
+    // Prefer FINAL (trimmed+normalized) then ORIGINAL for provenance.
+    const asset =
+      item.assets.find((a) => a.kind === 'FINAL' && a.localPath) ??
+      item.assets.find((a) => a.kind === 'ORIGINAL' && a.localPath);
+
+    const durationSec =
+      typeof item.sourceVideo?.durationSec === 'number' ? item.sourceVideo.durationSec : null;
+
+    if (asset?.localPath) {
+      try {
+        const s = await stat(asset.localPath);
+        const apiKey = await peekGeminiApiKey(async () =>
+          (await keyStore.listByProvider('gemini')).map((k) => ({
+            secret: k.secret,
+            status: k.status,
+          })),
+        );
+        media = await prepareAnalysisMedia({
+          videoPath: asset.localPath,
+          sizeBytes: s.size,
+          durationSec,
+          apiKey,
+          contentItemId,
+        });
+        if (media.mode === 'metadata_only' || media.mode === 'frames') {
+          await raiseIncident(prisma, {
+            kind: 'SYSTEM',
+            severity: 'LOW',
+            contentItemId,
+            title:
+              media.mode === 'frames'
+                ? `AI analyze: using ${media.detail?.frameCount ?? '?'} timeline frame samples (full-file upload unavailable)`
+                : `AI analyze: video ${s.size} bytes — analyzing metadata only`,
+            detail: media.detail ?? { assetPath: asset.localPath, sizeBytes: s.size },
+          });
+        }
+      } catch (err) {
+        await raiseIncident(prisma, {
+          kind: 'SYSTEM',
+          severity: 'LOW',
+          contentItemId,
+          title: `AI analyze: could not read video for multimodal upload — falling back to metadata`,
+          detail: { error: err instanceof Error ? err.message : String(err) },
+        });
+        media = {
+          mode: 'metadata_only',
+          parts: [],
+          cleanup: async () => {},
+        };
+      }
+    }
+
     inputText = JSON.stringify({
       title: item.title,
       sourceUrl: item.sourceVideo?.sourceUrl,
       uploaderName: item.sourceVideo?.uploaderName,
-      durationSec: item.sourceVideo?.durationSec,
+      durationSec,
+      mediaMode: media?.mode ?? 'metadata_only',
+      instruction:
+        'Analyze the full video timeline. Return beat-by-beat segments covering start→end. Prefer the attached video/frames over metadata.',
     });
+
+    if (media && media.parts.length > 0) {
+      runInput = {
+        kind: 'multimodal',
+        parts: [{ text: inputText }, ...media.parts],
+      };
+    } else {
+      runInput = { kind: 'text', text: inputText };
+    }
   } else if (kind === 'narration') {
     inputText = JSON.stringify({
       title: item.title,
+      durationSec: item.sourceVideo?.durationSec ?? null,
       analysis: currentStep.analysis ?? item.title,
+      instruction:
+        'Write a hooky storytelling narration script timed to the analysis segments and video length. Output JSON with script + hook.',
     });
+    runInput = { kind: 'text', text: inputText };
   } else {
+    // metadata — platform shapes title/description/tags for the SocialAccount.
     inputText = JSON.stringify({
       title: item.title,
+      platform: platform ?? 'UNKNOWN',
       script: currentStep.script ?? item.title,
+      analysis: currentStep.analysis ?? null,
+      // Present when the owner clicks Regenerate — busts the AI response cache.
+      ...(currentStep.metadataNonce != null
+        ? { regenerateNonce: currentStep.metadataNonce }
+        : {}),
+      instruction:
+        'Write publish-ready title, description, and tags optimized for the given platform. Follow channel style. Return JSON only.',
     });
+    runInput = { kind: 'text', text: inputText };
   }
 
   const cacheKey = cacheKeyFor({
     task: spec.task as any,
-    model: 'gemini-2.5-flash',
+    model: DEFAULT_GEMINI_TEXT_MODEL,
     promptVersion,
-    styleVersion: 1,
-    inputContentHash: hashText(inputText),
+    styleVersion: styleVersionFromProfile(channelStyle),
+    // Attach the video's md5 to the cache key so the same clip re-uses its
+    // analysis but a different clip does not collide. Include media mode so
+    // a later full-file analyze does not collide with an older frames-only run.
+    inputContentHash: hashText(
+      inputText + (item.sourceVideo?.md5 ?? '') + (media?.mode ?? kind),
+    ),
   });
+
+  const schema = schemaForRepurposeTask(spec.task);
 
   try {
     const result: AIResult = await router.run({
       task: spec.task as any,
-      model: 'gemini-2.5-flash',
+      model: DEFAULT_GEMINI_TEXT_MODEL,
       system: systemPrompt,
-      input: { kind: 'text', text: inputText },
+      input: runInput,
+      ...(schema ? { schema } : {}),
       cacheKey,
       contentItemId,
+      ...(kind === 'analyze' || kind === 'narration' ? { maxTokens: 8192 } : {}),
     });
 
     const updatedStep = { ...currentStep };
 
     if (kind === 'analyze') {
       updatedStep.analysis = result.output;
+      updatedStep.analysisMediaMode = media?.mode ?? 'metadata_only';
       await prisma.contentItem.update({
         where: { id: contentItemId },
         data: { currentStep: updatedStep as any },
@@ -348,9 +532,14 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
         singletonKey: `narration-${contentItemId}`,
       });
       // eslint-disable-next-line no-console
-      console.log(`[worker:ai] analyze done for ${contentItemId} — enqueued narration`);
+      console.log(
+        `[worker:ai] analyze done for ${contentItemId} (media=${media?.mode ?? 'none'}) — enqueued narration`,
+      );
     } else if (kind === 'narration') {
-      updatedStep.script = result.output;
+      // Persist plain TTS-ready script; keep structured output for review UI.
+      const scriptText = extractNarrationScript(result.output);
+      updatedStep.script = scriptText;
+      updatedStep.narration = result.output;
       await prisma.contentItem.update({
         where: { id: contentItemId },
         data: { currentStep: updatedStep as any, status: 'SCRIPT_READY' },
@@ -363,13 +552,32 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
         where: { id: contentItemId },
         data: { currentStep: updatedStep as any, status: 'METADATA_READY' },
       });
+      // Chain A/B suggestions (Phase 7 #10) — non-blocking, uses cached input.
+      await boss.send(QUEUE.AI, { kind: 'ab_suggestions', contentItemId }, {
+        singletonKey: `ab-${contentItemId}`,
+      });
       // eslint-disable-next-line no-console
-      console.log(`[worker:ai] metadata done for ${contentItemId}`);
+      console.log(`[worker:ai] metadata done for ${contentItemId} — enqueued A/B suggestions`);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
     console.error(`[worker:ai] ${kind} failed for ${contentItemId}:`, errMsg);
+
+    // Transient upstream failures (Gemini 503 "high demand", rate limits, quota
+    // resets) shouldn't burn the item's slot in FAILED — pg-boss will re-queue
+    // this job with exponential backoff, and the analyze step will re-run against
+    // whichever key/model recovers first. Only permanent failures kill the item.
+    const isTransient =
+      err instanceof AllProvidersExhaustedError && err.allTransient;
+    if (isTransient) {
+      // Keep the item where it is (ANALYZING/etc.); throw so pg-boss retries.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[worker:ai] ${kind} transient failure for ${contentItemId} — letting pg-boss retry`,
+      );
+      throw err;
+    }
 
     await prisma.contentItem.update({
       where: { id: contentItemId },
@@ -377,11 +585,24 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
     });
 
     const incidentKind = err instanceof AllProvidersExhaustedError ? 'RATE_LIMIT' as const : 'SYSTEM' as const;
+    // AllProvidersExhaustedError's message is only a summary ("tried gemini") —
+    // the real per-provider reasons live on `.attempts`. Record them or the
+    // incident is undiagnosable.
+    const attempts =
+      err instanceof AllProvidersExhaustedError ? err.attempts : undefined;
+    if (attempts?.length) {
+      // eslint-disable-next-line no-console
+      console.error(`[worker:ai] provider attempts:`, JSON.stringify(attempts));
+    }
     await raiseIncident(prisma, {
       kind: incidentKind,
       contentItemId,
       title: `AI ${kind} failed: ${errMsg.slice(0, 200)}`,
-      detail: { error: errMsg, task: spec.task },
+      detail: { error: errMsg, task: spec.task, ...(attempts ? { attempts } : {}) },
     });
+  } finally {
+    if (media) {
+      await media.cleanup().catch(() => undefined);
+    }
   }
 }

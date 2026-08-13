@@ -1,17 +1,23 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import Link from 'next/link';
+import type { Route } from 'next';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
-import { manualPublish } from '@/lib/api-data';
-
-type Mode = 'QUEUE_SLOT' | 'NOW';
+import {
+  getApiAccount,
+  manualPublish,
+  publishDefaultsFromProfile,
+  type ChannelScheduleMode,
+} from '@/lib/api-data';
 
 /**
  * Manual upload → publish (docs/06 §2). Creates a content item, streams the file
- * into the hot tier as its FINAL asset, then schedules a publish target for the
- * account (next free slot, or immediately).
+ * into the hot tier as its FINAL asset, then schedules publish target(s) using
+ * this account's channel-settings defaults (timing + crosspost). Content stays
+ * in REVIEW_PENDING.
  */
 export function ManualUploadModal({
   open,
@@ -28,13 +34,27 @@ export function ManualUploadModal({
   const fileRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const [mode, setMode] = useState<Mode>('QUEUE_SLOT');
+  const [mode, setMode] = useState<ChannelScheduleMode>('QUEUE_SLOT');
+  const [crosspostIds, setCrosspostIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getApiAccount(accountId).then((account) => {
+      if (cancelled || !account) return;
+      const defaults = publishDefaultsFromProfile(account.profile);
+      setMode(defaults.scheduleMode);
+      setCrosspostIds(defaults.crosspostAccountIds.filter((id) => id !== accountId));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, accountId]);
 
   const reset = () => {
     setTitle('');
     setFile(null);
-    setMode('QUEUE_SLOT');
     if (fileRef.current) fileRef.current.value = '';
   };
 
@@ -49,9 +69,19 @@ export function ManualUploadModal({
     if (!file) return toast('Choose a video file to upload.', 'error');
     setBusy(true);
     try {
-      await manualPublish({ title: title.trim(), file, accountId, scheduleMode: mode });
+      await manualPublish({
+        title: title.trim(),
+        file,
+        accountId,
+        additionalAccountIds: crosspostIds,
+        scheduleMode: mode,
+      });
+      const n = 1 + crosspostIds.length;
+      const dest = n > 1 ? ` to ${n} channels` : '';
       toast(
-        mode === 'NOW' ? 'Uploaded — publishing now' : 'Uploaded — scheduled to the next free slot',
+        mode === 'NOW'
+          ? `Uploaded — queued for Review, then publish${dest}`
+          : `Uploaded — queued for Review, then next free slot${dest}`,
         'success',
       );
       reset();
@@ -69,7 +99,7 @@ export function ManualUploadModal({
       open={open}
       onClose={close}
       title="Upload a video"
-      description="Publishes to this account via its configured connection."
+      description="Publishes using this channel’s timing and crosspost defaults from Settings. Goes through Review before publish."
       footer={
         <div className="flex justify-end gap-2">
           <Button size="sm" onClick={close} disabled={busy}>
@@ -104,32 +134,20 @@ export function ManualUploadModal({
           />
         </label>
 
-        <fieldset className="space-y-2">
-          <span className="block font-medium text-zinc-700">When to publish</span>
-          {(
-            [
-              ['QUEUE_SLOT', 'Next free slot', "Uses this account's schedule rules"],
-              ['NOW', 'Immediately', 'Dispatches as soon as the worker picks it up'],
-            ] as const
-          ).map(([value, label, hint]) => (
-            <label
-              key={value}
-              className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 px-3 py-2 hover:border-zinc-300"
-            >
-              <input
-                type="radio"
-                name="mode"
-                checked={mode === value}
-                onChange={() => setMode(value)}
-                className="mt-0.5"
-              />
-              <span>
-                <span className="block font-medium text-zinc-800">{label}</span>
-                <span className="block text-xs text-zinc-500">{hint}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+        <p className="text-xs text-zinc-500">
+          Timing and crosspost destinations come from{' '}
+          <Link
+            href={`/accounts/${accountId}/settings` as Route}
+            className="font-medium text-indigo-700 underline-offset-2 hover:underline"
+          >
+            channel settings
+          </Link>
+          {crosspostIds.length > 0
+            ? ` · also posting to ${crosspostIds.length} other channel${crosspostIds.length === 1 ? '' : 's'}`
+            : ''}
+          {` · ${mode === 'NOW' ? 'immediately after Review Approve' : 'next free slot'}`}
+          .
+        </p>
       </div>
     </Modal>
   );

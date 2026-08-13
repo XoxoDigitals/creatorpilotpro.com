@@ -15,19 +15,24 @@ import { join } from 'node:path';
 import { stat, mkdir, unlink } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
 import { QUEUE } from '@scp/shared';
+import { resolveDemucsBinary } from '@scp/shared/bin';
 import { Ffmpeg } from './media/ffmpeg.js';
 import { spawnRunner } from './media/ffmpeg.js';
 import type { AiJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident } from './publish-support.js';
+import { archiveAssetToDriveIfConfigured } from './gdrive-archive.js';
 
 const STORAGE_ROOT = process.env.STORAGE_ROOT ?? '';
-const DEMUCS_PATH = process.env.DEMUCS_PATH ?? 'demucs';
+
+function demucsBin(): string {
+  return resolveDemucsBinary();
+}
 
 // ── Demucs check ────────────────────────────────────────────────────────────
 
 async function demucsAvailable(): Promise<boolean> {
   try {
-    const res = await spawnRunner(DEMUCS_PATH, ['--help']);
+    const res = await spawnRunner(demucsBin(), ['--help']);
     return res.code === 0;
   } catch {
     return false;
@@ -36,7 +41,7 @@ async function demucsAvailable(): Promise<boolean> {
 
 async function runDemucs(inputPath: string, outputDir: string): Promise<string | null> {
   try {
-    const res = await spawnRunner(DEMUCS_PATH, [
+    const res = await spawnRunner(demucsBin(), [
       '-n', 'htdemucs',
       '--two-stems', 'vocals',
       '-o', outputDir,
@@ -218,8 +223,10 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           storageState: 'LOCAL',
         },
       });
+      // Prefer Drive as system of record when STORAGE_BACKEND=gdrive.
+      await archiveAssetToDriveIfConfigured(existingFinal.id);
     } else {
-      await prisma.asset.create({
+      const created = await prisma.asset.create({
         data: {
           contentItemId,
           kind: 'FINAL',
@@ -228,6 +235,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           bytes: BigInt(finalStats.size),
         },
       });
+      await archiveAssetToDriveIfConfigured(created.id);
     }
 
     // Step 5: Transition to RENDERED
@@ -239,6 +247,13 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     // Step 6: Auto-metadata via AI queue
     await boss.send(QUEUE.AI, { kind: 'metadata', contentItemId } as AiJob, {
       singletonKey: `metadata-${contentItemId}`,
+    });
+
+    // Step 7: Auto-subtitles (docs/10 backlog #9). Fire-and-forget on the
+    // MEDIA queue so it doesn't block metadata. Whisper is optional — if not
+    // installed the processor logs and returns without failing.
+    await boss.send(QUEUE.MEDIA, { kind: 'subtitles', contentItemId }, {
+      singletonKey: `subtitles-${contentItemId}`,
     });
 
     // eslint-disable-next-line no-console

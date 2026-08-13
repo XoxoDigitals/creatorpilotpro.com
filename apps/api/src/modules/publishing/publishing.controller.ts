@@ -1,5 +1,8 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Param, Patch, Post, Query, Res, StreamableFile } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
+import { createReadStream } from 'node:fs';
+import { basename } from 'node:path';
 import { PublishingService } from './publishing.service';
 import type { PublishTargetView } from './publish-target.view';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -51,5 +54,32 @@ export class PublishingController {
     @Body(new ZodBody(patchTargetSchema)) body: PatchTargetDto,
   ): Promise<PublishTargetView> {
     return this.publishing.patchTarget(id, body);
+  }
+
+  // ── Manual mode (Phase 10) ─────────────────────────────────────────────────
+
+  /** Stream the final rendered asset for a manual-account target. */
+  @Get('target/:id/download')
+  async downloadFinal(
+    @Param('id') id: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<StreamableFile> {
+    const info = await this.publishing.getFinalAssetForDownload(id);
+    if (!info) throw new NotFoundException('Final asset not available for this target.');
+    void reply.header('content-disposition', `attachment; filename="${basename(info.path)}"`);
+    void reply.header('content-type', info.mimeType);
+    if (info.bytes != null) void reply.header('content-length', String(info.bytes));
+    return new StreamableFile(createReadStream(info.path));
+  }
+
+  /** Owner marks a manual target as published after uploading it by hand. */
+  @Post('target/:id/mark-published')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('publish.target.mark_published', 'PublishTarget')
+  markPublished(
+    @Param('id') id: string,
+    @Body('platformPostId') platformPostId?: string,
+  ): Promise<PublishTargetView> {
+    return this.publishing.markManuallyPublished(id, platformPostId);
   }
 }

@@ -39,3 +39,4 @@ coverage/
 
 # Data / media working dirs
 /data/
+.data/

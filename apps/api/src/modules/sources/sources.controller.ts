@@ -44,6 +44,13 @@ export class SourcesController {
     return this.sources.listVideos({ sourceId });
   }
 
+  @Post('video/:id/retry-download')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('source.video.retry_download', 'SourceVideo')
+  retryDownload(@Param('id') id: string): Promise<SourceVideoView> {
+    return this.sources.retryDownload(id);
+  }
+
   @Patch('video/:id/rights')
   @Audit('source.video.rights', 'SourceVideo')
   setRights(

@@ -1,8 +1,14 @@
 import { Module } from '@nestjs/common';
+import { DramasController } from './dramas.controller';
+import { DramasService } from './dramas.service';
 
 /**
- * Dramas module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
+ * Dramas module (Phase 4). Drama series CRUD, bible generation, episode
+ * generation on demand. QueueModule (producer) is global, so no imports needed.
  */
-@Module({})
+@Module({
+  controllers: [DramasController],
+  providers: [DramasService],
+  exports: [DramasService],
+})
 export class DramasModule {}

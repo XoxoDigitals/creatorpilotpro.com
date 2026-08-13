@@ -1,6 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { StatCard } from '@/components/ui/stat-card';
+import { Select } from '@/components/ui/input';
+import { useToast } from '@/components/ui/toast';
+import { cn } from '@/lib/cn';
 import { api, ApiError } from '@/lib/api';
 
 interface UsageStats {
@@ -33,11 +37,11 @@ function periodToRange(period: Period): { since?: string; until?: string } {
 }
 
 export default function CostDashboardPage() {
+  const toast = useToast();
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [providers, setProviders] = useState<AiProviderView[]>([]);
   const [period, setPeriod] = useState<Period>('7d');
   const [providerId, setProviderId] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -55,20 +59,14 @@ export default function CostDashboardPage() {
       ]);
       setStats(s);
       setProviders(p);
-      setError(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load usage stats');
+      toast(err instanceof ApiError ? err.message : 'Failed to load usage stats', 'error');
     } finally {
       setLoading(false);
     }
-  }, [period, providerId]);
+  }, [period, providerId, toast]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const inputCls =
-    'rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none';
+  useEffect(() => { void load(); }, [load]);
 
   const cacheRate = stats && stats.totalCalls > 0
     ? ((stats.cacheHits / stats.totalCalls) * 100).toFixed(1)
@@ -76,105 +74,62 @@ export default function CostDashboardPage() {
 
   return (
     <div>
-      <h2 className="mb-1 text-lg font-medium text-slate-200">AI Cost Dashboard</h2>
-      <p className="mb-6 text-sm text-slate-400">
+      <p className="mb-6 text-sm text-zinc-500">
         Token usage, costs, and cache efficiency from the AI usage log.
       </p>
 
-      {error && (
-        <p className="mb-4 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-300">
-          {error}
-        </p>
-      )}
-
       {/* Filters */}
-      <div className="mb-6 flex flex-wrap items-center gap-4">
-        <div className="flex gap-1">
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <div className="flex rounded-md border border-zinc-300 bg-white p-0.5">
           {(['24h', '7d', '30d', 'all'] as Period[]).map((p) => (
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                period === p
-                  ? 'bg-indigo-600 text-white'
-                  : 'border border-slate-700 text-slate-400 hover:text-slate-200'
-              }`}
+              className={cn(
+                'rounded px-3 py-1 text-xs font-medium transition-colors',
+                period === p ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-800',
+              )}
             >
               {p === 'all' ? 'All time' : p}
             </button>
           ))}
         </div>
-        <select
-          value={providerId}
-          onChange={(e) => setProviderId(e.target.value)}
-          className={inputCls}
-        >
+        <Select value={providerId} onChange={(e) => setProviderId(e.target.value)} className="w-auto">
           <option value="">All providers</option>
           {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
+            <option key={p.id} value={p.id}>{p.name}</option>
           ))}
-        </select>
+        </Select>
       </div>
 
-      {loading && <p className="text-sm text-slate-500">Loading…</p>}
+      {loading && <p className="text-sm text-zinc-500">Loading…</p>}
 
       {stats && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatTile
-            label="Total calls"
-            value={stats.totalCalls.toLocaleString()}
-          />
-          <StatTile
+          <StatCard label="Total calls" value={stats.totalCalls.toLocaleString()} />
+          <StatCard
             label="Cache hits"
             value={`${stats.cacheHits.toLocaleString()} (${cacheRate}%)`}
-            accent={Number(cacheRate) > 50 ? 'green' : undefined}
+            hint={Number(cacheRate) > 50 ? 'good' : ''}
           />
-          <StatTile
+          <StatCard
             label="Tokens"
-            value={`${(stats.totalTokensIn + stats.totalTokensOut).toLocaleString()}`}
-            sub={`${stats.totalTokensIn.toLocaleString()} in / ${stats.totalTokensOut.toLocaleString()} out`}
+            value={(stats.totalTokensIn + stats.totalTokensOut).toLocaleString()}
+            hint={`${stats.totalTokensIn.toLocaleString()} in / ${stats.totalTokensOut.toLocaleString()} out`}
           />
-          <StatTile
+          <StatCard
             label="Estimated cost"
             value={`$${stats.estimatedCostUsd.toFixed(4)}`}
-            accent={stats.estimatedCostUsd > 1 ? 'amber' : undefined}
+            hint={stats.estimatedCostUsd > 1 ? 'over $1 in range' : ''}
           />
         </div>
       )}
 
       {stats && stats.totalCalls === 0 && (
-        <p className="mt-8 text-center text-sm text-slate-500">
+        <p className="mt-8 text-center text-sm text-zinc-500">
           No AI usage recorded yet. Add API keys and run the pipeline to see stats here.
         </p>
       )}
-    </div>
-  );
-}
-
-function StatTile({
-  label,
-  value,
-  sub,
-  accent,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  accent?: 'green' | 'amber';
-}) {
-  const valueColor = accent === 'green'
-    ? 'text-emerald-300'
-    : accent === 'amber'
-      ? 'text-amber-300'
-      : 'text-slate-100';
-
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold ${valueColor}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-slate-500">{sub}</p>}
     </div>
   );
 }

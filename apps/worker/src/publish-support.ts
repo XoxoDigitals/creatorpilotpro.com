@@ -1,64 +1,31 @@
 /**
  * Shared helpers for the publish + verify processors (docs/06 §2, §4):
- * master-key loading, PostQued app-key decryption, per-account auth decryption,
- * adapter construction, metadata resolution, and incident/notification writes.
+ * master-key loading, per-account auth decryption, adapter construction,
+ * metadata resolution, and incident/notification writes.
  *
- * Mirrors apps/worker/src/maintenance.ts for the encrypted-settings + notify
- * patterns so the two processors stay consistent.
+ * As of Phase 9 all adapters talk to the platforms directly:
+ *   YouTube  → Google YouTube Data API v3 (per-channel OAuth token)
+ *   Facebook → Meta Graph vLatest (page access token)
+ *   TikTok   → native adapter is stubbed until the Content Posting API is wired
  */
 import { extname } from 'node:path';
 import { getPrisma, type PrismaClient } from '@scp/db';
-import { decryptSecret, loadMasterKey } from '@scp/shared';
+import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
 import {
   FacebookAdapter,
-  PostQuedAdapter,
+  ManualAdapter,
+  TikTokAdapter,
   YouTubeAdapter,
   type LocalFile,
   type PublishAdapter,
   type PublishTarget as AdapterTarget,
-  type PqHeaderStyle,
   type ResolvedMetadata,
 } from '@scp/publish-adapters';
-
-const POSTQUED_BASE_URL = process.env.POSTQUED_BASE_URL ?? 'https://api.postqued.com';
 
 /** Load the AES master key from env, or null if unset (worker then no-ops). */
 export function getMasterKey(): Buffer | null {
   const raw = process.env.MASTER_KEY;
   return raw ? loadMasterKey(raw) : null;
-}
-
-function getEnc(value: unknown): string | null {
-  if (typeof value === 'object' && value && '__enc' in value) {
-    const v = (value as { __enc?: unknown }).__enc;
-    return typeof v === 'string' ? v : null;
-  }
-  return null;
-}
-
-export interface PostquedAppConfig {
-  apiKey: string;
-  workspaceId?: string;
-}
-
-/** Read + decrypt the owner's PostQued API key (platform_apps.postqued), or null. */
-export async function loadPostquedConfig(
-  prisma: PrismaClient,
-  masterKey: Buffer,
-): Promise<PostquedAppConfig | null> {
-  const row = await prisma.systemSetting.findUnique({ where: { key: 'platform_apps.postqued' } });
-  const enc = getEnc(row?.value);
-  if (!enc) return null;
-  try {
-    const cfg = JSON.parse(decryptSecret(enc, masterKey)) as {
-      apiKey?: string;
-      workspaceId?: string;
-    };
-    if (!cfg.apiKey) return null;
-    return { apiKey: cfg.apiKey, workspaceId: cfg.workspaceId };
-  } catch {
-    return null;
-  }
 }
 
 /** Decrypt a SocialAccount.authPayload envelope into a plain object (or {}). */
@@ -74,60 +41,22 @@ export function decryptAccountAuth(
   }
 }
 
-/** Cache the working PostQued header style per API key (avoids re-probing every job). */
-const headerStyleCache = new Map<string, PqHeaderStyle>();
-
-/**
- * Probe GET /v2/ping with each header style; cache and return the first that
- * authenticates. Defaults to 'bearer' if the probe is inconclusive — the real
- * publish call then surfaces any auth error through the retry matrix.
- */
-export async function detectHeaderStyle(apiKey: string): Promise<PqHeaderStyle> {
-  const cached = headerStyleCache.get(apiKey);
-  if (cached) return cached;
-  for (const style of ['bearer', 'x-api-key'] as PqHeaderStyle[]) {
-    try {
-      const res = await fetch(`${POSTQUED_BASE_URL}/v2/ping`, {
-        method: 'GET',
-        headers:
-          style === 'bearer'
-            ? { accept: 'application/json', Authorization: `Bearer ${apiKey}` }
-            : { accept: 'application/json', 'x-api-key': apiKey },
-      });
-      if (res.ok) {
-        headerStyleCache.set(apiKey, style);
-        return style;
-      }
-    } catch {
-      /* try the next style */
-    }
-  }
-  return 'bearer';
-}
-
 export type AdapterPlatform = 'YOUTUBE' | 'FACEBOOK' | 'TIKTOK';
+export type AdapterConnectionMethod = 'OWN_APP' | 'MANUAL' | 'POSTQUED';
 
 /**
- * Build the publish adapter for a platform. YouTube + TikTok publish via PostQued
- * (Owner decision, docs/06 §2); Facebook publishes Reels directly via Meta Graph.
+ * Build the publish adapter for a platform + connection method. MANUAL accounts
+ * short-circuit publishing so the Owner can download the file and upload it by
+ * hand; every other method routes to the platform-native adapter.
  */
 export function buildAdapter(
   platform: AdapterPlatform,
-  postqued: { apiKey: string; headerStyle: PqHeaderStyle; workspaceId?: string } | null,
+  connectionMethod: AdapterConnectionMethod = 'OWN_APP',
 ): PublishAdapter {
+  if (connectionMethod === 'MANUAL') return new ManualAdapter(platform);
   if (platform === 'FACEBOOK') return new FacebookAdapter();
-  if (!postqued) {
-    throw new Error(
-      'PostQued API key is not configured; cannot publish YouTube/TikTok. Add it in Settings → Platform Apps.',
-    );
-  }
-  const config = {
-    baseUrl: POSTQUED_BASE_URL,
-    apiKey: postqued.apiKey,
-    headerStyle: postqued.headerStyle,
-    ...(postqued.workspaceId ? { workspaceId: postqued.workspaceId } : {}),
-  };
-  return platform === 'YOUTUBE' ? new YouTubeAdapter(config) : new PostQuedAdapter(config);
+  if (platform === 'YOUTUBE') return new YouTubeAdapter();
+  return new TikTokAdapter();
 }
 
 /** Map the decrypted account auth into the shape the chosen adapter expects. */
@@ -141,10 +70,11 @@ export function adapterAuth(
       pageAccessToken: raw.pageAccessToken ?? raw.accessToken,
     };
   }
-  return {
-    postquedAccountId: raw.postquedAccountId ?? raw.pqAccountId,
-    workspaceId: raw.workspaceId,
-  };
+  if (platform === 'YOUTUBE') {
+    return { accessToken: raw.accessToken };
+  }
+  // TikTok — native Content Posting API (Phase 9.6). accessToken from OAuth.
+  return { accessToken: raw.accessToken };
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -187,22 +117,35 @@ interface ProfileLike {
 }
 
 /**
- * Resolve final per-target metadata: target.metadataOverride wins, else the
- * account's ChannelProfile templates, else the content item's title (docs/06 §5).
+ * Resolve final per-target metadata (docs/06 §5):
+ *   1. target.metadataOverride
+ *   2. AI `currentStep.metadata` (title / description / tags / category)
+ *   3. ChannelProfile templates / defaultTags
+ *   4. content item title
  */
 export function resolveMetadata(
   override: Record<string, unknown>,
   profile: ProfileLike | null,
   contentTitle: string,
+  aiMetadata?: Record<string, unknown> | null,
 ): ResolvedMetadata {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+  const ai = aiMetadata ?? {};
+  const aiTags = Array.isArray(ai.tags)
+    ? (ai.tags as unknown[]).filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    : [];
   const title =
-    str(override.title) ?? str(profile?.titleTemplate) ?? contentTitle;
+    str(override.title) ?? str(ai.title) ?? str(profile?.titleTemplate) ?? contentTitle;
   const description =
-    str(override.description) ?? str(profile?.descriptionTemplate) ?? '';
+    str(override.description) ??
+    str(ai.description) ??
+    str(profile?.descriptionTemplate) ??
+    '';
   const tags = Array.isArray(override.tags)
     ? (override.tags as string[])
-    : (profile?.defaultTags ?? []);
+    : aiTags.length > 0
+      ? aiTags
+      : (profile?.defaultTags ?? []);
   const visibility = (str(override.visibility) as ResolvedMetadata['visibility']) ?? 'PUBLIC';
   const aiLabel =
     typeof override.aiLabel === 'boolean' ? override.aiLabel : (profile?.aiLabelDefault ?? true);
@@ -212,7 +155,9 @@ export function resolveMetadata(
     tags,
     visibility,
     aiLabel,
-    ...(str(override.category) ? { category: str(override.category) } : {}),
+    ...(str(override.category) ?? str(ai.category)
+      ? { category: str(override.category) ?? str(ai.category) }
+      : {}),
   };
 }
 

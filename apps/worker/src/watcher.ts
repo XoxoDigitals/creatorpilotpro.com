@@ -16,7 +16,7 @@ import {
   toAdapterSource,
   type WatchedSourceRow,
 } from './ingestion-support.js';
-import type { DownloadJob, WatchJob } from './ingestion-jobs.js';
+import type { CompetitorPollJob, DownloadJob, WatchJob } from './ingestion-jobs.js';
 
 /** Consecutive listing failures before a source auto-pauses to ERROR (docs/04 §5). */
 export const WATCHER_FAILURE_THRESHOLD = 3;
@@ -131,4 +131,28 @@ export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<v
     // eslint-disable-next-line no-console
     console.log(`[worker:watcher] source ${source.id} — enqueued ${enqueued} new download(s)`);
   }
+}
+
+/**
+ * Enqueue a competitor_poll job for every ACTIVE competitor channel that is due.
+ * Mirrors dispatchDueSources above. Returns the number dispatched.
+ */
+export async function dispatchDueCompetitors(boss: PgBoss): Promise<number> {
+  const prisma = getPrisma();
+  const now = Date.now();
+  const active = await prisma.competitorChannel.findMany({
+    where: { status: 'ACTIVE', deletedAt: null },
+    select: { id: true, checkIntervalMin: true, lastCheckedAt: true },
+    take: 500,
+  });
+
+  let dispatched = 0;
+  for (const ch of active) {
+    const dueAt = ch.lastCheckedAt ? ch.lastCheckedAt.getTime() + ch.checkIntervalMin * 60_000 : 0;
+    if (now < dueAt) continue;
+    const data: CompetitorPollJob = { kind: 'competitor_poll', competitorChannelId: ch.id };
+    await boss.send(QUEUE.WATCHER, data, { singletonKey: `comp-${ch.id}` });
+    dispatched += 1;
+  }
+  return dispatched;
 }

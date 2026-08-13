@@ -33,6 +33,19 @@ const SETTINGS_WHITELIST: Record<string, SettingSpec> = {
     schema: z.object({ warnPercent: z.number(), evictPercent: z.number() }),
     secret: false,
   },
+  /**
+   * Google Drive media library credentials (encrypted). Settings UI preferred;
+   * process env GOOGLE_DRIVE_* remains a bootstrap/fallback for API + worker.
+   */
+  'storage.gdrive': {
+    schema: z.object({
+      clientId: z.string().optional(),
+      clientSecret: z.string().optional(),
+      refreshToken: z.string().optional(),
+      rootFolderId: z.string().optional(),
+    }),
+    secret: true,
+  },
   'notifications.telegram': {
     schema: z.object({ botToken: z.string().optional(), chatId: z.string().optional() }),
     secret: true,
@@ -48,18 +61,19 @@ const SETTINGS_WHITELIST: Record<string, SettingSpec> = {
   // --- Platform Apps (docs mission §3) — owner-supplied provider credentials.
   // Secret object settings: partial-merge on write (blank fields keep the stored
   // value) and a per-field last-4 preview is kept in clear for the UI.
-  'platform_apps.postqued': {
-    schema: z.object({
-      apiKey: z.string().optional(),
-      workspaceId: z.string().optional(),
-    }),
-    secret: true,
-  },
   'platform_apps.google': {
     schema: z.object({
       clientId: z.string().optional(),
       clientSecret: z.string().optional(),
       directUpload: z.boolean().optional(),
+    }),
+    secret: true,
+  },
+  // YouTube Data API key (competitors: channel resolve + poll). Distinct from
+  // OAuth client credentials in platform_apps.google.
+  youtubeDataApiKey: {
+    schema: z.object({
+      apiKey: z.string().optional(),
     }),
     secret: true,
   },
@@ -91,6 +105,7 @@ const SECRET_STRING_FIELDS = new Set([
   'workspaceId',
   'clientId',
   'clientSecret',
+  'refreshToken',
   'appId',
   'appSecret',
   'clientKey',
@@ -99,6 +114,9 @@ const SECRET_STRING_FIELDS = new Set([
   'url',
   'from',
 ]);
+
+/** Non-credential fields stored inside a secret object — return full value in preview. */
+const CLEAR_PREVIEW_FIELDS = new Set(['rootFolderId']);
 
 export interface SettingView {
   key: string;
@@ -114,7 +132,12 @@ function previewOf(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (typeof v === 'string' && v.length > 0 && SECRET_STRING_FIELDS.has(k)) {
+      if (typeof v !== 'string' || v.length === 0) continue;
+      if (CLEAR_PREVIEW_FIELDS.has(k)) {
+        out[k] = v;
+        continue;
+      }
+      if (SECRET_STRING_FIELDS.has(k)) {
         out[k] = v.slice(-4);
       }
     }
@@ -138,8 +161,15 @@ export class SettingsService {
       const stored = byKey.get(key);
       const configured = stored != null;
       if (spec.secret) {
-        const wrapped = stored as { __preview?: Record<string, string> } | null;
-        return { key, secret: true, configured, preview: wrapped?.__preview ?? {} };
+        const wrapped = stored as { __enc?: string; __preview?: Record<string, string> } | null;
+        if (wrapped?.__preview) {
+          return { key, secret: true, configured, preview: wrapped.__preview };
+        }
+        // Legacy cleartext (pre-encryption storage.gdrive).
+        if (stored && typeof stored === 'object' && !('__enc' in (stored as object))) {
+          return { key, secret: true, configured, preview: previewOf(stored) };
+        }
+        return { key, secret: true, configured, preview: {} };
       }
       return { key, secret: false, configured, value: stored ?? null };
     });
@@ -191,11 +221,12 @@ export class SettingsService {
     return { key, secret: true, configured: true, preview: previewOf(merged) };
   }
 
-  /** Demo-data toggle (docs mission §4). Defaults ON until explicitly disabled. */
+  /** Demo-data toggle (docs mission §4). Default OFF — live data only unless the
+   *  Owner explicitly turns demo mode on for design/testing. */
   async getDemoMode(): Promise<{ enabled: boolean }> {
     const row = await this.prisma.client.systemSetting.findUnique({ where: { key: 'demo_mode' } });
     const value = row?.value as { enabled?: boolean } | null;
-    return { enabled: value?.enabled ?? true };
+    return { enabled: value?.enabled ?? false };
   }
 
   /**
@@ -210,8 +241,14 @@ export class SettingsService {
 
     if (spec.secret) {
       const wrapped = row.value as { __enc?: string } | null;
-      if (!wrapped?.__enc) return undefined;
-      return JSON.parse(this.crypto.decrypt(wrapped.__enc)) as T;
+      if (wrapped?.__enc) {
+        return JSON.parse(this.crypto.decrypt(wrapped.__enc)) as T;
+      }
+      // Legacy cleartext rows (e.g. pre-encryption storage.gdrive folder-only).
+      if (row.value && typeof row.value === 'object' && !('__enc' in (row.value as object))) {
+        return row.value as T;
+      }
+      return undefined;
     }
     return row.value as T;
   }

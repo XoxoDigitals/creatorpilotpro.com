@@ -7,6 +7,9 @@ const SESSION_COOKIE = 'scp_session';
  * unauthenticated hits redirect to /login. Authenticated hits on /login bounce
  * to /dashboard. This is a coarse presence check — the API validates the cookie
  * on every request (this only avoids rendering the shell for logged-out users).
+ *
+ * Public (not matched): `/`, `/legal/*`, `/policies/*`, and other non-dashboard
+ * marketing/compliance routes — no forced login.
  */
 export function middleware(req: NextRequest): NextResponse {
   const hasSession = req.cookies.has(SESSION_COOKIE);
@@ -24,7 +27,8 @@ export function middleware(req: NextRequest): NextResponse {
   return NextResponse.next();
 }
 
-// Protect the dashboard route group and /login; skip static assets and the API rewrite.
+// Protect the dashboard route group and /login only. Do not add `/`, `/legal`,
+// or `/policies` here — those must stay reachable for OAuth app review.
 export const config = {
   matcher: [
     '/dashboard/:path*',

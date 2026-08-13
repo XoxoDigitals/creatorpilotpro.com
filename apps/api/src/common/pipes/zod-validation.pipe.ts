@@ -9,7 +9,11 @@ export class ZodBody<T> implements PipeTransform {
   constructor(private readonly schema: ZodSchema<T>) {}
 
   transform(value: unknown): T {
-    const result = this.schema.safeParse(value);
+    // Fastify leaves body undefined/null when the client sends no payload
+    // (common for trigger-style POSTs with no JSON). Treat as {} so optional
+    // object schemas succeed and required-field schemas still report field errors.
+    const normalized = value === undefined || value === null ? {} : value;
+    const result = this.schema.safeParse(normalized);
     if (!result.success) {
       throw new BadRequestException({
         message: 'Validation failed',

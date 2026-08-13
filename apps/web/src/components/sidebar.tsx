@@ -9,9 +9,9 @@ import { cn } from '@/lib/cn';
 import { RoleBadge } from '@/components/role-badge';
 import { ConnectWizard } from '@/components/connect-wizard';
 import { Avatar } from '@/components/ui/avatar';
-import { getRollups } from '@/lib/mock-data';
-import { getAccountsView } from '@/lib/api-data';
+import { getAccountsView, getOverviewView } from '@/lib/api-data';
 import type { SessionUser } from '@/lib/types';
+import { isSystemAdmin } from '@/lib/types';
 
 /** Minimal stroke icons for the global nav. */
 const ICONS: Record<string, ReactNode> = {
@@ -49,19 +49,21 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 
 export function Sidebar({ user }: { user: SessionUser }) {
   const pathname = usePathname();
-  const rollups = getRollups();
 
   const [accountCount, setAccountCount] = useState(0);
+  const [pendingReviews, setPendingReviews] = useState(0);
+  const [openIncidents, setOpenIncidents] = useState(0);
   const [unread, setUnread] = useState(0);
   const [signingOut, setSigningOut] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
 
-  // Real account count (falls back to demo data when demo mode is on + empty).
   const loadAccountCount = useCallback(async () => {
     try {
-      const { accounts } = await getAccountsView();
+      const [{ accounts }, ov] = await Promise.all([getAccountsView(), getOverviewView()]);
       setAccountCount(accounts.length);
+      setPendingReviews(ov.overview.pendingReviews);
+      setOpenIncidents(ov.overview.openIncidents);
     } catch {
       /* ignore transient errors */
     }
@@ -109,19 +111,28 @@ export function Sidebar({ user }: { user: SessionUser }) {
     window.location.href = '/login';
   }
 
-  const globalNav = [
+  const canManageSystem = isSystemAdmin(user.role);
+
+  type NavItem = {
+    href: string;
+    label: string;
+    icon: string;
+    badge?: number;
+  };
+
+  const globalNav: NavItem[] = [
     { href: '/dashboard', label: 'Dashboard', icon: 'dashboard' },
     { href: '/calendar', label: 'Calendar', icon: 'calendar' },
-    { href: '/review', label: 'Review Queue', icon: 'review', badge: rollups.pendingReviews },
-    { href: '/incidents', label: 'Incidents', icon: 'incidents', badge: rollups.openIncidents },
-    { href: '/workers', label: 'Workers', icon: 'workers' },
+    { href: '/review', label: 'Review Queue', icon: 'review', badge: pendingReviews },
+    { href: '/incidents', label: 'Incidents', icon: 'incidents', badge: openIncidents },
+    ...(canManageSystem ? [{ href: '/workers', label: 'Production', icon: 'workers' }] : []),
     { href: '/analytics', label: 'Analytics', icon: 'analytics' },
-  ] as const;
+  ];
 
   return (
     <aside
       className={cn(
-        'flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 text-zinc-300 transition-[width]',
+        'flex h-full shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 text-zinc-300 transition-[width]',
         collapsed ? 'w-16' : 'w-60',
       )}
     >
@@ -155,7 +166,7 @@ export function Sidebar({ user }: { user: SessionUser }) {
               href={item.href}
               label={item.label}
               icon={<Icon name={item.icon} />}
-              badge={'badge' in item ? item.badge : undefined}
+              badge={item.badge}
               active={pathname === item.href || pathname.startsWith(`${item.href}/`)}
               collapsed={collapsed}
             />
@@ -172,23 +183,25 @@ export function Sidebar({ user }: { user: SessionUser }) {
             active={pathname === '/accounts' || pathname.startsWith('/accounts/')}
             collapsed={collapsed}
           />
-          <button
-            onClick={() => setWizardOpen(true)}
-            title={collapsed ? 'Connect account' : undefined}
-            className={cn(
-              'mt-1 flex w-full items-center gap-2.5 rounded-md border border-dashed border-zinc-700 px-2 py-1.5 text-[13px] text-zinc-400 hover:border-indigo-500 hover:text-indigo-300',
-              collapsed && 'justify-center',
-            )}
-          >
-            <Icon name="connect" size={16} />
-            {!collapsed && <span>Connect account</span>}
-          </button>
+          {canManageSystem && (
+            <button
+              onClick={() => setWizardOpen(true)}
+              title={collapsed ? 'Connect account' : undefined}
+              className={cn(
+                'mt-1 flex w-full items-center gap-2.5 rounded-md border border-dashed border-zinc-700 px-2 py-1.5 text-[13px] text-zinc-400 hover:border-indigo-500 hover:text-indigo-300',
+                collapsed && 'justify-center',
+              )}
+            >
+              <Icon name="connect" size={16} />
+              {!collapsed && <span>Connect account</span>}
+            </button>
+          )}
         </NavSection>
 
         {/* SYSTEM */}
         <NavSection label="System" collapsed={collapsed}>
           <NavLink
-            href="/settings"
+            href={canManageSystem ? '/settings' : '/settings/password'}
             label="Settings"
             icon={<Icon name="settings" />}
             active={pathname === '/settings' || pathname.startsWith('/settings/')}

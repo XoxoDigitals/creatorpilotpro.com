@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
+import { resolveFfmpegBinary } from '@scp/shared/bin';
 
 /**
  * ffmpeg wrapper (docs/04 §2 media pipeline). Kept framework-free and shells out
  * to the `ffmpeg` binary, which is an operational dependency like yt-dlp. When it
  * is absent, `available()` returns false and the MEDIA processor turns that into a
- * clear incident rather than crashing.
+ * clear incident rather than crashing. Binary path: FFMPEG_PATH if the file exists,
+ * else PATH / `/usr/bin` / `~/.local/bin` (see `@scp/shared/bin`).
  *
  * The command runner is injectable so the trim/normalize/frame-extract logic is
  * unit-testable without the real binary installed.
@@ -50,7 +52,7 @@ export const DHASH_FRAME_HEIGHT = 8;
 
 export class Ffmpeg {
   constructor(
-    private readonly binary: string = process.env.FFMPEG_PATH ?? 'ffmpeg',
+    private readonly binary: string = resolveFfmpegBinary(),
     private readonly runner: CommandRunner = spawnRunner,
   ) {}
 
@@ -148,6 +150,52 @@ export class Ffmpeg {
       throw new Error(
         `ffmpeg frame extract failed (${res.code}) for ${srcPath}: ${res.stderr.slice(0, 300)}`,
       );
+    }
+  }
+
+  /**
+   * Extract one JPEG still at `atSec` (fast seek). Used when full-video inline /
+   * Files API upload is unavailable so VIDEO_ANALYSIS still gets timeline samples.
+   */
+  async extractJpegAt(srcPath: string, destJpegPath: string, atSec: number): Promise<void> {
+    await this.ensureAvailable();
+    const t = Math.max(0, atSec);
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-ss',
+      t.toFixed(3),
+      '-i',
+      srcPath,
+      '-frames:v',
+      '1',
+      '-q:v',
+      '3',
+      '-y',
+      destJpegPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        `ffmpeg jpeg extract failed (${res.code}) at ${t}s for ${srcPath}: ${res.stderr.slice(0, 300)}`,
+      );
+    }
+  }
+
+  /** Best-effort duration in seconds from `ffmpeg -i` stderr Duration= line. */
+  async probeDurationSec(srcPath: string): Promise<number | null> {
+    try {
+      const res = await this.runner(this.binary, ['-hide_banner', '-i', srcPath, '-f', 'null', '-']);
+      const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(res.stderr);
+      if (!m) return null;
+      const h = Number(m[1]);
+      const min = Number(m[2]);
+      const sec = Number(m[3]);
+      if (![h, min, sec].every(Number.isFinite)) return null;
+      return h * 3600 + min * 60 + sec;
+    } catch {
+      return null;
     }
   }
 }

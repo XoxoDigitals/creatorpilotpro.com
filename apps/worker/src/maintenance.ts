@@ -8,7 +8,7 @@
  * publish engine (Phase 1b).
  */
 import { getPrisma, type PrismaClient } from '@scp/db';
-import { decryptSecret, encryptSecret, loadMasterKey } from '@scp/shared';
+import { decryptSecret, encryptSecret, loadMasterKey } from '@scp/shared/crypto';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const EXPIRY_WINDOW_MS = 10 * 60 * 1000;

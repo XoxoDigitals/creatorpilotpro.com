@@ -18,6 +18,10 @@ export const schedulingPrefsSchema = z.object({
   randomizeMinutes: z.number().int().min(0).max(720).optional(),
   maxPerDay: z.number().int().min(1).max(50).optional(),
   minGapMin: z.number().int().min(0).optional(),
+  /** Channel default for idea/manual upload scheduling (override stays on Schedule page). */
+  defaultScheduleMode: z.enum(['NOW', 'QUEUE_SLOT']).optional(),
+  /** Sibling SocialAccount ids to always include as crosspost destinations. */
+  defaultCrosspostAccountIds: z.array(z.string().min(1)).optional(),
 });
 export type SchedulingPrefs = z.infer<typeof schedulingPrefsSchema>;
 
@@ -39,10 +43,14 @@ export const patchProfileSchema = z
     masterPrompt: z.string().optional(),
     writingStyle: z.string().optional(),
     narrationStyle: z.string().optional(),
+    /** Structured brand questionnaire; see @scp/shared style-profile. */
+    styleProfile: z.unknown().optional(),
     language: z.string().min(2).max(16).optional(),
     voiceSettings: z.record(z.string(), z.unknown()).optional(),
     titleTemplate: z.string().optional(),
     descriptionTemplate: z.string().optional(),
+    thumbnailReferencePrompt: z.string().optional(),
+    animationReferencePrompt: z.string().optional(),
     defaultTags: z.array(z.string()).optional(),
     aiLabelDefault: z.boolean().optional(),
     approvalPolicy: z.record(z.string(), z.unknown()).optional(),
@@ -51,15 +59,22 @@ export const patchProfileSchema = z
   .strict();
 export type PatchProfileDto = z.infer<typeof patchProfileSchema>;
 
-/** POST /accounts/connect/postqued — import a PostQued integration. */
-export const postquedConnectSchema = z.object({
-  pqAccountId: z.string().min(1),
+/**
+ * POST /accounts/connect/manual — Phase 10. The Owner registers a channel/page
+ * they will operate by hand: the pipeline still runs (ingest → AI → render →
+ * metadata), the Owner downloads the final asset and uploads it themselves.
+ * No OAuth handshake, no tokens stored.
+ */
+export const manualConnectSchema = z.object({
   platform: z.enum(PLATFORMS),
+  name: z.string().min(1).max(120),
+  handle: z.string().max(120).optional(),
+  externalId: z.string().max(120).optional(),
   contentType: z.enum(CONTENT_TYPES).default('AI'),
   dramasEnabled: z.boolean().default(false),
   schedulingPrefs: schedulingPrefsSchema.optional(),
 });
-export type PostquedConnectDto = z.infer<typeof postquedConnectSchema>;
+export type ManualConnectDto = z.infer<typeof manualConnectSchema>;
 
 /**
  * POST /accounts/connect/meta — finish the page-picker step. Only the session

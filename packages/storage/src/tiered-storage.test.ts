@@ -106,15 +106,15 @@ test('restore returns LOCAL via the fast path when a valid local copy exists', a
   }
 });
 
-test('restore defers to Drive (throws) when no valid local copy exists', async () => {
-  const storage = new TieredStorage();
+test('restore throws when no local copy and no driveFileId', async () => {
+  const storage = new TieredStorage({ drive: null });
   await assert.rejects(
     () =>
       storage.restore(
         { localPath: join(tmpdir(), 'does-not-exist-scp.bin'), md5: 'deadbeef', bytes: 1, state: 'EVICTED' },
         join(tmpdir(), 'dest.bin'),
       ),
-    /deferred to the Phase-2/,
+    /no driveFileId/,
   );
 });
 

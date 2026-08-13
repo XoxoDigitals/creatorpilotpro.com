@@ -1,7 +1,13 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { SessionUser } from '../../common/session/session.types';
+
+const BCRYPT_COST = 12;
 
 @Injectable()
 export class AuthService {
@@ -32,5 +38,31 @@ export class AuthService {
     });
 
     return { id: user.id, email: user.email, name: user.name, role: user.role };
+  }
+
+  /** Change the signed-in user's password after verifying the current one. */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const user = await this.prisma.client.user.findFirst({
+      where: { id: userId, deletedAt: null },
+    });
+    if (!user || user.status === 'SUSPENDED') {
+      throw new UnauthorizedException('Not authenticated');
+    }
+
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!ok) throw new BadRequestException('Current password is incorrect');
+    if (currentPassword === newPassword) {
+      throw new BadRequestException('New password must differ from the current password');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
+    await this.prisma.client.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
   }
 }

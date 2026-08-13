@@ -16,6 +16,8 @@ import { useToast } from '@/components/ui/toast';
 import { ConnectWizard } from '@/components/connect-wizard';
 import { compactNumber } from '@/lib/format';
 import { getAccountsView } from '@/lib/api-data';
+import { api } from '@/lib/api';
+import { isSystemAdmin, type SessionUser } from '@/lib/types';
 import type { Account, Platform } from '@/lib/domain-types';
 
 const PLATFORM_ORDER: { id: Platform; label: string }[] = [
@@ -30,6 +32,14 @@ export default function AccountsPage() {
   const [demo, setDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [canConnect, setCanConnect] = useState(false);
+
+  useEffect(() => {
+    void api
+      .get<{ user: SessionUser }>('/auth/me')
+      .then(({ user }) => setCanConnect(isSystemAdmin(user.role)))
+      .catch(() => setCanConnect(false));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,11 +70,13 @@ export default function AccountsPage() {
     <div>
       <PageHeader
         title="Accounts"
-        description="All connected channels and pages, grouped by platform"
+        description="Each connection is one platform channel. Connect YouTube and Facebook separately, then set default crosspost destinations in that channel’s Settings."
         actions={
-          <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
-            Connect account
-          </Button>
+          canConnect ? (
+            <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
+              Connect account
+            </Button>
+          ) : undefined
         }
       />
 
@@ -126,7 +138,7 @@ export default function AccountsPage() {
                           <ContentTypeBadge type={a.contentType} />
                           {a.dramasEnabled && <Badge tone="violet">Dramas</Badge>}
                           {a.monetized && <Badge tone="green">Monetized</Badge>}
-                          {a.connectionMethod === 'POSTQUED' && <Badge tone="neutral">PostQued</Badge>}
+                          {a.connectionMethod === 'MANUAL' && <Badge tone="indigo">Manual</Badge>}
                           {a.paused && <Badge tone="amber">Paused</Badge>}
                         </div>
                         <div className="mt-4 grid grid-cols-3 gap-2 border-t border-zinc-100 pt-3 text-center">

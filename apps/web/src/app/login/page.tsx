@@ -84,6 +84,19 @@ export default function LoginPage() {
         <p className="mt-4 text-center text-xs text-zinc-400">
           Access is managed by your workspace owner.
         </p>
+        <p className="mt-3 text-center text-xs text-zinc-400">
+          <a href="/" className="hover:text-zinc-600">
+            Home
+          </a>
+          {' · '}
+          <a href="/legal/privacy" className="hover:text-zinc-600">
+            Privacy
+          </a>
+          {' · '}
+          <a href="/legal/terms" className="hover:text-zinc-600">
+            Terms
+          </a>
+        </p>
       </div>
     </main>
   );

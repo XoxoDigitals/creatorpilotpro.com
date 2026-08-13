@@ -13,6 +13,8 @@ import {
   setPromptActiveSchema,
   setProviderEnabledSchema,
   usageStatsQuerySchema,
+  ttsPreviewSchema,
+  composeMasterPromptSchema,
   type CreateKeyDto,
   type CreatePromptVersionDto,
   type PlaygroundDto,
@@ -20,6 +22,8 @@ import {
   type SetKeyStatusDto,
   type SetPromptActiveDto,
   type SetProviderEnabledDto,
+  type TtsPreviewDto,
+  type ComposeMasterPromptDto,
 } from './dto/ai.dto';
 
 @ApiTags('ai')
@@ -126,6 +130,12 @@ export class AiController {
     return this.ai.runPlayground(body);
   }
 
+  @Post('compose-master-prompt')
+  @Audit('ai.compose_master_prompt', 'AiComposeMasterPrompt')
+  composeMasterPrompt(@Body(new ZodBody(composeMasterPromptSchema)) body: ComposeMasterPromptDto) {
+    return this.ai.composeMasterPrompt(body);
+  }
+
   // ── Usage stats ───────────────────────────────────────────────────────
 
   @Get('usage')
@@ -136,5 +146,26 @@ export class AiController {
   ) {
     const parsed = usageStatsQuerySchema.parse({ providerId, since, until });
     return this.ai.getUsageStats(parsed);
+  }
+
+  // ── Edge Neural TTS voices ────────────────────────────────────────────
+
+  @Get('tts/status')
+  ttsStatus() {
+    return this.ai.getTtsStatus();
+  }
+
+  @Get('tts/voices')
+  listTtsVoices(@Query('locale') locale?: string, @Query('refresh') refresh?: string) {
+    return this.ai.listTtsVoices({
+      locale,
+      forceRefresh: refresh === '1' || refresh === 'true',
+    });
+  }
+
+  @Post('tts/preview')
+  @Audit('ai.tts.preview', 'TtsPreview')
+  previewTts(@Body(new ZodBody(ttsPreviewSchema)) body: TtsPreviewDto) {
+    return this.ai.previewTts(body);
   }
 }

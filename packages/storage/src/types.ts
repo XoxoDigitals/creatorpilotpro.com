@@ -18,7 +18,7 @@ export interface PutLocalInput {
 
 /**
  * Tiered storage interface (docs/02 §6): local NVMe hot tier + Google Drive library.
- * Never serve media to platforms from Drive links — always restore to local first.
+ * UI embeds Drive preview URLs; platform publish still restores to local first.
  */
 export interface StorageTier {
   /** Register/verify a file already written to the local hot tier. */

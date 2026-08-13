@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { YtDlp, YtDlpNotAvailableError, hashFile } from './ytdlp.js';
+import { YtDlp, YtDlpNotAvailableError, hashFile, _clearAvailabilityCacheForTests } from './ytdlp.js';
 import type { CommandRunner, RunResult } from './ytdlp.js';
 import { KuaishouAdapter } from './kuaishou.js';
 import { GenericUrlAdapter } from './generic-url.js';
@@ -19,6 +19,10 @@ beforeAll(() => {
   writeFileSync(destPath, Buffer.from('fake-mp4-bytes'));
 });
 afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+// available() is memoised at module scope — clear between tests so each one
+// exercises the runner it configured.
+beforeEach(() => _clearAvailabilityCacheForTests());
 
 interface Call {
   cmd: string;
@@ -164,16 +168,53 @@ describe('KuaishouAdapter', () => {
     expect(refs).toEqual([{ sourcePlatformId: 'vid1', sourceUrl: 'https://k.test/v/1' }]);
   });
 
-  it('downloads to destPath and returns a DownloadResult', async () => {
-    const { runner } = mockRunner({ result: { stdout: '10\t720\t1280\n' } });
-    const adapter = new KuaishouAdapter(new YtDlp('yt-dlp', runner));
-    const res = await adapter.download(
-      { sourcePlatformId: 'vid1', sourceUrl: 'https://k.test/v/1' },
-      destPath,
+  it('resolves the share URL then streams the direct CDN mp4 (not yt-dlp)', async () => {
+    const { runner, calls } = mockRunner();
+    const fakeResolve = async () => ({
+      videoUrl: 'https://cdn.kwaicdn.com/a.mp4',
+      title: 'clip',
+      durationSec: 10,
+      width: 720,
+      height: 1280,
+    });
+    const seen: Array<{ url: string; referer?: string }> = [];
+    const fakeDownload = async (
+      url: string,
+      _dest: string,
+      onProgress?: (p: { percent: number }) => void,
+      opts?: { referer?: string },
+    ) => {
+      seen.push({ url, ...(opts?.referer ? { referer: opts.referer } : {}) });
+      onProgress?.({ percent: 50 });
+      onProgress?.({ percent: 100 });
+      return { bytes: 2048, md5: 'abc123' };
+    };
+
+    const adapter = new KuaishouAdapter(
+      new YtDlp('yt-dlp', runner),
+      fakeResolve as never,
+      fakeDownload as never,
     );
-    expect(res.localPath).toBe(destPath);
-    expect(res.bytes).toBe(14);
-    expect(res.durationSec).toBe(10);
+    const ticks: number[] = [];
+    const res = await adapter.download(
+      { sourcePlatformId: 'vid1', sourceUrl: 'https://v.kuaishou.com/ABC' },
+      destPath,
+      (p) => ticks.push(p.percent),
+    );
+
+    expect(res).toEqual({
+      localPath: destPath,
+      bytes: 2048,
+      md5: 'abc123',
+      durationSec: 10,
+      width: 720,
+      height: 1280,
+    });
+    // Resolved CDN URL is what gets downloaded, with the share URL as referer.
+    expect(seen).toEqual([{ url: 'https://cdn.kwaicdn.com/a.mp4', referer: 'https://v.kuaishou.com/ABC' }]);
+    expect(ticks).toEqual([50, 100]);
+    // yt-dlp is NOT used for Kuaishou downloads.
+    expect(calls).toHaveLength(0);
   });
 
   it('surfaces YtDlpNotAvailableError rather than crashing opaquely', async () => {
@@ -190,6 +231,23 @@ describe('GenericUrlAdapter', () => {
     const refs = await adapter.listNewVideos(source({ type: 'GENERIC_URL', url: 'https://x.test/v/9' }));
     expect(refs).toEqual([{ sourcePlatformId: 'https://x.test/v/9', sourceUrl: 'https://x.test/v/9' }]);
     expect(calls).toHaveLength(0);
+  });
+
+  it('routes Kuaishou URLs to the resolver instead of yt-dlp', async () => {
+    const { runner, calls } = mockRunner();
+    const fakeResolve = async () => ({ videoUrl: 'https://cdn.kwaicdn.com/k.mp4', durationSec: 8 });
+    const fakeDownload = async () => ({ bytes: 99, md5: 'zz' });
+    const adapter = new GenericUrlAdapter(
+      new YtDlp('yt-dlp', runner),
+      fakeResolve as never,
+      fakeDownload as never,
+    );
+    const res = await adapter.download(
+      { sourcePlatformId: 'x', sourceUrl: 'https://v.kuaishou.com/ABC' },
+      destPath,
+    );
+    expect(res).toMatchObject({ bytes: 99, md5: 'zz', durationSec: 8 });
+    expect(calls).toHaveLength(0); // yt-dlp untouched
   });
 
   it('downloads via yt-dlp', async () => {

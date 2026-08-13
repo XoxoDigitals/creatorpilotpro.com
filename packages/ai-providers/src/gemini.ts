@@ -1,5 +1,9 @@
 import { TaskType } from '@scp/shared';
 import type { AIProvider, AIRequest, AIResult, AIErrorClass, PooledKey } from './types.js';
+import {
+  isGeminiModelUnavailable,
+  resolveGeminiModelChain,
+} from './gemini-models.js';
 
 /**
  * Gemini adapter (docs/05 §3) — Google AI Studio v1beta REST via fetch. Kept
@@ -9,6 +13,11 @@ import type { AIProvider, AIRequest, AIResult, AIErrorClass, PooledKey } from '.
  * `generationConfig.responseMimeType='application/json'`, then zod-parse; on the
  * first parse failure we send a single repair-retry with the error attached, per
  * docs/05 §2. Errors are classified from HTTP status → the router's error matrix.
+ *
+ * Model fallback: when the requested model 404s / is "no longer available", we
+ * walk `resolveGeminiModelChain` (cheap Flash-Lite → mid Flash → legacy) so
+ * idea gen and other Gemini tasks keep working for new API keys without a
+ * Settings change. Specialty models (TTS/image) do not inherit the text chain.
  *
  * Video/multimodal: text inputs go straight in; a `fileRef` input is passed as a
  * `fileData` part (caller uploaded via the Files API earlier and shares the URI).
@@ -50,6 +59,42 @@ export class GeminiProvider implements AIProvider {
   constructor(private readonly config: GeminiConfig = {}) {}
 
   async generate(req: AIRequest, key: PooledKey): Promise<AIResult> {
+    const models = resolveGeminiModelChain(req.model);
+    let lastUnavailable: unknown;
+
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i]!;
+      try {
+        const result = await this.generateWithModel(req, key, model);
+        console.info(
+          `[gemini] succeeded with model ${model}` +
+            (model !== req.model ? ` (requested ${req.model})` : ''),
+        );
+        return result;
+      } catch (err) {
+        const hasNext = i < models.length - 1;
+        if (hasNext && isGeminiModelUnavailable(err)) {
+          console.info(
+            `[gemini] model ${model} unavailable (${err instanceof Error ? err.message : String(err)}); trying ${models[i + 1]}`,
+          );
+          lastUnavailable = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastUnavailable instanceof Error
+      ? lastUnavailable
+      : new Error(`Gemini: all models unavailable (tried ${models.join(', ')})`);
+  }
+
+  /** One model attempt: optional JSON schema + single repair-retry. */
+  private async generateWithModel(
+    req: AIRequest,
+    key: PooledKey,
+    model: string,
+  ): Promise<AIResult> {
     const parts: Array<Record<string, unknown>> = [];
     if (req.input.kind === 'text') {
       parts.push({ text: req.input.text });
@@ -59,6 +104,9 @@ export class GeminiProvider implements AIProvider {
       for (const p of req.input.parts) {
         if (p.text) parts.push({ text: p.text });
         if (p.uri && p.mimeType) parts.push({ fileData: { fileUri: p.uri, mimeType: p.mimeType } });
+        // `inline_data` for small files (≤ ~20 MB); Gemini decodes the base64
+        // directly, so no Files-API pre-upload round-trip is needed.
+        if (p.data && p.mimeType) parts.push({ inlineData: { data: p.data, mimeType: p.mimeType } });
       }
     }
 
@@ -72,7 +120,7 @@ export class GeminiProvider implements AIProvider {
       },
     };
 
-    const first = await this.callOnce(req.model, body, key);
+    const first = await this.callOnce(model, body, key);
     if (!wantJson) return first;
 
     // Structured JSON: parse; on failure send one repair-retry with the error attached.
@@ -95,7 +143,7 @@ export class GeminiProvider implements AIProvider {
           },
         ],
       };
-      const second = await this.callOnce(req.model, repairBody, key);
+      const second = await this.callOnce(model, repairBody, key);
       const parsed = req.schema!.parse(JSON.parse(String(second.output)));
       return { ...second, output: parsed };
     }
@@ -176,6 +224,13 @@ export class GeminiProvider implements AIProvider {
       return 'INVALID_KEY';
     }
     if (status === 429) return 'RATE_LIMITED';
+    // Model 404 / "no longer available" is handled inside generate() via the
+    // text-model chain; if it still escapes, treat as FATAL (do not burn
+    // transient retries on a dead model id).
+    if (isGeminiModelUnavailable(err)) return 'FATAL';
+    // 503 "high demand" is Google's rate-shed signal — treat as TRANSIENT so the
+    // router retries with backoff instead of rotating away from Gemini entirely.
+    if (status === 503) return 'TRANSIENT';
     if (status !== undefined && status >= 500) return 'TRANSIENT';
     if (/network|ETIMEDOUT|ECONNRESET|fetch failed/i.test(msg)) return 'TRANSIENT';
     return 'FATAL';

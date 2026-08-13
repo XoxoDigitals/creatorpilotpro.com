@@ -21,8 +21,10 @@ export interface CacheKeyParts {
 }
 
 export function cacheKeyFor(parts: CacheKeyParts): string {
+  // Prefix bumped when default task prompts / analysis schemas change so stale
+  // ai_outputs rows are never served after a pipeline prompt rewrite.
   const canonical = [
-    'v1',
+    'v2',
     parts.task,
     parts.model,
     String(parts.promptVersion),

@@ -10,11 +10,22 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto.d.ts",
+      "import": "./dist/crypto.js",
+      "require": "./dist/crypto.js"
+    },
+    "./bin": {
+      "types": "./dist/resolve-bin.d.ts",
+      "import": "./dist/resolve-bin.js",
+      "require": "./dist/resolve-bin.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "lint": "eslint .",
     "clean": "rimraf dist .turbo"
   },
@@ -24,6 +35,7 @@
   "devDependencies": {
     "@types/node": "^24.13.3",
     "rimraf": "^6.0.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }

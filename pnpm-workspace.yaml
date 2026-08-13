@@ -11,3 +11,8 @@ allowBuilds:
   sharp: true
   # Telemetry postinstall we deliberately keep blocked.
   "@scarf/scarf": false
+  # onnxruntime-node ships prebuilt binaries via postinstall — needed for the
+  # in-process Kokoro TTS path (packages/ai-providers/src/kokoro.ts).
+  onnxruntime-node: true
+  # protobufjs generates a static build during install; harmless.
+  protobufjs: true

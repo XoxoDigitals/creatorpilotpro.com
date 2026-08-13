@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { UsersService, type UserView } from './users.service';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -10,9 +10,11 @@ import {
   changeRoleSchema,
   createUserSchema,
   resetPasswordSchema,
+  setUserAccountsSchema,
   type ChangeRoleDto,
   type CreateUserDto,
   type ResetPasswordDto,
+  type SetUserAccountsDto,
 } from './dto/user.dto';
 
 @ApiTags('users')
@@ -65,5 +67,23 @@ export class UsersController {
     @Body(new ZodBody(changeRoleSchema)) body: ChangeRoleDto,
   ): Promise<UserView> {
     return this.users.changeRole(actor, id, body.role);
+  }
+
+  @Get(':id/accounts')
+  listAccounts(
+    @CurrentUser() actor: SessionUser,
+    @Param('id') id: string,
+  ): Promise<{ accountIds: string[]; allAccountsAccess: boolean }> {
+    return this.users.listAccounts(actor, id);
+  }
+
+  @Put(':id/accounts')
+  @Audit('user.set_accounts', 'User')
+  setAccounts(
+    @CurrentUser() actor: SessionUser,
+    @Param('id') id: string,
+    @Body(new ZodBody(setUserAccountsSchema)) body: SetUserAccountsDto,
+  ): Promise<UserView> {
+    return this.users.setAccounts(actor, id, body.accountIds);
   }
 }

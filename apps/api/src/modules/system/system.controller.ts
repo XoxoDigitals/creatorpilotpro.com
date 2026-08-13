@@ -22,7 +22,7 @@ export class SystemController {
   // Readable by any authenticated user (the accounts UI needs it to decide the
   // demo-data fallback), unlike the Owner/Admin-only settings above.
   @Get('demo-mode')
-  @Roles('OWNER', 'ADMIN', 'REVIEWER', 'WORKER', 'ANALYST')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   demoMode(): Promise<{ enabled: boolean }> {
     return this.settings.getDemoMode();
   }

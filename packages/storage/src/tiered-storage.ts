@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { StorageTier, StoredObject, PutLocalInput } from './types.js';
+import {
+  GoogleDriveClient,
+  readGDriveConfigFromEnv,
+  requireGDriveConfig,
+  storageBackendFromEnv,
+} from './gdrive-client.js';
 
 /**
  * Hash a file's contents with md5, streaming so we never load the whole file
@@ -13,15 +19,11 @@ import type { StorageTier, StoredObject, PutLocalInput } from './types.js';
 export async function md5File(path: string): Promise<{ md5: string; bytes: number }> {
   const hash = createHash('md5');
   let bytes = 0;
-  await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(path);
-    stream.on('data', (chunk) => {
-      bytes += chunk.length;
-      hash.update(chunk);
-    });
-    stream.on('error', reject);
-    stream.on('end', resolve);
-  });
+  for await (const chunk of createReadStream(path)) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buf.length;
+    hash.update(buf);
+  }
   return { md5: hash.digest('hex'), bytes };
 }
 
@@ -41,21 +43,52 @@ export function hotTierPath(
   return join(root, 'items', contentItemId, kind.toLowerCase(), filename);
 }
 
+export interface TieredStorageOptions {
+  /** Injected Drive client (tests). When omitted, built from env if configured. */
+  drive?: GoogleDriveClient | null;
+}
+
+function guessMime(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  if (ext === 'mp4') return 'video/mp4';
+  if (ext === 'mov') return 'video/quicktime';
+  if (ext === 'webm') return 'video/webm';
+  if (ext === 'm4v') return 'video/x-m4v';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'wav') return 'audio/wav';
+  if (ext === 'mp3') return 'audio/mpeg';
+  return 'application/octet-stream';
+}
+
 /**
- * Local NVMe hot tier + Google Drive library implementation (docs/02 §6).
+ * Local NVMe hot tier + Google Drive library (docs/02 §6).
  *
- * Phase 1 (live): the local hot tier — register a file already written to disk
- * (`putLocal`) and guarantee a local copy exists for the publish preflight
- * (`restore`, local-present fast path).
- *
- * Phase 2 (deferred): Drive archival/eviction (`archiveToDrive`, `evict`, and
- * the Drive-restore branch of `restore`) land with the `storage` queue —
- * resumable uploads under the 750GB/day/account cap with md5 verification
- * before any local copy is evicted. The Google Drive client is not wired up
- * yet, so those paths throw a clear NotImplemented error rather than pretending
- * to work.
+ * - `putLocal` always registers a file already on disk.
+ * - `archiveToDrive` uploads to the configured library folder when Drive env
+ *   is present (required when STORAGE_BACKEND=gdrive).
+ * - `restore` prefers a valid local copy; otherwise downloads from Drive.
+ * - `evict` deletes the local copy after Drive id is present.
  */
 export class TieredStorage implements StorageTier {
+  private readonly drive: GoogleDriveClient | null;
+
+  constructor(opts: TieredStorageOptions = {}) {
+    if (opts.drive !== undefined) {
+      this.drive = opts.drive;
+    } else {
+      const cfg = readGDriveConfigFromEnv();
+      this.drive = cfg ? new GoogleDriveClient(cfg) : null;
+    }
+  }
+
+  /** True when env points at Drive as the system of record. */
+  static backendIsGdrive(): boolean {
+    return storageBackendFromEnv() === 'gdrive';
+  }
+
   /**
    * Register/verify a file already written to the local hot tier. This is the
    * register-a-file-already-written path: the worker renders/downloads straight
@@ -90,32 +123,52 @@ export class TieredStorage implements StorageTier {
   }
 
   /**
-   * Resumable upload local -> Drive mirrored tree; verify md5 (docs/02 §6).
-   *
-   * Deferred to Phase 2: needs the Google Drive client and the `storage` queue
-   * for 750GB/day rate limiting. Signature is final so callers can be written
-   * against it now.
+   * Resumable upload local -> Drive mirrored tree; verify size when Drive
+   * returns it. `driveFolderPath` is relative to GOOGLE_DRIVE_ROOT_FOLDER_ID
+   * (e.g. `items/{contentItemId}/final`).
    */
-  async archiveToDrive(_obj: StoredObject, _driveFolderPath: string): Promise<StoredObject> {
-    throw new Error(
-      'archiveToDrive: Drive archival is deferred to the Phase-2 storage queue ' +
-        '(resumable uploads, 750GB/day rate limiting, md5 verify before evict).',
-    );
+  async archiveToDrive(obj: StoredObject, driveFolderPath: string): Promise<StoredObject> {
+    if (TieredStorage.backendIsGdrive()) {
+      requireGDriveConfig();
+    }
+    const client = this.drive;
+    if (!client) {
+      throw new Error(
+        'archiveToDrive: Google Drive is not configured. Set GOOGLE_DRIVE_CLIENT_ID, ' +
+          'GOOGLE_DRIVE_CLIENT_SECRET, GOOGLE_DRIVE_REFRESH_TOKEN, GOOGLE_DRIVE_ROOT_FOLDER_ID.',
+      );
+    }
+    if (!obj.localPath) {
+      throw new Error('archiveToDrive: object has no localPath to upload.');
+    }
+
+    const filename = obj.localPath.split(/[\\/]/).pop() ?? 'asset.bin';
+    const uploaded = await client.uploadFile({
+      localPath: obj.localPath,
+      filename,
+      mimeType: guessMime(filename),
+      folderRelativePath: driveFolderPath,
+      md5Hex: obj.md5,
+    });
+
+    if (uploaded.size != null && uploaded.size !== obj.bytes) {
+      throw new Error(
+        `archiveToDrive: Drive size mismatch — local ${obj.bytes}, Drive ${uploaded.size}`,
+      );
+    }
+
+    return {
+      ...obj,
+      driveFileId: uploaded.fileId,
+      state: obj.localPath ? 'BOTH' : 'DRIVE',
+    };
   }
 
   /**
    * Pull an evicted/Drive object back to the hot tier for re-edit/re-publish.
-   *
-   * Local-present fast path (live): the publish preflight calls this to
-   * guarantee a local copy exists. If `obj.localPath` is on disk and its md5
-   * still matches, we return it as LOCAL immediately — idempotent, no Drive
-   * needed. LOCAL/BOTH objects therefore always succeed offline.
-   *
-   * Drive restore (deferred): if there is no valid local copy the object lives
-   * only in Drive/evicted, and pulling it back needs the Phase-2 Drive client —
-   * so we throw until that lands.
+   * Local-present fast path when md5 still matches; otherwise download from Drive.
    */
-  async restore(obj: StoredObject, _destPath: string): Promise<StoredObject> {
+  async restore(obj: StoredObject, destPath: string): Promise<StoredObject> {
     if (obj.localPath) {
       try {
         const stats = await stat(obj.localPath);
@@ -126,27 +179,50 @@ export class TieredStorage implements StorageTier {
           }
         }
       } catch {
-        // No usable local copy — fall through to the deferred Drive path.
+        // Fall through to Drive restore.
       }
     }
 
-    throw new Error(
-      'restore: no valid local copy and Drive restore is deferred to the Phase-2 ' +
-        'storage queue — cannot pull an evicted/Drive-only object back to the hot tier yet.',
-    );
+    if (!obj.driveFileId) {
+      throw new Error('restore: no valid local copy and no driveFileId to download.');
+    }
+    const client = this.drive;
+    if (!client) {
+      throw new Error(
+        'restore: Drive client not configured — cannot pull Drive-only object to hot tier.',
+      );
+    }
+    await client.downloadFile(obj.driveFileId, destPath);
+    const { md5, bytes } = await md5File(destPath);
+    if (obj.md5 && md5 !== obj.md5) {
+      await unlink(destPath).catch(() => undefined);
+      throw new Error(
+        `restore: md5 mismatch after Drive download — expected ${obj.md5}, got ${md5}`,
+      );
+    }
+    return {
+      ...obj,
+      localPath: destPath,
+      md5,
+      bytes,
+      state: 'BOTH',
+    };
   }
 
   /**
-   * Delete the local copy once Drive md5 is verified & outside retention window.
-   *
-   * Deferred to Phase 2: eviction must confirm the Drive md5 matches before
-   * removing the local file (docs/02 §6), which needs the Drive client. Signature
-   * is final so the maintenance/eviction job can be written against it now.
+   * Delete the local copy once Drive id is present (docs/02 §6).
    */
-  async evict(_obj: StoredObject): Promise<StoredObject> {
-    throw new Error(
-      'evict: local eviction is deferred to the Phase-2 storage queue — must md5-verify ' +
-        'the Drive copy before deleting the local file, and the Drive client is not wired up yet.',
-    );
+  async evict(obj: StoredObject): Promise<StoredObject> {
+    if (!obj.driveFileId) {
+      throw new Error('evict: refusing to delete local file without a driveFileId.');
+    }
+    if (obj.localPath) {
+      await unlink(obj.localPath).catch(() => undefined);
+    }
+    return {
+      ...obj,
+      localPath: undefined,
+      state: 'DRIVE',
+    };
   }
 }

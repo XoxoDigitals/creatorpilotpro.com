@@ -26,12 +26,26 @@ export interface DownloadResult {
   height?: number;
 }
 
+/** Live download progress tick (percent/eta/speed) surfaced to the worker. */
+export interface SourceDownloadProgress {
+  percent: number;
+  etaSec?: number;
+  speedBps?: number;
+}
+
+export type SourceProgressCallback = (p: SourceDownloadProgress) => void;
+
 /**
  * Source adapter interface (designed for this scaffold, docs/02 boundary rule).
  * listNewVideos discovers new items; download fetches one to local hot storage.
+ * `onProgress` streams live download progress when the adapter supports it.
  */
 export interface SourceAdapter {
   type: WatchedSource['type'];
   listNewVideos(source: WatchedSource): Promise<VideoRef[]>;
-  download(videoRef: VideoRef, destPath: string): Promise<DownloadResult>;
+  download(
+    videoRef: VideoRef,
+    destPath: string,
+    onProgress?: SourceProgressCallback,
+  ): Promise<DownloadResult>;
 }

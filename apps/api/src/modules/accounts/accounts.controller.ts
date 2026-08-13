@@ -3,7 +3,6 @@ import {
   Controller,
   Delete,
   Get,
-  NotImplementedException,
   Param,
   Patch,
   Post,
@@ -12,7 +11,6 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
-import type { Platform } from '@scp/db';
 import { AccountsService } from './accounts.service';
 import type { AccountView } from './account.view';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -22,45 +20,28 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodBody } from '../../common/pipes/zod-validation.pipe';
 import type { SessionUser } from '../../common/session/session.types';
 import {
+  manualConnectSchema,
   metaConnectSchema,
   parseWizardQuery,
   patchAccountSchema,
   patchProfileSchema,
-  postquedConnectSchema,
+  type ManualConnectDto,
   type MetaConnectDto,
   type PatchAccountDto,
   type PatchProfileDto,
-  type PostquedConnectDto,
 } from './dto/account.dto';
 
 /**
- * Accounts module (docs mission §2, docs/11 §1). RBAC: OWNER/ADMIN manage,
- * REVIEWER read-only (class-level allows all three; mutations override to
- * OWNER/ADMIN). OAuth callbacks are @Public — trust comes from the signed state.
+ * Accounts module (docs mission §2, docs/11 §1). RBAC: OWNER/ADMIN manage;
+ * REVIEWER can list/get accounts they are granted (AccountAccessGuard +
+ * AccountsService filter). Mutations stay OWNER/ADMIN.
+ * OAuth callbacks are @Public — trust comes from the signed state.
  */
 @ApiTags('accounts')
 @Roles('OWNER', 'ADMIN', 'REVIEWER')
 @Controller('accounts')
 export class AccountsController {
   constructor(private readonly accounts: AccountsService) {}
-
-  // --- PostQued connect (declare before :id so static wins) -----------------
-
-  @Get('connect/postqued/available')
-  @Roles('OWNER', 'ADMIN')
-  available(@Query('platform') platform?: string) {
-    return this.accounts.listAvailablePostqued(platform as Platform | undefined);
-  }
-
-  @Post('connect/postqued')
-  @Roles('OWNER', 'ADMIN')
-  @Audit('account.connect.postqued', 'SocialAccount')
-  connectPostqued(
-    @CurrentUser() actor: SessionUser,
-    @Body(new ZodBody(postquedConnectSchema)) body: PostquedConnectDto,
-  ): Promise<AccountView> {
-    return this.accounts.connectPostqued(body, actor.id);
-  }
 
   // --- Google OAuth ---------------------------------------------------------
 
@@ -92,8 +73,12 @@ export class AccountsController {
       return;
     }
     try {
-      const id = await this.accounts.googleCallback(code, state);
-      void reply.redirect(`${web}/accounts/${id}`, 302);
+      const { id, contentType } = await this.accounts.googleCallback(code, state);
+      const dest =
+        contentType === 'AI' || contentType === 'MIXED'
+          ? `${web}/accounts/${id}/ideas?onboard=refs`
+          : `${web}/accounts/${id}`;
+      void reply.redirect(dest, 302);
     } catch {
       void reply.redirect(`${web}/accounts?connect=google&error=1`, 302);
     }
@@ -152,27 +137,72 @@ export class AccountsController {
     return this.accounts.connectMeta(body, actor.id);
   }
 
-  // --- TikTok own-app (stub) ------------------------------------------------
+  // --- Manual connection (Phase 10) ------------------------------------------
 
-  @Post('connect/tiktok')
+  @Post('connect/manual')
   @Roles('OWNER', 'ADMIN')
-  connectTiktok(): never {
-    throw new NotImplementedException(
-      'TikTok own-app publishing requires your app to pass TikTok’s Content Posting API audit first. ' +
-        'Use the PostQued connection method for TikTok in the meantime.',
-    );
+  @Audit('account.connect.manual', 'SocialAccount')
+  connectManual(
+    @CurrentUser() actor: SessionUser,
+    @Body(new ZodBody(manualConnectSchema)) body: ManualConnectDto,
+  ): Promise<AccountView> {
+    return this.accounts.connectManual(body, actor.id);
+  }
+
+  // --- TikTok OAuth (Login Kit + Content Posting API) ------------------------
+
+  @Get('connect/tiktok/start')
+  @Roles('OWNER', 'ADMIN')
+  async tiktokStart(
+    @CurrentUser() actor: SessionUser,
+    @Res() reply: FastifyReply,
+    @Query('contentType') contentType?: string,
+    @Query('dramasEnabled') dramasEnabled?: string,
+    @Query('schedulingPrefs') schedulingPrefs?: string,
+  ): Promise<void> {
+    const wizard = parseWizardQuery({ contentType, dramasEnabled, schedulingPrefs });
+    const url = await this.accounts.tiktokStartUrl(actor.id, wizard);
+    void reply.redirect(url, 302);
+  }
+
+  @Public()
+  @Get('connect/tiktok/callback')
+  async tiktokCallback(
+    @Res() reply: FastifyReply,
+    @Query('code') code?: string,
+    @Query('state') state?: string,
+    @Query('error') error?: string,
+  ): Promise<void> {
+    const web = process.env.WEB_APP_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
+    if (error || !code || !state) {
+      void reply.redirect(`${web}/accounts?connect=tiktok&error=1`, 302);
+      return;
+    }
+    try {
+      const { id, contentType } = await this.accounts.tiktokCallback(code, state);
+      const dest =
+        contentType === 'AI' || contentType === 'MIXED'
+          ? `${web}/accounts/${id}/ideas?onboard=refs`
+          : `${web}/accounts/${id}`;
+      void reply.redirect(dest, 302);
+    } catch {
+      void reply.redirect(`${web}/accounts?connect=tiktok&error=1`, 302);
+    }
   }
 
   // --- CRUD (:id routes last) -----------------------------------------------
 
   @Get()
-  list(): Promise<AccountView[]> {
-    return this.accounts.list();
+  list(@CurrentUser() actor: SessionUser): Promise<AccountView[]> {
+    return this.accounts.list(actor);
   }
 
   @Get(':id')
-  get(@Param('id') id: string): Promise<AccountView> {
-    return this.accounts.get(id);
+  get(
+    @CurrentUser() actor: SessionUser,
+    @Param('id') id: string,
+  ): Promise<AccountView> {
+    return this.accounts.get(id, actor);
   }
 
   @Patch(':id')

@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
     // Linting runs via `pnpm -r lint` (root flat config); avoid double-linting in build.
     ignoreDuringBuilds: true,
   },
+  async redirects() {
+    return [
+      { source: '/policies', destination: '/legal', permanent: false },
+      { source: '/policies/:path*', destination: '/legal/:path*', permanent: false },
+    ];
+  },
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${API_ORIGIN}/api/:path*` }];
   },

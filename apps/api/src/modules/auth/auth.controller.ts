@@ -6,8 +6,13 @@ import { AuthService } from './auth.service';
 import { SessionService } from './session.service';
 import { LoginRateLimitGuard } from './login-rate-limit.guard';
 import { loginSchema, type LoginDto } from './dto/login.dto';
+import {
+  changePasswordSchema,
+  type ChangePasswordDto,
+} from './dto/change-password.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Audit } from '../../common/decorators/audit.decorator';
 import { ZodBody } from '../../common/pipes/zod-validation.pipe';
 import {
   SESSION_COOKIE,
@@ -68,5 +73,18 @@ export class AuthController {
   @ApiOkResponse({ description: 'The currently authenticated user.' })
   me(@CurrentUser() user: SessionUser): { user: SessionUser } {
     return { user };
+  }
+
+  /** Any authenticated user can change their own password. */
+  @Post('change-password')
+  @HttpCode(200)
+  @Audit('auth.change_password', 'User')
+  @ApiOkResponse({ description: 'Update the current user password.' })
+  async changePassword(
+    @CurrentUser() user: SessionUser,
+    @Body(new ZodBody(changePasswordSchema)) body: ChangePasswordDto,
+  ): Promise<{ ok: true }> {
+    await this.auth.changePassword(user.id, body.currentPassword, body.newPassword);
+    return { ok: true };
   }
 }

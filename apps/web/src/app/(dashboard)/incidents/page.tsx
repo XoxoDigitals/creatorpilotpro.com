@@ -55,13 +55,17 @@ export default function IncidentsPage() {
 
   const onRetry = async (inc: Incident) => {
     if (demo) {
-      toast('Retry runs against the real publish engine once a real account is connected', 'info');
+      toast('Retry runs against the real job queue once a real account is connected', 'info');
+      return;
+    }
+    if (!inc.retryable) {
+      toast('Nothing to re-queue for this incident — fix the cause, then mark resolved', 'info');
       return;
     }
     setBusy(true);
     try {
       await retryIncident(inc.id);
-      toast('Retry queued — the target is scheduled to publish again', 'success');
+      toast('Retry queued — related work is running again', 'success');
       setSelected(null);
       await load();
     } catch (err) {
@@ -187,13 +191,21 @@ export default function IncidentsPage() {
             </dl>
             {selected.status === 'OPEN' && (
               <div className="flex gap-2 border-t border-zinc-100 pt-4">
-                <Button size="sm" variant="primary" disabled={busy} onClick={() => void onRetry(selected)}>
-                  Retry
-                </Button>
+                {selected.retryable && (
+                  <Button size="sm" variant="primary" disabled={busy} onClick={() => void onRetry(selected)}>
+                    Retry
+                  </Button>
+                )}
                 <Button size="sm" disabled={busy} onClick={() => void onResolve(selected)}>
                   Mark resolved
                 </Button>
               </div>
+            )}
+            {selected.status === 'ACKED' && (
+              <p className="border-t border-zinc-100 pt-4 text-xs text-zinc-500">
+                Retry was queued. The incident will stay acknowledged until you mark it resolved or a new
+                failure opens a fresh incident.
+              </p>
             )}
           </div>
         )}

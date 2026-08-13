@@ -11,7 +11,13 @@ export interface WatchJob {
   watchedSourceId: string;
 }
 
-/** DOWNLOAD: fetch one discovered source video to the hot tier + dedupe. */
+/**
+ * DOWNLOAD: fetch one discovered source video to the hot tier + dedupe.
+ *
+ * TODO(gdrive): after MEDIA produces FINAL, archive ORIGINAL (and optionally
+ * the source download) to Drive when STORAGE_BACKEND=gdrive — today only
+ * API uploads + render FINALs are archived; source downloads still land on disk.
+ */
 export interface DownloadJob {
   kind: 'download';
   sourceVideoId: string;
@@ -47,5 +53,35 @@ export function isMediaJob(data: unknown): data is MediaJob {
     data !== null &&
     (data as { kind?: unknown }).kind === 'media' &&
     typeof (data as MediaJob).sourceVideoId === 'string'
+  );
+}
+
+/** MEDIA: generate auto-subtitles for a rendered content item (Phase 7 #9). */
+export interface SubtitlesJob {
+  kind: 'subtitles';
+  contentItemId: string;
+}
+
+export function isSubtitlesJob(data: unknown): data is SubtitlesJob {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { kind?: unknown }).kind === 'subtitles' &&
+    typeof (data as SubtitlesJob).contentItemId === 'string'
+  );
+}
+
+/** WATCHER: poll one competitor channel for new videos (Phase 4). */
+export interface CompetitorPollJob {
+  kind: 'competitor_poll';
+  competitorChannelId: string;
+}
+
+export function isCompetitorPollJob(data: unknown): data is CompetitorPollJob {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { kind?: unknown }).kind === 'competitor_poll' &&
+    typeof (data as CompetitorPollJob).competitorChannelId === 'string'
   );
 }

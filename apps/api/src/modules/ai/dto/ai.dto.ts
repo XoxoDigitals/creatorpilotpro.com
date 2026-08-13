@@ -55,3 +55,33 @@ export const usageStatsQuerySchema = z.object({
   until: z.coerce.date().optional(),
 });
 export type UsageStatsQueryDto = z.infer<typeof usageStatsQuerySchema>;
+
+// ── Edge Neural TTS voices ──────────────────────────────────────────────────
+
+export const ttsPreviewSchema = z.object({
+  voiceId: z.string().min(1).max(120).default('en-US-AriaNeural'),
+  text: z.string().min(1).max(500).optional(),
+  rate: z.string().max(32).optional(),
+  pitch: z.string().max(32).optional(),
+  volume: z.string().max(32).optional(),
+});
+export type TtsPreviewDto = z.infer<typeof ttsPreviewSchema>;
+
+// ── Compose channel master prompt ───────────────────────────────────────────
+
+export const composeMasterPromptSchema = z.object({
+  language: z.string().min(2).max(16).default('en'),
+  answers: z.record(z.string(), z.unknown()),
+  animationReferencePrompt: z.string().max(50000).optional(),
+  thumbnailReferencePrompt: z.string().max(20000).optional(),
+  titleTemplate: z.string().max(500).optional(),
+  descriptionTemplate: z.string().max(5000).optional(),
+  writingStyle: z.string().max(5000).optional(),
+  narrationStyle: z.string().max(5000).optional(),
+  contentType: z.string().max(32).optional(),
+  /** Freeform voice / TTS notes (provider, voice id, locale, rate). */
+  voiceNotes: z.string().max(2000).optional(),
+  /** When true, skip the LLM polish and return the deterministic system-style compose. */
+  localOnly: z.boolean().optional(),
+});
+export type ComposeMasterPromptDto = z.infer<typeof composeMasterPromptSchema>;

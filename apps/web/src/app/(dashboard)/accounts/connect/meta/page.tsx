@@ -68,12 +68,17 @@ export default function MetaConnectPage() {
     if (!session || !selected) return;
     setConnecting(true);
     try {
-      const account = await api.post<{ id: string }>('/accounts/connect/meta', {
+      const account = await api.post<{ id: string; contentType?: string }>('/accounts/connect/meta', {
         session,
         pageId: selected,
       });
       toast('Facebook Page connected', 'success');
-      router.push(`/accounts/${account.id}` as Route);
+      const ct = account.contentType;
+      const dest =
+        ct === 'AI' || ct === 'MIXED'
+          ? `/accounts/${account.id}/ideas?onboard=refs`
+          : `/accounts/${account.id}`;
+      router.push(dest as Route);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Connection failed', 'error');
       setConnecting(false);

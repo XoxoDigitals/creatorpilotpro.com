@@ -10,11 +10,24 @@ export interface PooledKey {
   label?: string;
 }
 
-/** Input to a provider call: plain text, a file reference, or multimodal parts. */
+/** Input to a provider call: plain text, a file reference, or multimodal parts.
+ *
+ * Multimodal parts accept either a remote `uri` (Files API) OR inline base64 `data`
+ * with a `mimeType`. Providers that support only one form should throw a clear
+ * error rather than silently dropping the part. */
 export type AIInput =
   | { kind: 'text'; text: string }
   | { kind: 'fileRef'; uri: string; mimeType: string }
-  | { kind: 'multimodal'; parts: Array<{ text?: string; uri?: string; mimeType?: string }> };
+  | {
+      kind: 'multimodal';
+      parts: Array<{
+        text?: string;
+        uri?: string;
+        /** Base64-encoded bytes for inline data (Gemini `inline_data`). */
+        data?: string;
+        mimeType?: string;
+      }>;
+    };
 
 export interface AIUsage {
   tokensIn?: number;
@@ -22,10 +35,19 @@ export interface AIUsage {
   ttsSeconds?: number;
 }
 
+/** Word/sentence timing from a TTS engine (prefer over re-transcription). */
+export interface TtsTimingSegment {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
 export interface AIResult<T = unknown> {
   output: T;
   /** For TTS tasks, path/uri to the produced audio asset. */
   audioRef?: string;
+  /** Engine-provided subtitle / word timings when available (e.g. edge-tts VTT). */
+  timings?: TtsTimingSegment[];
   usage: AIUsage;
   model: string;
   cached?: boolean;
@@ -55,6 +77,11 @@ export type AIErrorClass =
 export interface AIProvider {
   id: string;
   supports: TaskType[];
+  /**
+   * When false, the router skips KeyPool checkout and uses a synthetic local
+   * key (self-hosted / CLI providers like edge + kokoro). Default: true.
+   */
+  requiresKey?: boolean;
   generate(req: AIRequest, key: PooledKey): Promise<AIResult>;
   classifyError(e: unknown): AIErrorClass;
 }

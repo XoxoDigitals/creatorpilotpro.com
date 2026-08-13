@@ -9,13 +9,15 @@ export class PrismaKeyStore implements KeyStore {
   ) {}
 
   async listByProvider(providerId: string): Promise<KeyState[]> {
+    // `providerId` is the provider slug ("gemini"), not the ai_providers cuid —
+    // match on the relation's name, not the raw FK.
     const rows = await this.prisma.aiKey.findMany({
-      where: { providerId, status: { not: 'DISABLED' } },
+      where: { provider: { name: providerId }, status: { not: 'DISABLED' } },
       orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
     });
     return rows.map((r) => ({
       id: r.id,
-      providerId: r.providerId,
+      providerId,
       secret: this.crypto.decrypt(r.keyEnc),
       label: r.label,
       status: r.status as KeyState['status'],

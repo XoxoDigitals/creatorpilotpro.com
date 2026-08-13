@@ -11,7 +11,9 @@ import { getDatabaseUrl } from './config.js';
 import { processors, setBoss } from './processors.js';
 import { PUBLISH_RETRY_LIMIT } from './publish.js';
 import { dispatchDueTargets } from './dispatcher.js';
-import { dispatchDueSources } from './watcher.js';
+import { dispatchDueSources, dispatchDueCompetitors } from './watcher.js';
+import { dispatchHotSync } from './analytics-dispatch.js';
+import { startHealthServer } from './health.js';
 
 const DISPATCH_INTERVAL_MS = 60_000;
 const WATCHER_DISPATCH_INTERVAL_MS = 60_000;
@@ -50,6 +52,18 @@ async function main(): Promise<void> {
         name: queue,
         retryLimit: PUBLISH_RETRY_LIMIT,
         retryBackoff: true,
+      });
+    } else if (queue === QUEUE.AI || queue === QUEUE.TTS) {
+      // AI / TTS jobs face rate limits + Gemini 503 "high demand" spikes that
+      // clear within minutes. Let pg-boss auto-requeue with exponential backoff
+      // instead of leaving the item stuck in FAILED after a single blip.
+      // TTS expire is tighter so a worker hot-reload / crash does not leave an
+      // ACTIVE idea_tts singleton blocking the UI for the default ~15–60m window.
+      await boss.createQueue(queue, {
+        name: queue,
+        retryLimit: 5,
+        retryBackoff: true,
+        ...(queue === QUEUE.TTS ? { expireInSeconds: 12 * 60 } : {}),
       });
     } else {
       await boss.createQueue(queue);
@@ -116,6 +130,83 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`[worker:watcher] source dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`);
 
+  // Competitor dispatcher (Phase 4, FR-D1): every minute, enqueue a poll for each
+  // ACTIVE competitor channel whose check interval has elapsed.
+  let pollingCompetitors = false;
+  const competitorTimer = setInterval(() => {
+    if (pollingCompetitors) return;
+    pollingCompetitors = true;
+    void dispatchDueCompetitors(boss)
+      .then((n) => {
+        if (n > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[worker:competitor] enqueued ${n} due competitor poll(s)`);
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[worker:competitor] dispatch failed:', err);
+      })
+      .finally(() => {
+        pollingCompetitors = false;
+      });
+  }, WATCHER_DISPATCH_INTERVAL_MS);
+  // eslint-disable-next-line no-console
+  console.log(`[worker:competitor] competitor dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`);
+
+  // Analytics nightly cron (docs/07): sync all accounts + recent posts + rollups at 2 AM.
+  await boss.schedule(QUEUE.ANALYTICS, '0 2 * * *', { kind: 'nightly_trigger' } as object);
+  // eslint-disable-next-line no-console
+  console.log('[worker:analytics] scheduled nightly sync cron (0 2 * * *)');
+
+  // Analytics hot sync (every 6 hours): re-sync posts published in the last 7 days.
+  const HOT_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  let syncingHot = false;
+  const hotSyncTimer = setInterval(() => {
+    if (syncingHot) return;
+    syncingHot = true;
+    void dispatchHotSync(boss)
+      .then((n) => {
+        if (n > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[worker:analytics] hot-sync enqueued ${n} post sync(s)`);
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[worker:analytics] hot-sync dispatch failed:', err);
+      })
+      .finally(() => {
+        syncingHot = false;
+      });
+  }, HOT_SYNC_INTERVAL_MS);
+  // eslint-disable-next-line no-console
+  console.log(`[worker:analytics] hot-sync dispatcher started (every ${HOT_SYNC_INTERVAL_MS / 3_600_000}h)`);
+
+  // Worker health check server (docs/08 §1) for pm2/uptime monitors.
+  const healthServer = startHealthServer(boss);
+
+  // Edge Neural TTS diagnostic — clear startup signal for local Windows setup.
+  try {
+    const { diagnoseEdgeTts } = await import('@scp/ai-providers');
+    const diag = await diagnoseEdgeTts();
+    if (diag.ok) {
+      console.log(
+        `[worker:tts] Edge Neural TTS ready via ${diag.binary.source}: ${diag.binary.detail}${
+          diag.versionHint ? ` (${diag.versionHint})` : ''
+        }`,
+      );
+    } else {
+      console.warn(
+        `[worker:tts] Edge Neural TTS unavailable — ${diag.binary.detail}. Install with \`pip install edge-tts\` or set EDGE_TTS_BIN. Fallback chain: Kokoro → Gemini → OpenAI.`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[worker:tts] Edge TTS diagnostics failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // eslint-disable-next-line no-console
   console.log(`[worker] startup complete — ${ALL_QUEUES.length} queues registered`);
 
@@ -124,6 +215,9 @@ async function main(): Promise<void> {
     console.log(`[worker] ${signal} received — shutting down gracefully...`);
     clearInterval(dispatchTimer);
     clearInterval(watcherTimer);
+    clearInterval(competitorTimer);
+    clearInterval(hotSyncTimer);
+    healthServer.close();
     try {
       await boss.stop({ graceful: true, timeout: 30_000 });
       // eslint-disable-next-line no-console

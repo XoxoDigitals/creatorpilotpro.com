@@ -11,6 +11,9 @@ export interface SourceVideoView {
   durationSec: number | null;
   publishedAt: string | null;
   downloadStatus: SourceVideo['downloadStatus'];
+  downloadPercent: number;
+  downloadEtaSec: number | null;
+  downloadSpeedBps: number | null;
   perceptualHash: string | null;
   md5: string | null;
   rightsNote: string | null;
@@ -30,6 +33,9 @@ export function toSourceVideoView(v: SourceVideo): SourceVideoView {
     durationSec: v.durationSec,
     publishedAt: v.publishedAt ? v.publishedAt.toISOString() : null,
     downloadStatus: v.downloadStatus,
+    downloadPercent: v.downloadPercent,
+    downloadEtaSec: v.downloadEtaSec,
+    downloadSpeedBps: v.downloadSpeedBps,
     perceptualHash: v.perceptualHash,
     md5: v.md5,
     rightsNote: v.rightsNote,

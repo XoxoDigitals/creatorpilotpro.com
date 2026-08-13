@@ -32,6 +32,16 @@ const DEFAULT_PROVIDERS: Array<{
     kind: AiProviderKind.TTS,
     baseConfig: { baseUrl: 'http://localhost:8880', needsKey: false },
   },
+  {
+    name: 'edge',
+    kind: AiProviderKind.TTS,
+    baseConfig: {
+      needsKey: false,
+      engine: 'edge-neural',
+      defaultVoice: 'en-US-AriaNeural',
+      binEnv: 'EDGE_TTS_BIN',
+    },
+  },
 ];
 
 async function main(): Promise<void> {

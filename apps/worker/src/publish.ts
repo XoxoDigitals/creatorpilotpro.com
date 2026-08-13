@@ -6,22 +6,21 @@
 import type PgBoss from 'pg-boss';
 import { TieredStorage } from '@scp/storage';
 import { validateMetadata } from '@scp/publish-adapters';
-import { QUEUE } from '@scp/shared';
+import { QUEUE, isPublishReviewApproved } from '@scp/shared';
 import {
   adapterAuth,
   buildAdapter,
   buildLocalFile,
   decryptAccountAuth,
-  detectHeaderStyle,
   getMasterKey,
   getPrisma,
-  loadPostquedConfig,
   notifyOwnersAdmins,
   raiseIncident,
   resolveMetadata,
   toAdapterTarget,
   type AdapterPlatform,
 } from './publish-support.js';
+import { ensureLocalFinalAsset } from './gdrive-archive.js';
 import { VERIFY_DELAYS_SEC, type VerifyJob, type VerifyPhase } from './publish-jobs.js';
 
 /** Max publish attempts before a retryable error becomes terminal (docs/06 §4). */
@@ -85,6 +84,37 @@ export async function runPublish(
   if (!['PENDING', 'SCHEDULED', 'PUBLISHING'].includes(target.status)) return; // already terminal.
 
   const { account, contentItem } = target;
+
+  // Defense in depth: never publish while held in Review or without publish approval.
+  if (target.status === 'PENDING') return;
+  if (
+    contentItem.status === 'REVIEW_PENDING' ||
+    contentItem.status === 'REJECTED' ||
+    contentItem.status === 'INGESTED'
+  ) {
+    if (target.status === 'SCHEDULED' || target.status === 'PUBLISHING') {
+      await prisma.publishTarget.update({
+        where: { id: target.id },
+        data: { status: 'PENDING' },
+      });
+    }
+    return;
+  }
+  if (contentItem.type === 'REPURPOSED' && !isPublishReviewApproved(contentItem.currentStep)) {
+    await prisma.contentItem.update({
+      where: { id: contentItem.id },
+      data: { status: 'REVIEW_PENDING', statusReason: null },
+    });
+    await prisma.publishTarget.updateMany({
+      where: {
+        contentItemId: contentItem.id,
+        status: { in: ['SCHEDULED', 'PUBLISHING', 'PENDING'] },
+      },
+      data: { status: 'PENDING' },
+    });
+    return;
+  }
+
   const platform = account.platform as AdapterPlatform;
 
   // Mark in-flight (idempotent; singletonKey prevents concurrent dispatch).
@@ -132,11 +162,12 @@ export async function runPublish(
   }
 
   // Pick the publishable asset (FINAL, else ORIGINAL for manual uploads).
+  // Platforms always need a local file — restore from Drive when needed.
   const asset =
     contentItem.assets.find((a) => a.kind === 'FINAL') ??
     contentItem.assets.find((a) => a.kind === 'ORIGINAL');
-  if (!asset?.localPath) {
-    await fail('TERMINAL_ERROR', 'no_asset', new Error('No FINAL/ORIGINAL asset with a local path.'));
+  if (!asset || (!asset.localPath && !asset.driveFileId)) {
+    await fail('TERMINAL_ERROR', 'no_asset', new Error('No FINAL/ORIGINAL asset with media.'));
     await toDraft();
     await raiseIncident(prisma, {
       kind: 'STORAGE',
@@ -149,16 +180,43 @@ export async function runPublish(
     return;
   }
 
+  let localAsset = asset;
+  try {
+    const ensured = await ensureLocalFinalAsset({
+      id: asset.id,
+      contentItemId: contentItem.id,
+      localPath: asset.localPath,
+      driveFileId: asset.driveFileId,
+      md5: asset.md5,
+      bytes: asset.bytes,
+    });
+    localAsset = { ...asset, localPath: ensured.localPath, md5: ensured.md5, bytes: BigInt(ensured.bytes) };
+  } catch (err) {
+    await fail('TERMINAL_ERROR', 'restore_failed', err);
+    await toDraft();
+    await raiseIncident(prisma, {
+      kind: 'STORAGE',
+      severity: 'HIGH',
+      accountId: account.id,
+      contentItemId: contentItem.id,
+      publishTargetId: target.id,
+      title: `Media for “${contentItem.title}” is not available locally`,
+      detail: errorPayload(err),
+    });
+    return;
+  }
+
   // Ensure a local copy exists (restore is a no-op fast path for LOCAL/BOTH).
   try {
     await storage.restore(
       {
-        localPath: asset.localPath,
-        md5: asset.md5 ?? '',
-        bytes: asset.bytes ? Number(asset.bytes) : 0,
-        state: asset.storageState,
+        localPath: localAsset.localPath ?? undefined,
+        md5: localAsset.md5 ?? '',
+        bytes: localAsset.bytes ? Number(localAsset.bytes) : 0,
+        state: localAsset.storageState,
+        driveFileId: localAsset.driveFileId ?? undefined,
       },
-      asset.localPath,
+      localAsset.localPath!,
     );
   } catch (err) {
     await fail('TERMINAL_ERROR', 'restore_failed', err);
@@ -175,32 +233,22 @@ export async function runPublish(
     return;
   }
 
-  const localFile = buildLocalFile(asset);
+  const localFile = buildLocalFile(localAsset);
   const override = (target.metadataOverride ?? {}) as Record<string, unknown>;
-  const meta = resolveMetadata(override, account.profile, contentItem.title);
+  const step = (contentItem.currentStep ?? {}) as Record<string, unknown>;
+  const aiMeta =
+    step.metadata && typeof step.metadata === 'object' && !Array.isArray(step.metadata)
+      ? (step.metadata as Record<string, unknown>)
+      : null;
+  const meta = resolveMetadata(override, account.profile, contentItem.title, aiMeta);
 
   // Build the adapter (its constraints drive fail-fast metadata validation).
-  let postqued = null as { apiKey: string; headerStyle: 'bearer' | 'x-api-key'; workspaceId?: string } | null;
-  if (platform !== 'FACEBOOK') {
-    const cfg = await loadPostquedConfig(prisma, masterKey);
-    if (!cfg) {
-      await fail('TERMINAL_ERROR', 'postqued_unconfigured', new Error('PostQued API key not configured.'));
-      await toDraft();
-      await raiseIncident(prisma, {
-        kind: 'SYSTEM',
-        severity: 'HIGH',
-        accountId: account.id,
-        contentItemId: contentItem.id,
-        publishTargetId: target.id,
-        title: 'PostQued API key is not configured',
-        detail: { hint: 'Add it in Settings → Platform Apps.' },
-      });
-      return;
-    }
-    postqued = { apiKey: cfg.apiKey, headerStyle: await detectHeaderStyle(cfg.apiKey), workspaceId: cfg.workspaceId };
-  }
-
-  const adapter = buildAdapter(platform, postqued);
+  // MANUAL accounts short-circuit — the adapter marks the target published so
+  // the Owner can download the final asset and upload it by hand.
+  const adapter = buildAdapter(
+    platform,
+    (account.connectionMethod ?? 'OWN_APP') as 'OWN_APP' | 'MANUAL' | 'POSTQUED',
+  );
 
   const blocking = validateMetadata(meta, localFile, adapter.getConstraints()).filter(
     (i) => i.severity === 'BLOCK',
@@ -238,6 +286,18 @@ export async function runPublish(
       where: { id: attempt.id },
       data: { finishedAt: new Date(), outcome: 'SUCCESS' },
     });
+
+    // MANUAL accounts stay in PUBLISHING (awaiting the Owner to download the
+    // rendered file, upload it to the platform, and click Mark published in
+    // the UI — that call flips the target to PUBLISHED). No verify jobs.
+    if (account.connectionMethod === 'MANUAL') {
+      await prisma.publishTarget.update({
+        where: { id: target.id },
+        data: { status: 'PUBLISHING', platformPostId, lastError: undefined },
+      });
+      return;
+    }
+
     await prisma.publishTarget.update({
       where: { id: target.id },
       data: { status: 'PUBLISHED', platformPostId, publishedAt: new Date(), lastError: undefined },

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { PageHeader } from '@/components/ui/page-header';
 import { Button } from '@/components/ui/button';
 import { Avatar } from '@/components/ui/avatar';
+import { PostDetailModal } from '@/components/post-detail-modal';
 import { cn } from '@/lib/cn';
 import { getAccountsView, getPostsView } from '@/lib/api-data';
 import type { Account, Post } from '@/lib/domain-types';
@@ -25,6 +26,8 @@ export default function CalendarPage() {
   });
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedTitle, setSelectedTitle] = useState<string | undefined>();
 
   useEffect(() => {
     void (async () => {
@@ -115,15 +118,22 @@ export default function CalendarPage() {
                     {postsOn(d).map((p) => {
                       const acc = accounts.find((a) => a.id === p.accountId);
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={p.id}
                           title={`${acc?.name}: ${p.title} (${p.status.toLowerCase()})`}
-                          className="flex items-center gap-1 rounded border border-zinc-200 bg-zinc-50 px-1 py-0.5"
+                          onClick={() => {
+                            setSelectedId(p.id);
+                            setSelectedTitle(p.title);
+                          }}
+                          className="flex w-full items-center gap-1 rounded border border-zinc-200 bg-zinc-50 px-1 py-0.5 text-left transition-colors hover:border-indigo-300 hover:bg-indigo-50"
                         >
                           <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', STATUS_DOT[p.status])} />
                           <Avatar name={acc?.name ?? '?'} size="xs" />
-                          <span className="truncate text-[10px] text-zinc-600">{p.title}</span>
-                        </div>
+                          <span className="truncate text-[10px] font-medium text-zinc-700 underline-offset-2 hover:underline">
+                            {p.title}
+                          </span>
+                        </button>
                       );
                     })}
                   </div>
@@ -144,6 +154,13 @@ export default function CalendarPage() {
         )}
         <span className="ml-auto text-zinc-400">Drag-to-reschedule arrives with the scheduling engine (Phase 2)</span>
       </div>
+
+      <PostDetailModal
+        open={selectedId != null}
+        onClose={() => setSelectedId(null)}
+        publishTargetId={selectedId}
+        seedTitle={selectedTitle}
+      />
     </div>
   );
 }

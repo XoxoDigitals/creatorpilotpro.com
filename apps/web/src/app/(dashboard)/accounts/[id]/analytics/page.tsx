@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader } from '@/components/ui/card';
 import { StatCard } from '@/components/ui/stat-card';
@@ -8,56 +8,107 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
 import { Drawer } from '@/components/ui/drawer';
-import { PostStatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
+import { BreakdownBars } from '@/components/analytics/breakdown-bars';
 import { cn } from '@/lib/cn';
 import { compactNumber, relativeTime, absoluteTime } from '@/lib/format';
-import { getAccount, getPosts } from '@/lib/mock-data';
-import type { Post } from '@/lib/domain-types';
+import {
+  getAccountView,
+  getAccountMetrics,
+  getAccountPostMetrics,
+  getPostMetricsView,
+  triggerAccountSync,
+  type AccountMetrics,
+  type PostTableRow,
+  type PostMetrics,
+} from '@/lib/api-data';
+import type { Account } from '@/lib/domain-types';
 
 type Preset = '7D' | '30D' | '90D' | 'CUSTOM';
 
-/** Deterministic pseudo-random helper so mock per-video metrics stay stable. */
-function seeded(id: string, salt: number): number {
-  let h = salt;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return h;
+function presetDates(preset: Preset, from: string, to: string): { from: string; to: string } {
+  const now = new Date();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  if (preset === '7D') {
+    const f = new Date(now); f.setUTCDate(f.getUTCDate() - 7);
+    return { from: fmt(f), to: fmt(now) };
+  }
+  if (preset === '30D') {
+    const f = new Date(now); f.setUTCDate(f.getUTCDate() - 30);
+    return { from: fmt(f), to: fmt(now) };
+  }
+  if (preset === '90D') {
+    const f = new Date(now); f.setUTCDate(f.getUTCDate() - 90);
+    return { from: fmt(f), to: fmt(now) };
+  }
+  const f = new Date(now); f.setUTCDate(f.getUTCDate() - 30);
+  return { from: from || fmt(f), to: to || fmt(now) };
 }
 
 export default function AccountAnalyticsPage() {
   const { id } = useParams<{ id: string }>();
-  const account = getAccount(id);
+  const [account, setAccount] = useState<Account | null>(null);
   const [preset, setPreset] = useState<Preset>('30D');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [selected, setSelected] = useState<Post | null>(null);
+  const [metrics, setMetrics] = useState<AccountMetrics | null>(null);
+  const [posts, setPosts] = useState<PostTableRow[]>([]);
+  const [selected, setSelected] = useState<PostMetrics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
-  const posts = getPosts(id);
+  const range = useMemo(() => presetDates(preset, from, to), [preset, from, to]);
 
-  const range = useMemo(() => {
-    const now = Date.now();
-    const DAY = 86_400_000;
-    if (preset === '7D') return { from: now - 7 * DAY, to: now };
-    if (preset === '30D') return { from: now - 30 * DAY, to: now };
-    if (preset === '90D') return { from: now - 90 * DAY, to: now };
-    return {
-      from: from ? Date.parse(from) : now - 30 * DAY,
-      to: to ? Date.parse(to) + DAY : now, // inclusive end date
-    };
-  }, [preset, from, to]);
+  const loadAccount = useCallback(async () => {
+    try {
+      const result = await getAccountView(id);
+      setAccount(result.account);
+    } catch { /* keep null */ }
+  }, [id]);
 
-  if (!account) return null;
+  const loadMetrics = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [m, p] = await Promise.all([
+        getAccountMetrics(id, range.from, range.to),
+        getAccountPostMetrics(id, range.from, range.to),
+      ]);
+      setMetrics(m);
+      setPosts(p);
+    } catch { /* keep empty */ }
+    finally { setLoading(false); }
+  }, [id, range.from, range.to]);
 
-  const published = posts.filter((p) => {
-    if (p.views == null || !p.publishedAt) return false;
-    const t = Date.parse(p.publishedAt);
-    return t >= range.from && t <= range.to;
-  });
-  const totalViews = published.reduce((n, p) => n + (p.views ?? 0), 0);
+  useEffect(() => { void loadAccount(); }, [loadAccount]);
+  useEffect(() => { void loadMetrics(); }, [loadMetrics]);
+
+  async function handleSync() {
+    setSyncing(true);
+    try {
+      await triggerAccountSync(id);
+      setTimeout(() => void loadMetrics(), 3000);
+    } catch { /* ignore */ }
+    finally { setSyncing(false); }
+  }
+
+  async function handlePostClick(publishTargetId: string) {
+    try { setSelected(await getPostMetricsView(publishTargetId)); }
+    catch { /* ignore */ }
+  }
+
+  if (!account) return loading ? <Skeleton className="h-64 w-full" /> : null;
+
+  const totals = metrics?.totals ?? {
+    views: 0, uniqueViewers: 0, watchTimeMin: 0, revenue: '0',
+    followersDelta: 0, engagements: 0, impressions: 0, avgCtr: 0, avgRetentionRate: 0,
+  };
+  const latest = metrics?.latest;
+  const rev = parseFloat(totals.revenue);
 
   return (
     <div className="space-y-6">
-      {/* Date range control */}
+      {/* Range controls */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex rounded-md border border-zinc-300 bg-white p-0.5">
           {(['7D', '30D', '90D', 'CUSTOM'] as Preset[]).map((p) => (
@@ -80,32 +131,103 @@ export default function AccountAnalyticsPage() {
             <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-auto" />
           </div>
         )}
-        <span className="ml-auto text-xs text-zinc-400">
-          Metrics are mock until the analytics sync lands (Phase 6) — the controls are real.
-        </span>
+        <Button size="sm" variant="secondary" className="ml-auto" onClick={handleSync} disabled={syncing}>
+          {syncing ? 'Syncing...' : 'Sync now'}
+        </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          label="Views (range)"
-          value={compactNumber(totalViews)}
-          hint={`${published.length} published post${published.length === 1 ? '' : 's'}`}
+      {/* KPI cards — row 1 */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <StatCard label="Views" value={compactNumber(totals.views)} hint="range total" />
+        <StatCard label="Unique viewers" value={compactNumber(totals.uniqueViewers)} hint="deduped" />
+        <StatCard label="Impressions" value={compactNumber(totals.impressions)} hint="range total" />
+        <StatCard label="Watch time" value={`${compactNumber(totals.watchTimeMin)} min`} hint="range total" />
+        <StatCard label="Followers" value={compactNumber(account.followers)}
+          delta={totals.followersDelta !== 0 ? `${totals.followersDelta > 0 ? '+' : ''}${totals.followersDelta}` : undefined}
         />
-        <StatCard label="Followers" value={compactNumber(account.followers)} delta="+2.4%" hint="current" />
-        <StatCard label="Avg. view duration" value="1:42" hint="range avg" />
+      </div>
+
+      {/* KPI cards — row 2 */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard label="Engagements" value={compactNumber(totals.engagements)} hint="likes+comments+shares" />
+        <StatCard label="Avg CTR" value={`${totals.avgCtr.toFixed(2)}%`} hint="impressions→click" />
+        <StatCard label="Retention" value={`${totals.avgRetentionRate.toFixed(1)}%`} hint="avg % watched" />
         {account.monetized ? (
-          <StatCard label="Est. revenue" value="$412" delta="+11%" hint="range · RPM $0.171" />
+          <StatCard label="Est. revenue" value={rev > 0 ? `$${rev.toFixed(2)}` : '—'} hint="range total" />
         ) : (
           <StatCard label="Est. revenue" value="—" hint="not monetized" />
         )}
       </div>
 
+      {/* Trend + audience breakdowns */}
+      {metrics && metrics.snapshots.length > 0 && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="p-4 lg:col-span-2">
+            <p className="mb-2 text-xs font-medium text-zinc-600">Views per day</p>
+            <div className="flex h-24 items-end gap-1 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
+              {metrics.snapshots.map((s) => {
+                const maxV = Math.max(...metrics.snapshots.map((x) => x.views), 1);
+                const h = Math.max(5, (s.views / maxV) * 100);
+                return (
+                  <div key={s.date} style={{ height: `${h}%` }}
+                    className="flex-1 rounded-sm bg-indigo-400/80"
+                    title={`${s.date}: ${s.views.toLocaleString()} views`}
+                  />
+                );
+              })}
+            </div>
+          </Card>
+
+          <Card className="p-4 space-y-4">
+            <BreakdownBars
+              title="Traffic countries"
+              rows={(latest?.trafficCountries ?? []).map((c) => ({ label: c.country, pct: c.pct, extra: c.views }))}
+            />
+          </Card>
+        </div>
+      )}
+
+      {/* More breakdowns */}
+      {latest && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="p-4">
+            <BreakdownBars
+              title="Age groups"
+              rows={(latest.ageGroups ?? []).map((a) => ({ label: a.range, pct: a.pct }))}
+            />
+          </Card>
+          <Card className="p-4">
+            <BreakdownBars
+              title="Traffic sources"
+              rows={(latest.trafficSources ?? []).map((s) => ({ label: s.source, pct: s.pct, extra: s.views }))}
+            />
+          </Card>
+          <Card className="p-4 space-y-3">
+            <BreakdownBars
+              title="Devices"
+              rows={(latest.deviceSplit ?? []).map((d) => ({ label: d.device, pct: d.pct }))}
+            />
+            {latest.genderSplit && (latest.genderSplit.male || latest.genderSplit.female) ? (
+              <BreakdownBars
+                title="Gender"
+                rows={[
+                  ...(latest.genderSplit.male != null ? [{ label: 'Male', pct: latest.genderSplit.male }] : []),
+                  ...(latest.genderSplit.female != null ? [{ label: 'Female', pct: latest.genderSplit.female }] : []),
+                  ...(latest.genderSplit.other != null ? [{ label: 'Other', pct: latest.genderSplit.other }] : []),
+                ]}
+              />
+            ) : null}
+          </Card>
+        </div>
+      )}
+
+      {/* Per-video table */}
       <Card>
         <CardHeader
           title="Per-video performance"
           description="Click any row for the full video breakdown"
         />
-        {published.length === 0 ? (
+        {posts.length === 0 ? (
           <div className="p-4">
             <EmptyState
               title="No published videos in this range"
@@ -119,97 +241,113 @@ export default function AccountAnalyticsPage() {
                 <TH>Video</TH>
                 <TH>Published</TH>
                 <TH numeric>Views</TH>
+                <TH numeric>Unique</TH>
+                <TH numeric>Impressions</TH>
+                <TH numeric>CTR</TH>
+                <TH numeric>Watch</TH>
+                <TH numeric>Retention</TH>
                 <TH numeric>Likes</TH>
                 <TH numeric>Comments</TH>
-                <TH numeric>Avg. watch</TH>
+                <TH numeric>Shares</TH>
               </TR>
             </THead>
             <TBody>
-              {published
-                .sort((a, b) => (b.views ?? 0) - (a.views ?? 0))
-                .map((p) => (
-                  <TR key={p.id} onClick={() => setSelected(p)}>
-                    <TD className="font-medium text-zinc-900">{p.title}</TD>
-                    <TD title={absoluteTime(p.publishedAt)}>{relativeTime(p.publishedAt)}</TD>
-                    <TD numeric>{compactNumber(p.views ?? 0)}</TD>
-                    <TD numeric>{compactNumber(Math.round((p.views ?? 0) * 0.041) + (seeded(p.id, 7) % 50))}</TD>
-                    <TD numeric>{compactNumber(Math.round((p.views ?? 0) * 0.0038) + (seeded(p.id, 13) % 20))}</TD>
-                    <TD numeric>{`${1 + (seeded(p.id, 3) % 2)}:${String(seeded(p.id, 17) % 60).padStart(2, '0')}`}</TD>
-                  </TR>
-                ))}
+              {posts.map((p) => (
+                <TR key={p.publishTargetId} onClick={() => handlePostClick(p.publishTargetId)}>
+                  <TD className="font-medium text-zinc-900">{p.contentTitle}</TD>
+                  <TD title={p.publishedAt ? absoluteTime(p.publishedAt) : ''}>
+                    {p.publishedAt ? relativeTime(p.publishedAt) : '—'}
+                  </TD>
+                  <TD numeric>{compactNumber(p.views)}</TD>
+                  <TD numeric>{compactNumber(p.uniqueViewers)}</TD>
+                  <TD numeric>{compactNumber(p.impressions)}</TD>
+                  <TD numeric>{p.ctr.toFixed(1)}%</TD>
+                  <TD numeric>{compactNumber(p.watchTimeMin)}m</TD>
+                  <TD numeric>{p.retentionRate.toFixed(0)}%</TD>
+                  <TD numeric>{compactNumber(p.likes)}</TD>
+                  <TD numeric>{compactNumber(p.comments)}</TD>
+                  <TD numeric>{compactNumber(p.shares)}</TD>
+                </TR>
+              ))}
             </TBody>
           </Table>
         )}
       </Card>
 
       {/* Per-video drill-down */}
-      <Drawer open={selected != null} onClose={() => setSelected(null)} title={selected?.title ?? ''}>
-        {selected && (
-          <div className="space-y-5 text-sm">
-            <div className="flex items-center gap-2">
-              <PostStatusBadge status={selected.status} />
-              <span className="text-xs text-zinc-500" title={absoluteTime(selected.publishedAt)}>
-                published {relativeTime(selected.publishedAt)}
-              </span>
+      <Drawer open={selected != null} onClose={() => setSelected(null)} title={selected?.contentTitle ?? ''}>
+        {selected && (() => {
+          const s = selected.snapshots.length > 0 ? selected.snapshots[selected.snapshots.length - 1]! : null;
+          return (
+            <div className="space-y-5 text-sm">
+              {s && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <StatCard label="Views" value={compactNumber(s.views)} />
+                    <StatCard label="Unique viewers" value={compactNumber(s.uniqueViewers)} />
+                    <StatCard label="Impressions" value={compactNumber(s.impressions)} />
+                    <StatCard label="CTR" value={`${s.ctr.toFixed(1)}%`} />
+                    <StatCard label="Watch time" value={`${compactNumber(s.watchTimeMin)} min`} />
+                    <StatCard label="Avg view duration" value={`${s.averageViewDurationSec}s`} />
+                    <StatCard label="Retention" value={`${s.retentionRate.toFixed(0)}%`} />
+                    <StatCard label="Engagement" value={compactNumber(s.likes + s.comments + s.shares + s.saves)} />
+                  </div>
+
+                  {selected.snapshots.length > 1 && (
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-zinc-600">Views by day</p>
+                      <div className="flex h-20 items-end gap-1 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
+                        {selected.snapshots.map((sn) => {
+                          const max = Math.max(...selected.snapshots.map((x) => x.views), 1);
+                          const h = Math.max(5, (sn.views / max) * 100);
+                          return (
+                            <div key={sn.date} style={{ height: `${h}%` }}
+                              className="flex-1 rounded-sm bg-indigo-400/80"
+                              title={`${sn.date}: ${sn.views}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {Array.isArray(selected.retentionCurve) && selected.retentionCurve.length > 0 && (
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-zinc-600">Audience retention curve</p>
+                      <div className="flex h-16 items-end gap-0.5 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
+                        {(selected.retentionCurve as number[]).map((pct, i) => (
+                          <div key={i} style={{ height: `${Math.max(5, pct)}%` }}
+                            className="flex-1 rounded-sm bg-violet-400/70"
+                            title={`${i * 5}%: ${pct}%`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <BreakdownBars
+                    title="Traffic countries"
+                    rows={(s.trafficCountries ?? []).map((c) => ({ label: c.country, pct: c.pct, extra: c.views }))}
+                  />
+                  <BreakdownBars
+                    title="Age groups"
+                    rows={(s.ageGroups ?? []).map((a) => ({ label: a.range, pct: a.pct }))}
+                  />
+                  <BreakdownBars
+                    title="Traffic sources"
+                    rows={(s.trafficSources ?? []).map((src) => ({ label: src.source, pct: src.pct, extra: src.views }))}
+                  />
+                  <BreakdownBars
+                    title="Devices"
+                    rows={(s.deviceSplit ?? []).map((d) => ({ label: d.device, pct: d.pct }))}
+                  />
+                </>
+              )}
+
+              <Button size="sm" variant="secondary" onClick={() => setSelected(null)}>Close</Button>
             </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <StatCard label="Views" value={compactNumber(selected.views ?? 0)} delta="+12%" hint="vs prev video" />
-              <StatCard label="Likes" value={compactNumber(Math.round((selected.views ?? 0) * 0.041))} />
-              <StatCard label="CTR" value={`${(4 + (seeded(selected.id, 5) % 40) / 10).toFixed(1)}%`} hint="impressions" />
-              <StatCard label="Avg. watch" value={`1:${String(seeded(selected.id, 17) % 60).padStart(2, '0')}`} />
-            </div>
-
-            {/* Simple views-by-day sparkline (mock) */}
-            <div>
-              <p className="mb-2 text-xs font-medium text-zinc-500">Views by day</p>
-              <div className="flex h-20 items-end gap-1 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
-                {Array.from({ length: 14 }, (_, i) => {
-                  const h = 15 + (seeded(selected.id, i + 23) % 85);
-                  return (
-                    <div
-                      key={i}
-                      style={{ height: `${h}%` }}
-                      className="flex-1 rounded-sm bg-indigo-400/80"
-                      title={`day ${i + 1}`}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-2 text-xs font-medium text-zinc-500">Audience retention</p>
-              <div className="flex h-16 items-end gap-0.5 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
-                {Array.from({ length: 20 }, (_, i) => {
-                  const h = Math.max(12, 100 - i * (3 + (seeded(selected.id, i + 41) % 4)));
-                  return (
-                    <div
-                      key={i}
-                      style={{ height: `${h}%` }}
-                      className="flex-1 rounded-sm bg-violet-400/70"
-                      title={`${i * 5}%: ${h}%`}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-
-            {account.monetized && (
-              <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
-                Est. revenue for this video: ${((selected.views ?? 0) * 0.00017).toFixed(2)} (RPM $0.17)
-              </div>
-            )}
-
-            <p className="border-t border-zinc-100 pt-3 text-xs text-zinc-400">
-              All numbers are mock placeholders — real per-video timelines, retention curves, and
-              revenue sync from the platforms in Phase 6.
-            </p>
-            <Button size="sm" variant="secondary" onClick={() => setSelected(null)}>
-              Close
-            </Button>
-          </div>
-        )}
+          );
+        })()}
       </Drawer>
     </div>
   );

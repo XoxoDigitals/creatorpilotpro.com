@@ -7,8 +7,10 @@ import {
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import type { Role, User } from '@scp/db';
+import { hasGlobalAccountAccess } from '@scp/shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SessionService } from '../auth/session.service';
+import { AccountAccessService } from '../../common/account-access/account-access.service';
 import type { SessionUser } from '../../common/session/session.types';
 import type { CreateUserDto } from './dto/user.dto';
 
@@ -23,9 +25,13 @@ export interface UserView {
   status: User['status'];
   lastLoginAt: Date | null;
   createdAt: Date;
+  /** Granted SocialAccount ids. OWNER/ADMIN ignore these (see all accounts). */
+  accountIds: string[];
+  /** True when role bypasses grants and sees every account. */
+  allAccountsAccess: boolean;
 }
 
-function toView(u: User): UserView {
+function toView(u: User, accountIds: string[] = []): UserView {
   return {
     id: u.id,
     email: u.email,
@@ -34,6 +40,8 @@ function toView(u: User): UserView {
     status: u.status,
     lastLoginAt: u.lastLoginAt,
     createdAt: u.createdAt,
+    accountIds,
+    allAccountsAccess: hasGlobalAccountAccess(u.role),
   };
 }
 
@@ -42,6 +50,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: SessionService,
+    private readonly accountAccess: AccountAccessService,
   ) {}
 
   /**
@@ -57,9 +66,15 @@ export class UsersService {
   async list(): Promise<UserView[]> {
     const users = await this.prisma.client.user.findMany({
       where: { deletedAt: null },
+      include: { accountAccess: { select: { accountId: true } } },
       orderBy: { createdAt: 'asc' },
     });
-    return users.map(toView);
+    return users.map((u) =>
+      toView(
+        u,
+        u.accountAccess.map((g) => g.accountId),
+      ),
+    );
   }
 
   async create(actor: SessionUser, dto: CreateUserDto): Promise<UserView> {
@@ -73,7 +88,12 @@ export class UsersService {
     const user = await this.prisma.client.user.create({
       data: { email, name: dto.name ?? null, role: dto.role, passwordHash, status: 'ACTIVE' },
     });
-    return toView(user);
+
+    let accountIds: string[] = [];
+    if (dto.accountIds && dto.accountIds.length > 0) {
+      accountIds = await this.accountAccess.replaceGrants(user.id, dto.accountIds);
+    }
+    return toView(user, accountIds);
   }
 
   private async loadManageable(actor: SessionUser, id: string): Promise<User> {
@@ -81,6 +101,11 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found');
     this.assertCanManageRole(actor, user.role);
     return user;
+  }
+
+  private async viewWithGrants(user: User): Promise<UserView> {
+    const accountIds = await this.accountAccess.listAccountIdsForUser(user.id);
+    return toView(user, accountIds);
   }
 
   async setEnabled(actor: SessionUser, id: string, enabled: boolean): Promise<UserView> {
@@ -101,7 +126,7 @@ export class UsersService {
       data: { status: enabled ? 'ACTIVE' : 'SUSPENDED' },
     });
     if (!enabled) await this.sessions.destroyAllForUser(id);
-    return toView(user);
+    return this.viewWithGrants(user);
   }
 
   async resetPassword(actor: SessionUser, id: string, newPassword: string): Promise<UserView> {
@@ -113,7 +138,7 @@ export class UsersService {
     });
     // Force re-login everywhere after a password reset.
     await this.sessions.destroyAllForUser(id);
-    return toView(user);
+    return this.viewWithGrants(user);
   }
 
   async changeRole(actor: SessionUser, id: string, role: Role): Promise<UserView> {
@@ -128,6 +153,21 @@ export class UsersService {
     }
 
     const user = await this.prisma.client.user.update({ where: { id }, data: { role } });
-    return toView(user);
+    return this.viewWithGrants(user);
+  }
+
+  async listAccounts(actor: SessionUser, id: string): Promise<{ accountIds: string[]; allAccountsAccess: boolean }> {
+    const target = await this.loadManageable(actor, id);
+    const accountIds = await this.accountAccess.listAccountIdsForUser(target.id);
+    return {
+      accountIds,
+      allAccountsAccess: hasGlobalAccountAccess(target.role),
+    };
+  }
+
+  async setAccounts(actor: SessionUser, id: string, accountIds: string[]): Promise<UserView> {
+    const target = await this.loadManageable(actor, id);
+    const saved = await this.accountAccess.replaceGrants(target.id, accountIds);
+    return toView(target, saved);
   }
 }

@@ -2,9 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PostQuedAdapter } from './postqued.js';
 import { FacebookAdapter } from './facebook.js';
-import { PostQuedV2Client, PostQuedError } from './postqued-client.js';
+import { TikTokAdapter } from './tiktok.js';
+import { YouTubeAdapter } from './youtube.js';
 import { validateMetadata } from './validate.js';
 import type { LocalFile, PublishTarget, ResolvedMetadata } from './types.js';
 
@@ -34,177 +34,111 @@ function meta(over: Partial<ResolvedMetadata> = {}): ResolvedMetadata {
   };
 }
 
-function target(over: Partial<PublishTarget> = {}): PublishTarget {
-  return {
-    id: 'tgt-1',
-    contentItemId: 'ci-1',
-    accountId: 'acct-internal-1',
-    platform: 'TIKTOK',
-    auth: { postquedAccountId: 'pq-acct-9' },
-    ...over,
-  };
-}
-
 interface Call {
   url: string;
   method: string;
   headers: Record<string, string>;
 }
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
   });
 }
 
-/** Mock fetch covering the PostQued upload+publish+status endpoints. */
-function makePostQuedFetch(overrides?: { statusBody?: unknown }) {
-  const calls: Call[] = [];
-  const fetchImpl = (async (url: unknown, init?: RequestInit) => {
-    const u = String(url);
-    calls.push({
-      url: u,
-      method: init?.method ?? 'GET',
-      headers: (init?.headers ?? {}) as Record<string, string>,
-    });
-    if (u.endsWith('/v2/content/upload'))
-      return jsonResponse(200, {
-        contentId: 'content-1',
-        upload: { url: 'https://storage.example/put/abc', key: 'key-1', method: 'PUT', headers: { 'Content-Type': 'video/mp4' } },
-      });
-    if (u === 'https://storage.example/put/abc') return new Response('', { status: 200 });
-    if (u.endsWith('/v2/content/upload/complete'))
-      return jsonResponse(200, { content: { id: 'content-1' } });
-    if (u.endsWith('/v2/publish'))
-      return jsonResponse(200, { id: 'publish-1', targets: [{ id: 'ptarget-1' }] });
-    if (u.includes('/v2/publish/'))
-      return jsonResponse(200, overrides?.statusBody ?? { targets: [{ status: 'processing' }] });
-    return jsonResponse(404, { error: 'not found' });
-  }) as unknown as typeof fetch;
-  return { calls, fetchImpl };
-}
+// ── YouTube (native Data API v3) ──────────────────────────────────────────────
 
-describe('PostQuedAdapter (TikTok)', () => {
-  it('runs the 3-step upload then publish, in order, with the Idempotency-Key header', async () => {
-    const { calls, fetchImpl } = makePostQuedFetch();
-    const adapter = new PostQuedAdapter({
-      baseUrl: 'https://api.postqued.com',
-      apiKey: 'pq_test',
-      headerStyle: 'bearer',
-      fetchImpl,
-    });
+describe('YouTubeAdapter (native Data API v3)', () => {
+  function ytTarget(): PublishTarget {
+    return {
+      id: 'yt-tgt',
+      contentItemId: 'ci',
+      accountId: 'a',
+      platform: 'YOUTUBE',
+      auth: { accessToken: 'ya29.TOKEN' },
+    };
+  }
 
-    const res = await adapter.publish(target(), media(), meta());
-
-    // publish() returns the PostQued publishId (verify job polls it).
-    expect(res.platformPostId).toBe('publish-1');
-
-    const seq = calls.map((c) => `${c.method} ${c.url.replace('https://api.postqued.com', '')}`);
-    expect(seq).toEqual([
-      'POST /v2/content/upload',
-      'PUT https://storage.example/put/abc',
-      'POST /v2/content/upload/complete',
-      'POST /v2/publish',
-    ]);
-
-    // Bearer auth on the API calls; NO auth header on the presigned PUT.
-    expect(calls[0]!.headers).toHaveProperty('Authorization', 'Bearer pq_test');
-    expect(calls[1]!.headers).not.toHaveProperty('Authorization');
-
-    // Idempotency-Key present + stable per target id.
-    const publishCall = calls.find((c) => c.url.endsWith('/v2/publish'))!;
-    expect(publishCall.headers['Idempotency-Key']).toBe('scp-tgt-1');
-  });
-
-  it('sends the postquedAccountId from target.auth and TikTok options built from metadata', async () => {
-    const bodies: any[] = [];
+  it('does init POST → PUT with the Location URL and returns the returned video id', async () => {
+    const calls: Call[] = [];
     const fetchImpl = (async (url: unknown, init?: RequestInit) => {
       const u = String(url);
-      if (init?.body && typeof init.body === 'string') bodies.push({ u, body: JSON.parse(init.body) });
-      if (u.endsWith('/v2/content/upload'))
-        return jsonResponse(200, { contentId: 'c', upload: { url: 'https://s/put', key: 'k', method: 'PUT' } });
-      if (u === 'https://s/put') return new Response('', { status: 200 });
-      if (u.endsWith('/v2/content/upload/complete')) return jsonResponse(200, { content: { id: 'c' } });
-      if (u.endsWith('/v2/publish')) return jsonResponse(200, { id: 'pub' });
+      calls.push({ url: u, method: init?.method ?? 'GET', headers: (init?.headers ?? {}) as Record<string, string> });
+      if (u.includes('/upload/youtube/v3/videos')) {
+        return new Response(null, { status: 200, headers: { location: 'https://upload.google/session-XYZ' } });
+      }
+      if (u === 'https://upload.google/session-XYZ') {
+        return jsonResponse(200, { id: 'yt_VIDEO_ID' });
+      }
       return jsonResponse(404, {});
     }) as unknown as typeof fetch;
 
-    const adapter = new PostQuedAdapter({
-      baseUrl: 'https://api.postqued.com',
-      apiKey: 'pq_test',
-      headerStyle: 'x-api-key',
-      fetchImpl,
-    });
-    await adapter.publish(target(), media(), meta({ visibility: 'PRIVATE' }));
+    const adapter = new YouTubeAdapter({ fetchImpl });
+    const res = await adapter.publish(ytTarget(), media(), meta());
+    expect(res.platformPostId).toBe('yt_VIDEO_ID');
 
-    const publishBody = bodies.find((b) => b.u.endsWith('/v2/publish'))!.body;
-    const t = publishBody.targets[0];
-    expect(t.platform).toBe('tiktok');
-    expect(t.accountId).toBe('pq-acct-9');
-    expect(t.dispatchAt).toBeNull();
-    expect(t.options.privacyLevel).toBe('SELF_ONLY');
-    expect(t.options.aiGeneratedContent).toBe(true);
-    expect(t.caption).toContain('#fun');
+    expect(calls[0]!.url).toContain('/upload/youtube/v3/videos');
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.headers).toHaveProperty('Authorization', 'Bearer ya29.TOKEN');
+    expect(calls[1]!.url).toBe('https://upload.google/session-XYZ');
+    expect(calls[1]!.method).toBe('PUT');
   });
 
-  it('verify() maps a copyright issue to BLOCK and reports not-live', async () => {
-    const { fetchImpl } = makePostQuedFetch({
-      statusBody: {
-        targets: [
-          {
-            status: 'published',
-            platformPostId: 'tt_123',
-            issues: [{ code: 'copyright_claim', message: 'Matched third-party content', severity: 'warning' }],
-          },
-        ],
-      },
-    });
-    const adapter = new PostQuedAdapter({
-      baseUrl: 'https://api.postqued.com',
-      apiKey: 'pq_test',
-      headerStyle: 'bearer',
-      fetchImpl,
-    });
-    const out = await adapter.verify('publish-1');
-    expect(out.live).toBe(false);
-    expect(out.issues[0]).toMatchObject({ code: 'copyright_claim', severity: 'BLOCK' });
+  it('throws when target.auth.accessToken is missing', async () => {
+    const adapter = new YouTubeAdapter({ fetchImpl: (async () => jsonResponse(200, {})) as unknown as typeof fetch });
+    await expect(
+      adapter.publish({ ...ytTarget(), auth: {} }, media(), meta()),
+    ).rejects.toThrow(/accessToken/i);
   });
 
-  it('verify() reports live when state is published with no issues', async () => {
-    const { fetchImpl } = makePostQuedFetch({
-      statusBody: { targets: [{ status: 'published', platformPostId: 'tt_999', issues: [] }] },
+  it('marks 5xx retryable and 4xx terminal on init failure', async () => {
+    const mk = (status: number) => new YouTubeAdapter({
+      fetchImpl: (async () => jsonResponse(status, { error: 'x' })) as unknown as typeof fetch,
     });
-    const adapter = new PostQuedAdapter({
-      baseUrl: 'https://api.postqued.com',
-      apiKey: 'pq_test',
-      headerStyle: 'bearer',
-      fetchImpl,
-    });
-    const out = await adapter.verify('publish-1');
+    await expect(mk(503).publish(ytTarget(), media(), meta())).rejects.toMatchObject({ retryable: true });
+    await expect(mk(400).publish(ytTarget(), media(), meta())).rejects.toMatchObject({ retryable: false });
+  });
+
+  it('verify() → live when processed + no issues', async () => {
+    const fetchImpl = (async () => jsonResponse(200, {
+      items: [{
+        status: { uploadStatus: 'processed', privacyStatus: 'public' },
+        processingDetails: { processingStatus: 'succeeded' },
+      }],
+    })) as unknown as typeof fetch;
+    const adapter = new YouTubeAdapter({ fetchImpl });
+    adapter.primeVerifyAuth('yt_VIDEO_ID', { accessToken: 'ya29.TOKEN' });
+    const out = await adapter.verify('yt_VIDEO_ID');
     expect(out.live).toBe(true);
     expect(out.issues).toHaveLength(0);
   });
-});
 
-describe('PostQuedV2Client error classification', () => {
-  it('marks 5xx as retryable and 4xx as terminal', async () => {
-    const mk = (status: number) =>
-      new PostQuedV2Client({
-        baseUrl: 'https://api.postqued.com',
-        apiKey: 'k',
-        headerStyle: 'bearer',
-        fetchImpl: (async () => jsonResponse(status, { error: 'x', code: 'E' })) as unknown as typeof fetch,
-      });
+  it('verify() maps rejectionReason with copyright pattern to BLOCK', async () => {
+    const fetchImpl = (async () => jsonResponse(200, {
+      items: [{
+        status: { uploadStatus: 'processed', rejectionReason: 'copyrightMatch' },
+        processingDetails: { processingStatus: 'succeeded' },
+      }],
+    })) as unknown as typeof fetch;
+    const adapter = new YouTubeAdapter({ fetchImpl });
+    adapter.primeVerifyAuth('yt_VIDEO_ID', { accessToken: 'ya29.TOKEN' });
+    const out = await adapter.verify('yt_VIDEO_ID');
+    expect(out.live).toBe(false);
+    expect(out.issues[0]).toMatchObject({ severity: 'BLOCK' });
+  });
 
-    await expect(mk(503).getPublishStatus('p')).rejects.toMatchObject({ retryable: true });
-    const terminal = await mk(400)
-      .getPublishStatus('p')
-      .catch((e: PostQuedError) => e);
-    expect(terminal).toBeInstanceOf(PostQuedError);
-    expect((terminal as PostQuedError).retryable).toBe(false);
+  it('verify() returns auth-missing INFO when the video id was not primed', async () => {
+    const adapter = new YouTubeAdapter({
+      fetchImpl: (async () => jsonResponse(200, {})) as unknown as typeof fetch,
+    });
+    const out = await adapter.verify('never-seen');
+    expect(out.live).toBe(false);
+    expect(out.issues[0]).toMatchObject({ code: 'auth-missing', severity: 'INFO' });
   });
 });
+
+// ── Facebook (Reels — direct Meta Graph) ──────────────────────────────────────
 
 describe('FacebookAdapter (Reels)', () => {
   function fbTarget(): PublishTarget {
@@ -237,7 +171,6 @@ describe('FacebookAdapter (Reels)', () => {
     expect(phases[0]).toContain('upload_phase=start');
     expect(phases[1]).toBe('https://rupload.facebook.com/vid_1');
     expect(phases[2]).toContain('/video_reels');
-    // No access token leaked into any URL.
     expect(calls.every((c) => !c.url.includes('TKN'))).toBe(true);
     expect(calls[0]!.headers).toHaveProperty('Authorization', 'Bearer TKN');
     expect(calls[1]!.headers).toHaveProperty('Authorization', 'OAuth TKN');
@@ -262,6 +195,87 @@ describe('FacebookAdapter (Reels)', () => {
     await expect(adapter.verify('unknown-vid')).rejects.toThrow(/primeVerifyAuth/);
   });
 });
+
+// ── TikTok (Content Posting API v2 — DIRECT_POST) ────────────────────────────
+
+describe('TikTokAdapter (native)', () => {
+  function ttTarget(): PublishTarget {
+    return { id: 'tt-tgt', contentItemId: 'ci', accountId: 'a', platform: 'TIKTOK', auth: { accessToken: 'act.TOKEN' } };
+  }
+
+  it('does init POST → single-chunk PUT and returns the publish_id', async () => {
+    const calls: Call[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, method: init?.method ?? 'GET', headers: (init?.headers ?? {}) as Record<string, string> });
+      if (u.endsWith('/v2/post/publish/video/init/')) {
+        return jsonResponse(200, { data: { publish_id: 'pub_ABC', upload_url: 'https://tiktok.upload/session-XYZ' } });
+      }
+      if (u === 'https://tiktok.upload/session-XYZ') {
+        return new Response('', { status: 200 });
+      }
+      return jsonResponse(404, {});
+    }) as unknown as typeof fetch;
+
+    const adapter = new TikTokAdapter({ fetchImpl });
+    const res = await adapter.publish(ttTarget(), media(), meta());
+    expect(res.platformPostId).toBe('pub_ABC');
+    expect(calls[0]!.url).toContain('/v2/post/publish/video/init/');
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.headers).toHaveProperty('Authorization', 'Bearer act.TOKEN');
+    expect(calls[1]!.url).toBe('https://tiktok.upload/session-XYZ');
+    expect(calls[1]!.method).toBe('PUT');
+    expect(calls[1]!.headers).toHaveProperty('Content-Range', 'bytes 0-13/14');
+  });
+
+  it('throws when target.auth.accessToken is missing', async () => {
+    const adapter = new TikTokAdapter({ fetchImpl: (async () => jsonResponse(200, {})) as unknown as typeof fetch });
+    await expect(
+      adapter.publish({ ...ttTarget(), auth: {} }, media(), meta()),
+    ).rejects.toThrow(/accessToken/i);
+  });
+
+  it('surfaces TikTok error envelope { error: { code } } as a terminal error', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(200, { error: { code: 'spam_risk', message: 'video appears spammy' } })
+    ) as unknown as typeof fetch;
+    const adapter = new TikTokAdapter({ fetchImpl });
+    await expect(adapter.publish(ttTarget(), media(), meta())).rejects.toMatchObject({ retryable: false });
+  });
+
+  it('verify() → live when PUBLISH_COMPLETE with a published post id', async () => {
+    const fetchImpl = (async () => jsonResponse(200, {
+      data: { status: 'PUBLISH_COMPLETE', publicaly_available_post_id: ['tt_LIVE'] },
+    })) as unknown as typeof fetch;
+    const adapter = new TikTokAdapter({ fetchImpl });
+    adapter.primeVerifyAuth('pub_ABC', { accessToken: 'act.TOKEN' });
+    const out = await adapter.verify('pub_ABC');
+    expect(out.live).toBe(true);
+    expect(out.issues).toHaveLength(0);
+  });
+
+  it('verify() maps FAILED + copyright fail_reason to BLOCK', async () => {
+    const fetchImpl = (async () => jsonResponse(200, {
+      data: { status: 'FAILED', fail_reason: 'copyright_violation' },
+    })) as unknown as typeof fetch;
+    const adapter = new TikTokAdapter({ fetchImpl });
+    adapter.primeVerifyAuth('pub_ABC', { accessToken: 'act.TOKEN' });
+    const out = await adapter.verify('pub_ABC');
+    expect(out.live).toBe(false);
+    expect(out.issues.some((i) => i.severity === 'BLOCK')).toBe(true);
+  });
+
+  it('verify() returns auth-missing INFO when the publish id was not primed', async () => {
+    const adapter = new TikTokAdapter({
+      fetchImpl: (async () => jsonResponse(200, {})) as unknown as typeof fetch,
+    });
+    const out = await adapter.verify('never-seen');
+    expect(out.live).toBe(false);
+    expect(out.issues[0]).toMatchObject({ code: 'auth-missing', severity: 'INFO' });
+  });
+});
+
+// ── validateMetadata ─────────────────────────────────────────────────────────
 
 describe('validateMetadata', () => {
   const constraints = {

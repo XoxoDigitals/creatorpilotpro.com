@@ -15,13 +15,13 @@ function ctxFor(user: SessionUser | undefined): ExecutionContext {
 }
 
 const owner: SessionUser = { id: '1', email: 'o@x.com', name: 'O', role: 'OWNER' };
-const worker: SessionUser = { id: '2', email: 'w@x.com', name: 'W', role: 'WORKER' };
+const reviewer: SessionUser = { id: '2', email: 'r@x.com', name: 'R', role: 'REVIEWER' };
 
 describe('RolesGuard', () => {
   it('allows any authenticated user when no @Roles is set', () => {
     const reflector = { getAllAndOverride: () => undefined } as unknown as Reflector;
     const guard = new RolesGuard(reflector);
-    expect(guard.canActivate(ctxFor(worker))).toBe(true);
+    expect(guard.canActivate(ctxFor(reviewer))).toBe(true);
   });
 
   it('allows a user whose role is in the required set', () => {
@@ -37,7 +37,7 @@ describe('RolesGuard', () => {
       getAllAndOverride: () => ['OWNER', 'ADMIN'],
     } as unknown as Reflector;
     const guard = new RolesGuard(reflector);
-    expect(() => guard.canActivate(ctxFor(worker))).toThrow(ForbiddenException);
+    expect(() => guard.canActivate(ctxFor(reviewer))).toThrow(ForbiddenException);
   });
 
   it('rejects when there is no authenticated user', () => {

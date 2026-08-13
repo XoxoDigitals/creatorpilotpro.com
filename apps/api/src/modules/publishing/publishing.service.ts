@@ -2,36 +2,51 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import type { Platform, Prisma } from '@scp/db';
 import {
   FacebookAdapter,
-  PostQuedAdapter,
+  TikTokAdapter,
   YouTubeAdapter,
   type PlatformConstraints,
 } from '@scp/publish-adapters';
+import {
+  hasPublishReadyAiMetadata,
+  isPublishReviewApproved,
+} from '@scp/shared';
 import { PrismaService } from '../../prisma/prisma.service';
-import { QueueProducer } from '../../common/queue/queue.producer';
 import { SlotPlannerService } from '../scheduling/slot-planner.service';
 import { canTransition } from '../content/content-state';
-import { toPublishTargetView, type PublishTargetView } from './publish-target.view';
+import {
+  parseStepMetadata,
+  toPublishTargetView,
+  type PublishTargetView,
+} from './publish-target.view';
 import type { CreatePublishDto, PatchTargetDto } from './dto/publish.dto';
-
-/** getConstraints() needs no live client, so a stub config is safe here. */
-const STUB_PQ = { baseUrl: '', apiKey: '', headerStyle: 'bearer' as const };
 
 function constraintsFor(platform: Platform): PlatformConstraints {
   switch (platform) {
     case 'YOUTUBE':
-      return new YouTubeAdapter(STUB_PQ).getConstraints();
+      return new YouTubeAdapter().getConstraints();
     case 'FACEBOOK':
       return new FacebookAdapter().getConstraints();
     case 'TIKTOK':
-      return new PostQuedAdapter(STUB_PQ).getConstraints();
+      return new TikTokAdapter().getConstraints();
   }
 }
+
+/** Include shape needed by `toPublishTargetView` (copy + media flags). */
+const TARGET_INCLUDE = {
+  account: { select: { platform: true } },
+  contentItem: {
+    select: {
+      title: true,
+      currentStep: true,
+      assets: { select: { kind: true, localPath: true, driveFileId: true } },
+    },
+  },
+} as const;
 
 @Injectable()
 export class PublishingService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly queue: QueueProducer,
     private readonly planner: SlotPlannerService,
   ) {}
 
@@ -52,14 +67,94 @@ export class PublishingService {
   async createTargets(dto: CreatePublishDto): Promise<PublishTargetView[]> {
     const content = await this.prisma.client.contentItem.findFirst({
       where: { id: dto.contentItemId, deletedAt: null },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        type: true,
+        title: true,
+        ideaId: true,
+        currentStep: true,
+        idea: { select: { brief: { select: { videoTitle: true, videoDescription: true } } } },
+      },
     });
     if (!content) throw new NotFoundException('Content item not found.');
 
+    if (content.status === 'PUBLISHED' || content.status === 'PUBLISHING') {
+      throw new BadRequestException(`Cannot schedule content that is already ${content.status}.`);
+    }
+    if (content.status === 'REJECTED') {
+      throw new BadRequestException('Rejected content cannot be scheduled.');
+    }
+
+    // Ingested REPURPOSED videos must finish the AI pipeline before the publish
+    // Review pass. First-pass Review (no AI metadata yet) starts Analyze — it
+    // must not create publish targets.
+    if (content.type === 'REPURPOSED') {
+      const earlyAi = [
+        'APPROVED',
+        'ANALYZING',
+        'SCRIPT_READY',
+        'SCRIPT_APPROVED',
+        'TTS_DONE',
+      ].includes(content.status);
+      if (earlyAi) {
+        throw new BadRequestException(
+          'Finish the AI pipeline before scheduling. The finished package will go to Review before publish.',
+        );
+      }
+      if (
+        content.status === 'REVIEW_PENDING' &&
+        !hasPublishReadyAiMetadata(content.currentStep) &&
+        !isPublishReviewApproved(content.currentStep)
+      ) {
+        const existing = await this.prisma.client.publishTarget.count({
+          where: { contentItemId: content.id },
+        });
+        if (existing === 0) {
+          throw new BadRequestException(
+            'This ingested video is still in Review for the AI pipeline. Approve it there first, then schedule after metadata is ready.',
+          );
+        }
+      }
+    }
+
+    // Every schedule/publish path parks in Review with PENDING targets until
+    // Approve releases them. Never enqueue from here — even for NOW.
+    if (content.status !== 'REVIEW_PENDING') {
+      if (!canTransition(content.status, 'REVIEW_PENDING')) {
+        throw new BadRequestException(
+          `Cannot send ${content.status} content to Review for publish approval.`,
+        );
+      }
+      await this.prisma.client.contentItem.update({
+        where: { id: content.id },
+        // Preserve currentStep (AI metadata / script) — unlike resetToReview.
+        data: { status: 'REVIEW_PENDING', statusReason: null },
+      });
+    }
+
     const created: PublishTargetView[] = [];
-    const nowTargetIds: string[] = [];
     // Track how many slots we've consumed per account within this call.
     const slotIndexByAccount = new Map<string, number>();
+
+    const briefTitle = content.idea?.brief?.videoTitle?.trim() || '';
+    const briefDescription = content.idea?.brief?.videoDescription?.trim() || '';
+    const aiMeta = parseStepMetadata(content.currentStep);
+    const aiTitle =
+      typeof aiMeta.title === 'string' && aiMeta.title.trim() ? aiMeta.title.trim() : '';
+    const aiDescription =
+      typeof aiMeta.description === 'string' && aiMeta.description.trim()
+        ? aiMeta.description.trim()
+        : '';
+    const aiTags = Array.isArray(aiMeta.tags)
+      ? (aiMeta.tags as unknown[]).filter(
+          (t): t is string => typeof t === 'string' && t.trim().length > 0,
+        )
+      : Array.isArray(aiMeta.keywords)
+        ? (aiMeta.keywords as unknown[]).filter(
+            (t): t is string => typeof t === 'string' && t.trim().length > 0,
+          )
+        : [];
 
     for (const t of dto.targets) {
       const account = await this.prisma.client.socialAccount.findFirst({
@@ -67,7 +162,19 @@ export class PublishingService {
       });
       if (!account) throw new NotFoundException(`Account ${t.accountId} not found.`);
 
-      const override = (t.metadataOverride ?? {}) as Record<string, unknown>;
+      const rawOverride = (t.metadataOverride ?? {}) as Record<string, unknown>;
+      const override: Record<string, unknown> = { ...rawOverride };
+      // Prefer client override → idea brief → AI metadata → content title.
+      if (typeof override.title !== 'string' || !override.title.trim()) {
+        override.title = briefTitle || aiTitle || content.title;
+      }
+      if (typeof override.description !== 'string' || !String(override.description).trim()) {
+        if (briefDescription) override.description = briefDescription;
+        else if (aiDescription) override.description = aiDescription;
+      }
+      if (!Array.isArray(override.tags) && aiTags.length > 0) {
+        override.tags = aiTags;
+      }
       this.guardMetadata(account.platform, override);
 
       let scheduledAt: Date;
@@ -91,25 +198,13 @@ export class PublishingService {
           accountId: t.accountId,
           scheduleMode: t.scheduleMode,
           scheduledAt,
-          status: 'SCHEDULED',
+          status: 'PENDING',
           metadataOverride: override as Prisma.InputJsonValue,
         },
-        include: { account: { select: { platform: true } }, contentItem: { select: { title: true } } },
+        include: TARGET_INCLUDE,
       });
       created.push(toPublishTargetView(target));
-      if (t.scheduleMode === 'NOW') nowTargetIds.push(target.id);
     }
-
-    // Advance the content item to SCHEDULED when the transition is legal.
-    if (canTransition(content.status, 'SCHEDULED')) {
-      await this.prisma.client.contentItem.update({
-        where: { id: content.id },
-        data: { status: 'SCHEDULED' },
-      });
-    }
-
-    // Dispatch NOW targets immediately (the dispatcher handles the rest by cron).
-    for (const id of nowTargetIds) await this.queue.enqueuePublish(id);
 
     return created;
   }
@@ -128,7 +223,7 @@ export class PublishingService {
     };
     const targets = await this.prisma.client.publishTarget.findMany({
       where,
-      include: { account: { select: { platform: true } }, contentItem: { select: { title: true } } },
+      include: TARGET_INCLUDE,
       orderBy: { scheduledAt: 'asc' },
       take: 500,
     });
@@ -138,14 +233,115 @@ export class PublishingService {
   async getTarget(id: string): Promise<PublishTargetView> {
     const target = await this.prisma.client.publishTarget.findUnique({
       where: { id },
-      include: { account: { select: { platform: true } }, contentItem: { select: { title: true } } },
+      include: TARGET_INCLUDE,
     });
     if (!target) throw new NotFoundException('Publish target not found.');
     return toPublishTargetView(target);
   }
 
+  /** Look up the FINAL asset for a target so the manual-mode UI can download it. */
+  async getFinalAssetForDownload(publishTargetId: string): Promise<{
+    path: string;
+    bytes: number | null;
+    mimeType: string;
+  } | null> {
+    const target = await this.prisma.client.publishTarget.findUnique({
+      where: { id: publishTargetId },
+      select: {
+        contentItem: {
+          select: { assets: { where: { kind: 'FINAL' }, take: 1 } },
+        },
+      },
+    });
+    const asset = target?.contentItem.assets[0];
+    if (!asset?.localPath) return null;
+    const ext = asset.localPath.toLowerCase().split('.').pop() ?? '';
+    const mime =
+      ext === 'mp4' ? 'video/mp4'
+      : ext === 'mov' ? 'video/quicktime'
+      : ext === 'webm' ? 'video/webm'
+      : 'application/octet-stream';
+    return { path: asset.localPath, bytes: asset.bytes ? Number(asset.bytes) : null, mimeType: mime };
+  }
+
+  /** Manual mode: Owner uploaded to the platform by hand — record it as PUBLISHED. */
+  async markManuallyPublished(id: string, platformPostId?: string): Promise<PublishTargetView> {
+    const target = await this.prisma.client.publishTarget.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        contentItemId: true,
+        account: { select: { connectionMethod: true, name: true } },
+        contentItem: {
+          select: { status: true, type: true, currentStep: true },
+        },
+      },
+    });
+    if (!target) throw new NotFoundException('Publish target not found.');
+    if (target.account.connectionMethod !== 'MANUAL') {
+      throw new BadRequestException(
+        `Cannot mark-published on a ${target.account.connectionMethod} account (${target.account.name}). Only MANUAL accounts support this.`,
+      );
+    }
+    if (target.status === 'PUBLISHED') {
+      // Idempotent — already marked.
+      const existing = await this.prisma.client.publishTarget.findUniqueOrThrow({
+        where: { id },
+        include: TARGET_INCLUDE,
+      });
+      return toPublishTargetView(existing);
+    }
+    if (
+      target.contentItem.status === 'REVIEW_PENDING' ||
+      target.contentItem.status === 'REJECTED' ||
+      target.contentItem.status === 'INGESTED' ||
+      target.status === 'PENDING' ||
+      target.status === 'DRAFT'
+    ) {
+      throw new BadRequestException(
+        'Approve this item in Review before marking it published.',
+      );
+    }
+    if (
+      target.contentItem.type === 'REPURPOSED' &&
+      !isPublishReviewApproved(target.contentItem.currentStep)
+    ) {
+      throw new BadRequestException(
+        'This package has not passed publish Review yet. Approve it in Review first.',
+      );
+    }
+    const row = await this.prisma.client.publishTarget.update({
+      where: { id },
+      data: {
+        status: 'PUBLISHED',
+        publishedAt: new Date(),
+        platformPostId: platformPostId?.trim() || `manual-${id}`,
+      },
+      include: TARGET_INCLUDE,
+    });
+
+    // Advance the parent content item if this was the last outstanding target.
+    const siblings = await this.prisma.client.publishTarget.findMany({
+      where: { contentItemId: target.contentItemId },
+      select: { status: true },
+    });
+    const terminal = new Set(['PUBLISHED', 'FAILED', 'DRAFT']);
+    if (siblings.every((s) => terminal.has(s.status)) && siblings.some((s) => s.status === 'PUBLISHED')) {
+      await this.prisma.client.contentItem.update({
+        where: { id: target.contentItemId },
+        data: { status: 'PUBLISHED' },
+      });
+    }
+
+    return toPublishTargetView(row);
+  }
+
   async patchTarget(id: string, dto: PatchTargetDto): Promise<PublishTargetView> {
-    const existing = await this.prisma.client.publishTarget.findUnique({ where: { id } });
+    const existing = await this.prisma.client.publishTarget.findUnique({
+      where: { id },
+      include: { contentItem: { select: { status: true } } },
+    });
     if (!existing) throw new NotFoundException('Publish target not found.');
     if (existing.status === 'PUBLISHING' || existing.status === 'PUBLISHED') {
       throw new BadRequestException(`Cannot modify a ${existing.status.toLowerCase()} target.`);
@@ -155,13 +351,17 @@ export class PublishingService {
     if (dto.cancel) data.status = 'DRAFT';
     if (dto.scheduledAt) {
       data.scheduledAt = new Date(dto.scheduledAt);
-      data.status = 'SCHEDULED';
+      // Never promote to SCHEDULED while content is still awaiting Review.
+      data.status =
+        existing.contentItem.status === 'REVIEW_PENDING' || existing.status === 'PENDING'
+          ? 'PENDING'
+          : 'SCHEDULED';
     }
 
     const target = await this.prisma.client.publishTarget.update({
       where: { id },
       data,
-      include: { account: { select: { platform: true } }, contentItem: { select: { title: true } } },
+      include: TARGET_INCLUDE,
     });
     return toPublishTargetView(target);
   }

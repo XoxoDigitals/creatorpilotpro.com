@@ -21,8 +21,6 @@ enum Role {
   OWNER
   ADMIN
   REVIEWER
-  WORKER
-  ANALYST
 }
 
 enum UserStatus {
@@ -36,7 +34,7 @@ model User {
   email          String     @unique
   passwordHash   String
   name           String?
-  role           Role       @default(WORKER)
+  role           Role       @default(REVIEWER)
   status         UserStatus @default(ACTIVE)
   telegramChatId String?
   lastLoginAt    DateTime?
@@ -50,11 +48,32 @@ model User {
   auditLogs      AuditLog[]
   notifications  Notification[]
   socialAccounts SocialAccount[]
+  accountAccess         AccountAccess[]
+  decidedIdeas          Idea[]       @relation("decidedIdeas")
+  workerTasks           WorkerTask[] @relation("workerTasks")
+  productivitySnapshots WorkerProductivitySnapshot[]
 
   @@index([role])
   @@index([status])
   @@index([deletedAt])
   @@map("users")
+}
+
+/// Explicit SocialAccount grants for REVIEWER. OWNER and ADMIN ignore grants and see all.
+model AccountAccess {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId String
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, accountId])
+  @@index([userId])
+  @@index([accountId])
+  @@map("account_access")
 }
 
 /// Auth.js DB session store.
@@ -134,10 +153,13 @@ enum ConnectionStatus {
   BROKEN
 }
 
-/// How the account publishes: PostQued bridge or the owner's own platform app.
+/// How the account publishes: the owner's own platform app, or manual mode
+/// (the Owner uploads to the platform by hand — we deliver the rendered file).
+/// POSTQUED is kept for backwards compatibility with pre-Phase 9 data.
 enum ConnectionMethod {
   POSTQUED
   OWN_APP
+  MANUAL
 }
 
 /// Content pipeline chosen at connect time (docs/11 §1); decides workspace tabs.
@@ -166,6 +188,8 @@ model SocialAccount {
   dramasEnabled    Boolean            @default(false)
   monetized        Boolean            @default(false)
   paused           Boolean            @default(false)
+  pausedReason     String?            // set when the strike counter auto-pauses
+  copyrightStrikeCount Int            @default(0)
   timezone         String             @default("UTC")
 
   addedById String?
@@ -175,11 +199,18 @@ model SocialAccount {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime? // soft-delete (user-facing entity)
 
-  profile        ChannelProfile?
-  publishTargets PublishTarget[]
-  scheduleSlots  ScheduleSlot[]
-  incidents      Incident[]
-  watchedSources WatchedSource[]
+  accessGrants        AccountAccess[]
+  profile             ChannelProfile?
+  publishTargets      PublishTarget[]
+  scheduleSlots       ScheduleSlot[]
+  incidents           Incident[]
+  watchedSources      WatchedSource[]
+  competitorChannels  CompetitorChannel[]
+  ideas               Idea[]
+  dramaSeries         DramaSeries[]
+  workerTasks         WorkerTask[]
+  metricSnapshots     MetricSnapshotAccount[]
+  bestPostingHours    BestPostingHour[]
 
   @@unique([platform, externalId])
   @@index([platform])
@@ -198,10 +229,17 @@ model ChannelProfile {
   masterPrompt        String   @default("")
   writingStyle        String   @default("")
   narrationStyle      String   @default("")
+  /// Structured brand/style questionnaire answers; composed into masterPrompt
+  /// (and style fields) unless the owner overrides the freeform prompt.
+  styleProfile        Json     @default("{}")
   language            String   @default("en")
   voiceSettings       Json     @default("{}")
   titleTemplate       String   @default("")
   descriptionTemplate String   @default("")
+  /// Owner-authored thumbnail style/template; package generation matches this.
+  thumbnailReferencePrompt String @default("")
+  /// Owner-authored animation / video-generation guidelines; package scenes match this.
+  animationReferencePrompt String @default("")
   defaultTags         String[] @default([])
   aiLabelDefault      Boolean  @default(true)
   approvalPolicy      Json     @default("{}")
@@ -271,7 +309,9 @@ model WatchedSource {
 }
 
 /// A single discovered/imported source video (docs/03 Domain 3). Deduped by
-/// (watchedSourceId, sourcePlatformId) and by perceptualHash (near-dup lookup).
+/// (watchedSourceId, sourcePlatformId) at insert time; after download, exact
+/// md5 / perceptual near-dup checks are scoped to the same targetAccountId
+/// (same file may be imported on different SocialAccounts).
 /// `nearDuplicateOfId` self-references the item this was flagged as a dup of.
 model SourceVideo {
   id                  String         @id @default(cuid())
@@ -286,6 +326,11 @@ model SourceVideo {
   perceptualHash      String?
   md5                 String?
   downloadStatus      DownloadStatus @default(PENDING)
+  // Live download progress (docs/04 §2). Updated (throttled) by the DOWNLOAD
+  // processor from yt-dlp's progress stream so the UI can show a live bar+ETA.
+  downloadPercent     Float          @default(0)   // 0..100
+  downloadEtaSec      Int?                          // seconds remaining, when known
+  downloadSpeedBps    Int?                          // bytes/sec, when known
   rightsNote          String?
   rightsConfirmedById String?
   nearDuplicateOfId   String?
@@ -354,15 +399,16 @@ enum StorageState {
 }
 
 /// The central video project entity (docs/03 Domain 4). `sourceVideoId`,
-/// `ideaId`, `episodeId` are soft references to Domain 3/5 rows that land in
-/// later phases; kept as plain columns (no FK) until those tables exist.
+/// `ideaId`, `episodeId` are FKs to Domain 3/5 rows.
 model ContentItem {
   id            String            @id @default(cuid())
   type          ContentItemType
   sourceVideoId String?
   sourceVideo   SourceVideo?      @relation(fields: [sourceVideoId], references: [id], onDelete: SetNull)
   ideaId        String?
+  idea          Idea?             @relation(fields: [ideaId], references: [id], onDelete: SetNull)
   episodeId     String?
+  episode       DramaEpisode?     @relation("episodeIdRef", fields: [episodeId], references: [id], onDelete: SetNull)
   title         String
   status        ContentItemStatus @default(INGESTED)
   statusReason  String?
@@ -376,9 +422,14 @@ model ContentItem {
   assets         Asset[]
   publishTargets PublishTarget[]
   incidents      Incident[]
+  workerTask     WorkerTask?
+  dramaEpisode   DramaEpisode?  @relation("episodeContent")
+  suggestions    PostSuggestion[]
 
   @@index([status])
   @@index([type])
+  @@index([ideaId])
+  @@index([episodeId])
   @@index([deletedAt])
   @@map("content_items")
 }
@@ -447,8 +498,9 @@ model PublishTarget {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  attempts  PublishAttempt[]
-  incidents Incident[]
+  attempts        PublishAttempt[]
+  incidents       Incident[]
+  metricSnapshots MetricSnapshotPost[]
 
   @@index([contentItemId])
   @@index([accountId])
@@ -552,6 +604,342 @@ model Incident {
   @@index([accountId])
   @@index([kind])
   @@map("incidents")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 5 — Research, Ideas, Tasks, Dramas (docs/03 Domain 5, Phase 4)
+// ---------------------------------------------------------------------------
+
+enum IdeaStatus {
+  SUGGESTED
+  APPROVED
+  REJECTED
+  IN_PRODUCTION
+  UPLOADED
+  PUBLISHED
+}
+
+/// Idea novelty relative to reference-channel research (AI owner flow MVP).
+enum IdeaCategory {
+  RELEVANT
+  SIMILAR
+  UNIQUE
+
+  @@map("idea_category")
+}
+
+/// Creative-package lifecycle for the AI-only owner path (no WorkerTask required).
+enum PackageStatus {
+  NONE
+  GENERATING
+  READY
+  DONE
+  FAILED
+
+  @@map("package_status")
+}
+
+/// Voiceover synth lifecycle for AI-owner packages (when presentation is voiceover).
+enum VoiceoverStatus {
+  NONE
+  GENERATING
+  READY
+  FAILED
+
+  @@map("voiceover_status")
+}
+
+/// Audio-first narration package pipeline stage (script → voice → transcript → visuals).
+enum PackageStage {
+  NONE
+  SCRIPT
+  VOICE
+  TRANSCRIPT
+  VISUALS
+  READY
+  FAILED
+
+  @@map("package_stage")
+}
+
+enum WorkerTaskStatus {
+  ASSIGNED
+  IN_PROGRESS
+  UPLOADED
+  REVISION_REQUESTED
+  DONE
+}
+
+enum TranscriptSource {
+  CAPTIONS
+  WHISPER
+  NONE
+}
+
+enum CompetitorChannelStatus {
+  ACTIVE
+  PAUSED
+  ERROR
+
+  @@map("competitor_channel_status")
+}
+
+/// How a tracked YouTube channel is used: competitor research vs inspiration source.
+enum CompetitorChannelRole {
+  COMPETITOR
+  SOURCE
+
+  @@map("competitor_channel_role")
+}
+
+enum DramaSeriesStatus {
+  PLANNING
+  BIBLE_GENERATING
+  BIBLE_READY
+  IN_PRODUCTION
+  COMPLETE
+  FAILED
+
+  @@map("drama_series_status")
+}
+
+enum DramaEpisodeStatus {
+  PENDING
+  GENERATING
+  GENERATED
+  IN_PRODUCTION
+  UPLOADED
+  PUBLISHED
+  FAILED
+
+  @@map("drama_episode_status")
+}
+
+/// A YouTube channel tracked for competitor research (docs/03 Domain 5).
+/// Polls recent uploads and fetches transcripts for idea generation.
+model CompetitorChannel {
+  id                  String                   @id @default(cuid())
+  ownAccountId        String
+  ownAccount          SocialAccount            @relation(fields: [ownAccountId], references: [id], onDelete: Cascade)
+  youtubeChannelId    String
+  /// Original pasted URL or @handle used when adding the channel (MVP: YouTube only).
+  channelUrl          String?
+  name                String
+  role                CompetitorChannelRole    @default(COMPETITOR)
+  /// Default daily polling for newly added reference channels.
+  checkIntervalMin    Int                      @default(1440)
+  lastCheckedAt       DateTime?
+  consecutiveFailures Int                      @default(0)
+  status              CompetitorChannelStatus  @default(ACTIVE)
+  errorNote           String?
+
+  /// Deterministic + optional AI insights from title/views analysis (channel memory).
+  performanceMemory     Json?
+  performanceAnalyzedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  videos CompetitorVideo[]
+
+  @@unique([ownAccountId, youtubeChannelId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("competitor_channels")
+}
+
+/// A fetched video from a competitor channel (docs/03 Domain 5).
+/// Transcripts are YouTube captions first, Whisper fallback if available.
+model CompetitorVideo {
+  id                   String              @id @default(cuid())
+  competitorChannelId  String
+  competitorChannel    CompetitorChannel   @relation(fields: [competitorChannelId], references: [id], onDelete: Cascade)
+  videoId              String
+  title                String
+  views                BigInt              @default(0)
+  publishedAt          DateTime?
+  durationSec          Float?
+  transcript           String?
+  transcriptSource     TranscriptSource    @default(NONE)
+  fetchedAt            DateTime            @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([competitorChannelId, videoId])
+  @@index([competitorChannelId])
+  @@map("competitor_videos")
+}
+
+/// A content idea generated from competitor research (docs/03 Domain 5).
+/// Kanban: SUGGESTED → APPROVED/REJECTED → IN_PRODUCTION → UPLOADED → PUBLISHED.
+model Idea {
+  id                       String        @id @default(cuid())
+  accountId                String
+  account                  SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sourceCompetitorVideoIds String[]      @default([])
+  title                    String
+  angle                    String        @default("")
+  hook                     String        @default("")
+  rationale                String        @default("")
+  category                 IdeaCategory?
+  /// Predicted viral potential 0–100 from idea generation.
+  viralScore               Int?
+  status                   IdeaStatus    @default(SUGGESTED)
+  packageStatus            PackageStatus @default(NONE)
+  /// Owner-requested total video length (seconds) before package generation.
+  requestedVideoDurationSec Int?
+  /// Owner-requested per-clip length (seconds); typically 8 / 10 / 15.
+  requestedClipDurationSec  Int?
+  rejectionReason          String?
+  decidedById              String?
+  decidedBy                User?         @relation("decidedIdeas", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt                DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  brief        ProductionBrief?
+  contentItems ContentItem[]
+  workerTasks  WorkerTask[]     @relation("taskIdea")
+
+  @@index([accountId, status])
+  @@index([deletedAt])
+  @@map("ideas")
+}
+
+/// A full production brief / creative package generated from an approved idea.
+/// AI-only owner path: videoTitle, description, scene/animation prompts, thumbnail prompt.
+/// Owner produces the video externally and uploads — no in-app render for this path.
+model ProductionBrief {
+  id                   String  @id @default(cuid())
+  ideaId               String  @unique
+  idea                 Idea    @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  researchSummary      String  @default("")
+  script               String  @default("")
+  /// Structured scenes: [{sceneIndex, imagePrompt, animationPrompt, negativePrompt?, dialogue, durationSec?}].
+  sceneBreakdown       Json    @default("[]")
+  characterPrompts     Json    @default("[]")
+  editingInstructions  String  @default("")
+  targetDurationSec    Int?
+  videoTitle           String  @default("")
+  videoDescription     String  @default("")
+  /// Thumbnail prompt only (no generated image asset for MVP).
+  thumbnailPrompt      String  @default("")
+  /// TTS voiceover for voiceover/mixed presentation channels.
+  voiceoverStatus      VoiceoverStatus @default(NONE)
+  voiceoverLocalPath   String?
+  /// Audio-first pipeline stage (SCRIPT → VOICE → TRANSCRIPT → VISUALS → READY).
+  packageStage         PackageStage @default(NONE)
+  /// Human-readable error from the failing stage (cleared on retry).
+  packageStageError    String?
+  /// Timestamped narration segments: [{startMs,endMs,text}].
+  timedTranscript      Json    @default("[]")
+  /// Optional on-disk SRT/VTT path for download.
+  transcriptLocalPath  String?
+  /// Edge (or other) voice id used for the package voiceover.
+  voiceIdUsed          String?
+  version              Int     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workerTasks WorkerTask[]
+
+  @@map("production_briefs")
+}
+
+/// A drama series with its bible and character sheets (docs/03 Domain 5).
+/// Bible and character sheets generated by AI; character sheets immutable per
+/// series (edits create a new version flagged on affected episodes).
+model DramaSeries {
+  id                 String            @id @default(cuid())
+  accountId          String
+  account            SocialAccount     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title              String
+  genre              String            @default("")
+  theme              String            @default("")
+  audience           String            @default("")
+  episodeCount       Int
+  episodeDurationSec Int               @default(60)
+  styleReferences    String?
+  seriesBible        Json?
+  characterSheets    Json              @default("[]")
+  status             DramaSeriesStatus @default(PLANNING)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  episodes DramaEpisode[]
+
+  @@index([accountId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("drama_series")
+}
+
+/// A single episode of a drama series (docs/03 Domain 5). Generated on demand
+/// with bible + character sheets + recaps of episodes 1..N-1 for consistency.
+model DramaEpisode {
+  id              String             @id @default(cuid())
+  seriesId        String
+  series          DramaSeries        @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  number          Int
+  summary         String?
+  script          String?
+  scenePrompts    Json               @default("[]")
+  narration       String?
+  productionNotes String?
+  recap           String?
+  generatedAt     DateTime?
+  contentItemId   String?            @unique
+  contentItem     ContentItem?       @relation("episodeContent", fields: [contentItemId], references: [id], onDelete: SetNull)
+  status          DramaEpisodeStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workerTasks  WorkerTask[] @relation("taskEpisode")
+  contentItems ContentItem[] @relation("episodeIdRef")
+
+  @@unique([seriesId, number])
+  @@index([seriesId])
+  @@index([status])
+  @@map("drama_episodes")
+}
+
+/// A task assigned to a worker: produce a video from a brief or episode
+/// (docs/03 Domain 5). One active task per worker (configurable).
+model WorkerTask {
+  id            String           @id @default(cuid())
+  briefId       String?
+  brief         ProductionBrief? @relation(fields: [briefId], references: [id], onDelete: SetNull)
+  episodeId     String?
+  episode       DramaEpisode?    @relation("taskEpisode", fields: [episodeId], references: [id], onDelete: SetNull)
+  ideaId        String?
+  idea          Idea?            @relation("taskIdea", fields: [ideaId], references: [id], onDelete: SetNull)
+  workerId      String
+  worker        User             @relation("workerTasks", fields: [workerId], references: [id], onDelete: Cascade)
+  accountId     String
+  account       SocialAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title         String
+  status        WorkerTaskStatus @default(ASSIGNED)
+  assignedAt    DateTime         @default(now())
+  uploadedAt    DateTime?
+  contentItemId String?           @unique
+  contentItem   ContentItem?     @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+  revisionNotes String[]         @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workerId, status])
+  @@index([accountId])
+  @@index([status])
+  @@map("worker_tasks")
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +1098,171 @@ model PromptVersion {
   @@unique([accountId, task, name, version])
   @@index([accountId, task, isActive])
   @@map("prompt_versions")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 9 — Analytics Snapshots (docs/07, Phase 5)
+// ---------------------------------------------------------------------------
+
+/// Daily per-account metrics pulled by the analytics sync job (docs/07 §1).
+/// Dashboards read only this table — never call platform APIs directly.
+model MetricSnapshotAccount {
+  id           String        @id @default(cuid())
+  accountId    String
+  account      SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date         DateTime      @db.Date
+  followers    Int           @default(0)
+  views        Int           @default(0)
+  uniqueViewers Int          @default(0)  // deduped viewer count
+  watchTimeMin Int           @default(0)
+  impressions  Int           @default(0)
+  ctr          Float         @default(0)  // impressions → clicks, %
+  revenue      Decimal       @default(0) @db.Decimal(10, 4)
+  rpm          Decimal       @default(0) @db.Decimal(10, 4)
+  engagements  Int           @default(0) // likes + comments + shares
+  retentionRate Float        @default(0) // average % of video watched
+  // Breakdown JSON blobs — shape:
+  //   trafficCountries: [{ country: "US", views: 12345, pct: 45.2 }, ...]
+  //   ageGroups: [{ range: "18-24", pct: 33.1 }, ...]
+  //   genderSplit: { male: 60, female: 38, other: 2 }
+  //   trafficSources: [{ source: "browse", views: 12345, pct: 45.2 }, ...]
+  //   deviceSplit: [{ device: "mobile", pct: 78 }, ...]
+  trafficCountries Json      @default("[]")
+  ageGroups        Json      @default("[]")
+  genderSplit      Json      @default("{}")
+  trafficSources   Json      @default("[]")
+  deviceSplit      Json      @default("[]")
+  syncedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, date])
+  @@index([accountId])
+  @@index([date])
+  @@map("metric_snapshot_accounts")
+}
+
+/// Daily per-post metrics pulled by the analytics sync job (docs/07 §1).
+model MetricSnapshotPost {
+  id              String        @id @default(cuid())
+  publishTargetId String
+  publishTarget   PublishTarget @relation(fields: [publishTargetId], references: [id], onDelete: Cascade)
+  accountId       String
+  date            DateTime      @db.Date
+  views           Int           @default(0)
+  uniqueViewers   Int           @default(0)
+  likes           Int           @default(0)
+  comments        Int           @default(0)
+  shares          Int           @default(0)
+  saves           Int           @default(0)
+  watchTimeMin    Int           @default(0)
+  averageViewDurationSec Int    @default(0)
+  impressions     Int           @default(0)
+  ctr             Float         @default(0)
+  retentionRate   Float         @default(0)
+  retentionCurve  Json          @default("[]")
+  trafficCountries Json         @default("[]")
+  ageGroups        Json         @default("[]")
+  genderSplit      Json         @default("{}")
+  trafficSources   Json         @default("[]")
+  deviceSplit      Json         @default("[]")
+  syncedAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([publishTargetId, date])
+  @@index([publishTargetId])
+  @@index([accountId])
+  @@index([date])
+  @@map("metric_snapshot_posts")
+}
+
+/// Materialized daily rollup from ai_usage_log (docs/07). Avoids scanning
+/// the raw log for the cost dashboard — sync job aggregates nightly.
+model AiUsageDaily {
+  id               String  @id @default(cuid())
+  date             DateTime @db.Date
+  providerId       String
+  task             String
+  totalCalls       Int     @default(0)
+  cacheHits        Int     @default(0)
+  tokensIn         Int     @default(0)
+  tokensOut        Int     @default(0)
+  ttsSeconds       Float   @default(0)
+  estimatedCostUsd Decimal @default(0) @db.Decimal(10, 6)
+
+  createdAt DateTime @default(now())
+
+  @@unique([date, providerId, task])
+  @@map("ai_usage_daily")
+}
+
+/// Weekly per-worker productivity rollup (docs/07). Managers see this on
+/// the workers dashboard; workers see their own stats.
+model WorkerProductivitySnapshot {
+  id                     String   @id @default(cuid())
+  userId                 String
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weekStart              DateTime @db.Date
+  tasksAssigned          Int      @default(0)
+  tasksCompleted         Int      @default(0)
+  medianHoursToComplete  Float?
+  revisionRate           Float    @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, weekStart])
+  @@index([userId])
+  @@map("worker_productivity_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Domain 10 — Phase 7 backlog (subtitles, A/B suggestions, learner)
+// ---------------------------------------------------------------------------
+
+enum PostSuggestionKind {
+  TITLE
+  THUMBNAIL_PROMPT
+}
+
+/// A/B suggestion variant for a content item (docs/10 backlog #10). The AI
+/// generates 3 title candidates + 3 thumbnail prompts; the user picks one at
+/// metadata time. `chosen` marks the accepted variant.
+model PostSuggestion {
+  id            String             @id @default(cuid())
+  contentItemId String
+  contentItem   ContentItem        @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  kind          PostSuggestionKind
+  content       String
+  rationale     String             @default("")
+  chosen        Boolean            @default(false)
+  rank          Int                @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contentItemId, kind])
+  @@map("post_suggestions")
+}
+
+/// Per-account best posting hour learned from MetricSnapshotPost engagement.
+/// The learner reads snapshots weekly and upserts one row per (account, day-of-week, hour)
+/// so the scheduling engine can suggest strong slots.
+model BestPostingHour {
+  id         String @id @default(cuid())
+  accountId  String
+  account    SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  dayOfWeek  Int    // 0..6, Monday=0
+  hour       Int    // 0..23 UTC
+  score      Float  @default(0)  // higher is better
+  sampleSize Int    @default(0)
+  computedAt DateTime @default(now())
+
+  @@unique([accountId, dayOfWeek, hour])
+  @@index([accountId])
+  @@map("best_posting_hours")
 }
 
 // ---------------------------------------------------------------------------

@@ -1,17 +1,17 @@
 /**
  * TTS processor (docs/05 §6, Phase 3.5). Consumes the TTS queue after a
- * content item's script has been approved (SCRIPT_APPROVED). Synthesizes
- * voiceover via the AI router's TTS chain: Kokoro→Gemini→OpenAI.
+ * content item's script has been approved (SCRIPT_APPROVED), or for AI-owner
+ * package voiceovers (idea_tts). Chain default: Edge Neural → Kokoro → Gemini → OpenAI.
  *
- * Long scripts are chunked at sentence boundaries, synthesized in parallel,
- * concatenated with silence padding, and loudness-normalized (EBU R128) via
- * the existing ffmpeg wrapper. The result is archived as a VOICEOVER asset.
+ * Long scripts are chunked at sentence boundaries, synthesized, concatenated
+ * with silence padding, and loudness-normalized (EBU R128) via ffmpeg.
+ * Edge TTS timings (VTT/SRT) are preferred over re-transcription.
  */
 import { join } from 'node:path';
-import { writeFile, mkdir, unlink } from 'node:fs/promises';
+import { writeFile, mkdir, unlink, copyFile, stat } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
-import { QUEUE } from '@scp/shared';
-import { decryptSecret, loadMasterKey } from '@scp/shared';
+import { QUEUE, parseVoiceSettings, type VoiceSettings } from '@scp/shared';
+import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
 import {
   AIRouter,
   KeyPool,
@@ -19,21 +19,24 @@ import {
   OpenAIProvider,
   KokoroProvider,
   WhisperProvider,
+  EdgeTtsProvider,
+  synthesizeWithEdgeTts,
+  offsetTimings,
+  segmentsToSrt,
+  segmentsToVtt,
   AllProvidersExhaustedError,
   type CacheStore,
   type UsageLogger,
   type ProviderRegistry,
   type KeyStore,
   type KeyState,
-  type AIProvider,
+  type TimedSegment,
 } from '@scp/ai-providers';
-import { Ffmpeg, FfmpegNotAvailableError } from './media/ffmpeg.js';
-import type { RenderJob } from './ai-jobs.js';
+import { Ffmpeg } from './media/ffmpeg.js';
+import type { RenderJob, IdeaTranscriptJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.js';
 
 const STORAGE_ROOT = process.env.STORAGE_ROOT ?? '';
-
-// ── Sentence chunking ───────────────────────────────────────────────────────
 
 const SENTENCE_SPLIT = /(?<=[.!?。！？])\s+/;
 const MAX_CHUNK_CHARS = 4000;
@@ -54,18 +57,16 @@ function chunkScript(script: string): string[] {
   return chunks.length > 0 ? chunks : [script];
 }
 
-// ── Store builders (same as ai-process.ts — inline to avoid circular deps) ──
-
 function buildKeyStore(prisma: PrismaClient, masterKey: Buffer): KeyStore {
   return {
     async listByProvider(providerId: string): Promise<KeyState[]> {
       const rows = await prisma.aiKey.findMany({
-        where: { providerId, status: { not: 'DISABLED' } },
+        where: { provider: { name: providerId }, status: { not: 'DISABLED' } },
         orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
       });
       return rows.map((r) => ({
         id: r.id,
-        providerId: r.providerId,
+        providerId,
         secret: decryptSecret(r.keyEnc, masterKey),
         label: r.label,
         status: r.status as KeyState['status'],
@@ -173,60 +174,422 @@ function buildUsageLogger(prisma: PrismaClient): UsageLogger {
   };
 }
 
-function buildRegistry(): ProviderRegistry {
-  const providers = new Map<string, AIProvider>();
+/** Fallback order: Edge Neural → Kokoro → Gemini → OpenAI. */
+export function buildTtsChain(preferred?: string): string[] {
+  const kokoroOff =
+    process.env.KOKORO_INPROC === '0' &&
+    !process.env.KOKORO_URL &&
+    !process.env.OPENTTS_URL;
+  const base = kokoroOff
+    ? ['edge', 'gemini', 'openai']
+    : ['edge', 'kokoro', 'gemini', 'openai'];
+  if (preferred && base.includes(preferred)) {
+    return [preferred, ...base.filter((p) => p !== preferred)];
+  }
+  return base;
+}
+
+function buildRegistry(preferred?: string): ProviderRegistry {
+  const providers = new Map();
+  providers.set('edge', new EdgeTtsProvider());
   providers.set('gemini', new GeminiProvider());
   providers.set('openai', new OpenAIProvider());
   providers.set('kokoro', new KokoroProvider());
   providers.set('whisper', new WhisperProvider());
-
-  const chains: Record<string, string[]> = {
-    TTS: ['kokoro', 'gemini', 'openai'],
-  };
-
+  const chain = buildTtsChain(preferred);
   return {
     get: (id: string) => providers.get(id),
-    chainFor: (task) => chains[task as string] ?? ['kokoro', 'gemini', 'openai'],
+    chainFor: (task) => ((task as string) === 'TTS' ? chain : chain),
   };
 }
 
-// ── TTS voice config ────────────────────────────────────────────────────────
+async function resolveChannelVoice(
+  prisma: PrismaClient,
+  accountId: string | null | undefined,
+): Promise<VoiceSettings> {
+  const globalRow = await prisma.systemSetting.findUnique({ where: { key: 'tts.default' } });
+  const global = (globalRow?.value ?? {}) as Record<string, unknown>;
 
-interface VoiceConfig {
-  provider?: string;
-  voiceId?: string;
-  speed?: number;
-  language?: string;
+  if (accountId) {
+    const profile = await prisma.channelProfile.findUnique({ where: { accountId } });
+    if (profile) {
+      const channel = parseVoiceSettings(profile.voiceSettings, profile.language);
+      // Channel wins; fill missing speed from global.
+      return {
+        ...channel,
+        speed:
+          channel.speed ??
+          (typeof global.speed === 'number' ? global.speed : undefined) ??
+          1.0,
+      };
+    }
+  }
+
+  return parseVoiceSettings(
+    {
+      provider: typeof global.provider === 'string' ? global.provider : 'edge',
+      voiceId: typeof global.voiceId === 'string' ? global.voiceId : undefined,
+      speed: typeof global.speed === 'number' ? global.speed : 1.0,
+      language: typeof global.language === 'string' ? global.language : 'en',
+    },
+    typeof global.language === 'string' ? global.language : 'en',
+  );
 }
 
-async function getVoiceConfig(prisma: PrismaClient): Promise<VoiceConfig> {
-  const row = await prisma.systemSetting.findUnique({ where: { key: 'tts.default' } });
-  return (row?.value ?? {}) as VoiceConfig;
+function modelForProvider(provider: string): string {
+  if (provider === 'gemini') return 'gemini-2.5-flash-preview-tts';
+  if (provider === 'edge') return 'edge-neural';
+  return provider;
 }
 
-// ── Main TTS processor ─────────────────────────────────────────────────────
+function systemForVoice(voice: VoiceSettings, extra?: Record<string, unknown>): string {
+  return JSON.stringify({
+    voiceId: voice.voiceId,
+    speed: voice.speed ?? 1.0,
+    language: voice.language ?? voice.locale ?? 'en',
+    ...(voice.rate ? { rate: voice.rate } : {}),
+    ...(voice.pitch ? { pitch: voice.pitch } : {}),
+    ...(voice.volume ? { volume: voice.volume } : {}),
+    ...extra,
+  });
+}
+
+async function writeAudioRef(
+  audioRef: string | undefined,
+  output: unknown,
+  destPath: string,
+): Promise<void> {
+  if (audioRef) {
+    const b64Match = audioRef.match(/^data:[^;]*;base64,(.+)$/);
+    if (b64Match) {
+      await writeFile(destPath, Buffer.from(b64Match[1]!, 'base64'));
+      return;
+    }
+    // Provider already wrote a file — copy into place.
+    await copyFile(audioRef, destPath);
+    return;
+  }
+  if (typeof output === 'string' && output.length > 0) {
+    await writeFile(destPath, Buffer.from(output, 'base64'));
+    return;
+  }
+  throw new Error('TTS provider returned no audio');
+}
+
+function isMp3Path(path: string): boolean {
+  return /\.mp3$/i.test(path);
+}
+
+async function ensureWav(
+  ffmpeg: Ffmpeg,
+  ffmpegAvail: boolean,
+  sourcePath: string,
+  wavPath: string,
+): Promise<string> {
+  if (!isMp3Path(sourcePath) && sourcePath === wavPath) return wavPath;
+  if (!isMp3Path(sourcePath) && !/\.mp3$/i.test(sourcePath)) {
+    if (sourcePath !== wavPath) await copyFile(sourcePath, wavPath);
+    return wavPath;
+  }
+  if (ffmpegAvail) {
+    await ffmpeg.exec(['-y', '-i', sourcePath, '-ar', '44100', '-ac', '1', wavPath]);
+    return wavPath;
+  }
+  // No ffmpeg — keep mp3 beside expected path name by copying bytes.
+  await copyFile(sourcePath, wavPath);
+  return wavPath;
+}
+
+async function probeDurationMs(ffmpeg: Ffmpeg, path: string): Promise<number> {
+  try {
+    // ffmpeg -i prints Duration on stderr and exits non-zero without an output file.
+    const res = await ffmpeg.exec(['-i', path, '-f', 'null', '-']).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { stdout: '', stderr: msg, code: 1 };
+    });
+    const blob = `${res.stderr}\n${res.stdout}`;
+    const m = blob.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!m) return 0;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    const sec = Number(m[3]);
+    return Math.round(((h * 60 + min) * 60 + sec) * 1000);
+  } catch {
+    return 0;
+  }
+}
+
+interface SynthBundle {
+  finalWavPath: string;
+  timings: TimedSegment[];
+  providerUsed: string;
+  voiceId: string;
+}
+
+async function synthesizeScript(opts: {
+  prisma: PrismaClient;
+  masterKey: Buffer;
+  script: string;
+  voice: VoiceSettings;
+  voDir: string;
+  contentItemId?: string;
+}): Promise<SynthBundle> {
+  const { prisma, masterKey, script, voice, voDir, contentItemId } = opts;
+  await mkdir(voDir, { recursive: true });
+
+  const preferred = voice.provider;
+  const chain = buildTtsChain(preferred);
+  const first = chain[0] ?? 'edge';
+
+  // Fast path: Edge preferred and available — call CLI directly for full
+  // subtitle capture + cleaner chunk handling.
+  if (first === 'edge') {
+    try {
+      return await synthesizeViaEdge(script, voice, voDir);
+    } catch (err) {
+      console.warn(
+        `[worker:tts] Edge TTS failed, falling back through router: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  const keyStore = buildKeyStore(prisma, masterKey);
+  const cacheStore = buildCacheStore(prisma);
+  const usageLogger = buildUsageLogger(prisma);
+  const pool = new KeyPool(keyStore);
+  const router = new AIRouter({
+    cache: cacheStore,
+    logger: usageLogger,
+    keyPool: pool,
+    registry: buildRegistry(preferred),
+  });
+
+  const chunks = chunkScript(script);
+  const chunkPaths: string[] = [];
+  const allTimings: TimedSegment[] = [];
+  let offsetMs = 0;
+  const ffmpeg = new Ffmpeg();
+  const ffmpegAvail = await ffmpeg.available();
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const rawPath = join(voDir, `chunk_${String(i).padStart(3, '0')}.bin`);
+    const result = await router.run({
+      task: 'TTS' as any,
+      model: modelForProvider(first),
+      system: systemForVoice(voice, { outDir: voDir, basename: `chunk_${String(i).padStart(3, '0')}` }),
+      input: { kind: 'text', text: chunk },
+      ...(contentItemId ? { contentItemId } : {}),
+    });
+
+    await writeAudioRef(result.audioRef, result.output, rawPath);
+    const wavChunk = join(voDir, `chunk_${String(i).padStart(3, '0')}.wav`);
+    await ensureWav(ffmpeg, ffmpegAvail, rawPath, wavChunk);
+    if (rawPath !== wavChunk) await unlink(rawPath).catch(() => {});
+    chunkPaths[i] = wavChunk;
+
+    const chunkTimings: TimedSegment[] = Array.isArray(result.timings)
+      ? result.timings
+      : Array.isArray((result.output as { timings?: TimedSegment[] } | null)?.timings)
+        ? ((result.output as { timings: TimedSegment[] }).timings ?? [])
+        : [];
+    allTimings.push(...offsetTimings(chunkTimings, offsetMs));
+    const dur = await probeDurationMs(ffmpeg, wavChunk);
+    offsetMs += dur > 0 ? dur + 300 : estimateDurationFromTimings(chunkTimings) + 300;
+  }
+
+  const finalPath = join(voDir, 'voiceover.wav');
+  await concatNormalize(ffmpeg, ffmpegAvail, chunkPaths, voDir, finalPath, contentItemId, prisma);
+
+  for (const cp of chunkPaths) {
+    if (cp && cp !== finalPath) await unlink(cp).catch(() => {});
+  }
+
+  return {
+    finalWavPath: finalPath,
+    timings: allTimings,
+    providerUsed: first,
+    voiceId: voice.voiceId,
+  };
+}
+
+function estimateDurationFromTimings(timings: TimedSegment[]): number {
+  if (timings.length === 0) return 0;
+  return Math.max(...timings.map((t) => t.endMs));
+}
+
+async function synthesizeViaEdge(
+  script: string,
+  voice: VoiceSettings,
+  voDir: string,
+): Promise<SynthBundle> {
+  const chunks = chunkScript(script);
+  const ffmpeg = new Ffmpeg();
+  const ffmpegAvail = await ffmpeg.available();
+  const chunkWavs: string[] = [];
+  const allTimings: TimedSegment[] = [];
+  let offsetMs = 0;
+  const t0 = Date.now();
+
+  console.log(
+    `[worker:tts] Edge synth start: ${chunks.length} chunk(s), scriptChars=${script.length}, voice=${voice.voiceId}, ffmpeg=${ffmpegAvail}`,
+  );
+
+  for (let i = 0; i < chunks.length; i++) {
+    const base = `chunk_${String(i).padStart(3, '0')}`;
+    const chunkChars = chunks[i]!.length;
+    const chunkStart = Date.now();
+    console.log(
+      `[worker:tts] Edge chunk ${i + 1}/${chunks.length} start (${chunkChars} chars)`,
+    );
+    const synth = await synthesizeWithEdgeTts(chunks[i]!, {
+      voice: voice.voiceId,
+      rate: voice.rate,
+      pitch: voice.pitch,
+      volume: voice.volume,
+      outDir: voDir,
+      basename: base,
+      writeSubtitles: true,
+    });
+    const wavChunk = join(voDir, `${base}.wav`);
+    await ensureWav(ffmpeg, ffmpegAvail, synth.mediaPath, wavChunk);
+    if (synth.mediaPath !== wavChunk) await unlink(synth.mediaPath).catch(() => {});
+    if (synth.subtitlePath) await unlink(synth.subtitlePath).catch(() => {});
+    chunkWavs.push(wavChunk);
+    allTimings.push(...offsetTimings(synth.timings, offsetMs));
+    const dur = await probeDurationMs(ffmpeg, wavChunk);
+    offsetMs += dur > 0 ? dur + 300 : estimateDurationFromTimings(synth.timings) + 300;
+    console.log(
+      `[worker:tts] Edge chunk ${i + 1}/${chunks.length} done in ${Date.now() - chunkStart}ms (audio~${dur}ms)`,
+    );
+  }
+
+  const finalPath = join(voDir, 'voiceover.wav');
+  const normStart = Date.now();
+  await concatNormalize(ffmpeg, ffmpegAvail, chunkWavs, voDir, finalPath);
+  console.log(
+    `[worker:tts] Edge concat/loudnorm done in ${Date.now() - normStart}ms (total ${Date.now() - t0}ms)`,
+  );
+  for (const cp of chunkWavs) {
+    if (cp !== finalPath) await unlink(cp).catch(() => {});
+  }
+
+  // Persist combined subtitle files beside the WAV for download.
+  if (allTimings.length > 0) {
+    await writeFile(join(voDir, 'voiceover.srt'), segmentsToSrt(allTimings), 'utf8');
+    await writeFile(join(voDir, 'voiceover.vtt'), segmentsToVtt(allTimings), 'utf8');
+  }
+
+  return {
+    finalWavPath: finalPath,
+    timings: allTimings,
+    providerUsed: 'edge',
+    voiceId: voice.voiceId,
+  };
+}
+
+async function concatNormalize(
+  ffmpeg: Ffmpeg,
+  ffmpegAvail: boolean,
+  chunkPaths: string[],
+  voDir: string,
+  finalPath: string,
+  contentItemId?: string,
+  prisma?: PrismaClient,
+): Promise<void> {
+  // Always pin 44.1 kHz mono on the final WAV. Edge/ffmpeg paths have produced
+  // 192 kHz PCM (~4× larger, slower loudnorm) when sample rate was left implicit.
+  const wavOut = ['-ar', '44100', '-ac', '1'] as const;
+
+  if (chunkPaths.length === 1) {
+    if (ffmpegAvail) {
+      await ffmpeg.exec([
+        '-i',
+        chunkPaths[0]!,
+        '-af',
+        'loudnorm=I=-16:LRA=11:TP=-1.5',
+        ...wavOut,
+        '-y',
+        finalPath,
+      ]);
+    } else {
+      await copyFile(chunkPaths[0]!, finalPath);
+    }
+    return;
+  }
+
+  if (ffmpegAvail) {
+    const listPath = join(voDir, 'concat.txt');
+    await writeFile(
+      listPath,
+      chunkPaths.map((p) => `file '${p!.replace(/\\/g, '/')}'`).join('\n'),
+    );
+    const concatPath = join(voDir, 'concat_raw.wav');
+    await ffmpeg.exec([
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      listPath,
+      '-af',
+      'apad=pad_dur=0.3',
+      ...wavOut,
+      '-y',
+      concatPath,
+    ]);
+    await ffmpeg.exec([
+      '-i',
+      concatPath,
+      '-af',
+      'loudnorm=I=-16:LRA=11:TP=-1.5',
+      ...wavOut,
+      '-y',
+      finalPath,
+    ]);
+    await unlink(listPath).catch(() => {});
+    await unlink(concatPath).catch(() => {});
+    return;
+  }
+
+  await copyFile(chunkPaths[0]!, finalPath);
+  if (prisma && contentItemId) {
+    await raiseIncident(prisma, {
+      kind: 'SYSTEM',
+      severity: 'LOW',
+      contentItemId,
+      title: 'TTS: ffmpeg absent — chunks not concatenated/normalized',
+    });
+  }
+}
 
 export async function runTts(contentItemId: string, boss: PgBoss): Promise<void> {
   const prisma = getPrisma();
 
-  const item = await prisma.contentItem.findUnique({ where: { id: contentItemId } });
+  const item = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    include: {
+      idea: { select: { accountId: true } },
+      sourceVideo: { select: { watchedSource: { select: { targetAccountId: true } } } },
+    },
+  });
   if (!item) {
-    // eslint-disable-next-line no-console
     console.warn(`[worker:tts] content item ${contentItemId} not found — skipping`);
     return;
   }
 
   if (item.status !== 'SCRIPT_APPROVED') {
-    // eslint-disable-next-line no-console
-    console.log(`[worker:tts] item ${contentItemId} is ${item.status}, not SCRIPT_APPROVED — skipping`);
+    console.log(
+      `[worker:tts] item ${contentItemId} is ${item.status}, not SCRIPT_APPROVED — skipping`,
+    );
     return;
   }
 
-  // Kill-switch check
   const ksRow = await prisma.systemSetting.findUnique({ where: { key: 'killSwitches' } });
   const ks = (ksRow?.value ?? {}) as Record<string, boolean>;
   if (ks['ai.global'] || ks['ai.task.TTS']) {
-    // eslint-disable-next-line no-console
     console.warn(`[worker:tts] TTS is disabled via kill switch — skipping ${contentItemId}`);
     return;
   }
@@ -243,13 +606,18 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
     return;
   }
 
-  // Extract script from currentStep
   const currentStep = (item.currentStep ?? {}) as Record<string, unknown>;
-  const script = typeof currentStep.script === 'string'
-    ? currentStep.script
-    : typeof currentStep.script === 'object'
-      ? JSON.stringify(currentStep.script)
-      : item.title;
+  const rawScript = currentStep.script;
+  const script =
+    typeof rawScript === 'string'
+      ? rawScript
+      : rawScript &&
+          typeof rawScript === 'object' &&
+          typeof (rawScript as { script?: unknown }).script === 'string'
+        ? String((rawScript as { script: string }).script)
+        : typeof rawScript === 'object' && rawScript
+          ? JSON.stringify(rawScript)
+          : item.title;
 
   if (!script || !script.trim()) {
     await prisma.contentItem.update({ where: { id: contentItemId }, data: { status: 'FAILED' } });
@@ -261,17 +629,6 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
     return;
   }
 
-  const voiceConfig = await getVoiceConfig(prisma);
-  const chunks = chunkScript(script);
-
-  // Build router
-  const keyStore = buildKeyStore(prisma, masterKey);
-  const cacheStore = buildCacheStore(prisma);
-  const usageLogger = buildUsageLogger(prisma);
-  const pool = new KeyPool(keyStore);
-  const router = new AIRouter({ cache: cacheStore, logger: usageLogger, keyPool: pool, registry: buildRegistry() });
-
-  // Prepare output directory
   if (!STORAGE_ROOT) {
     await prisma.contentItem.update({ where: { id: contentItemId }, data: { status: 'FAILED' } });
     await raiseIncident(prisma, {
@@ -282,150 +639,204 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
     return;
   }
 
+  const accountId =
+    item.idea?.accountId ?? item.sourceVideo?.watchedSource?.targetAccountId ?? null;
+  const voice = await resolveChannelVoice(prisma, accountId);
   const voDir = join(STORAGE_ROOT, 'content', contentItemId, 'tts');
-  await mkdir(voDir, { recursive: true });
 
   try {
-    // Synthesize chunks (parallel for throughput)
-    const chunkPaths: string[] = [];
-    const synthPromises = chunks.map(async (chunk, i) => {
-      const chunkPath = join(voDir, `chunk_${String(i).padStart(3, '0')}.wav`);
-
-      const result = await router.run({
-        task: 'TTS' as any,
-        model: voiceConfig.provider ?? 'kokoro',
-        system: JSON.stringify({
-          voiceId: voiceConfig.voiceId ?? 'default',
-          speed: voiceConfig.speed ?? 1.0,
-          language: voiceConfig.language ?? 'en',
-        }),
-        input: { kind: 'text', text: chunk },
-        contentItemId,
-      });
-
-      // If audioRef is a base64 data URI, decode and write
-      if (result.audioRef) {
-        const b64Match = result.audioRef.match(/^data:[^;]*;base64,(.+)$/);
-        if (b64Match) {
-          await writeFile(chunkPath, Buffer.from(b64Match[1]!, 'base64'));
-        } else {
-          // audioRef is a file path — the provider already wrote it
-          chunkPaths[i] = result.audioRef;
-          return;
-        }
-      } else if (typeof result.output === 'string') {
-        // Some TTS providers return base64 audio as the output
-        await writeFile(chunkPath, Buffer.from(result.output, 'base64'));
-      }
-      chunkPaths[i] = chunkPath;
+    const synth = await synthesizeScript({
+      prisma,
+      masterKey,
+      script,
+      voice,
+      voDir,
+      contentItemId,
     });
 
-    await Promise.all(synthPromises);
-
-    // Concatenate chunks + silence padding + EBU R128 normalize
-    const finalPath = join(voDir, 'voiceover.wav');
-    const ffmpeg = new Ffmpeg();
-    const ffmpegAvail = await ffmpeg.available();
-
-    if (chunkPaths.length === 1) {
-      // Single chunk — just normalize if ffmpeg is available
-      if (ffmpegAvail) {
-        await ffmpeg.trimNormalize(chunkPaths[0]!, finalPath, {});
-      } else {
-        // Copy the single chunk as the final file
-        const { copyFile } = await import('node:fs/promises');
-        await copyFile(chunkPaths[0]!, finalPath);
-      }
-    } else if (ffmpegAvail) {
-      // Build concat file list
-      const listPath = join(voDir, 'concat.txt');
-      const listContent = chunkPaths
-        .map((p) => `file '${p!.replace(/\\/g, '/')}'`)
-        .join('\n');
-      await writeFile(listPath, listContent);
-
-      // Concat with silence padding + loudness normalize
-      const concatPath = join(voDir, 'concat_raw.wav');
-      await ffmpeg.exec([
-        '-f', 'concat', '-safe', '0', '-i', listPath,
-        '-af', 'apad=pad_dur=0.3',
-        '-y', concatPath,
-      ]);
-
-      // EBU R128 loudness normalization
-      await ffmpeg.exec([
-        '-i', concatPath,
-        '-af', 'loudnorm=I=-16:LRA=11:TP=-1.5',
-        '-y', finalPath,
-      ]);
-
-      // Clean up intermediate files
-      await unlink(listPath).catch(() => {});
-      await unlink(concatPath).catch(() => {});
-    } else {
-      // No ffmpeg — use first chunk, raise warning incident
-      const { copyFile } = await import('node:fs/promises');
-      await copyFile(chunkPaths[0]!, finalPath);
-      await raiseIncident(prisma, {
-        kind: 'SYSTEM',
-        severity: 'LOW',
-        contentItemId,
-        title: 'TTS: ffmpeg absent — chunks not concatenated/normalized',
-      });
-    }
-
-    // Clean up individual chunk files
-    for (const cp of chunkPaths) {
-      if (cp && cp !== finalPath) {
-        await unlink(cp).catch(() => {});
-      }
-    }
-
-    // Create VOICEOVER asset
-    const { stat } = await import('node:fs/promises');
-    const stats = await stat(finalPath);
+    const stats = await stat(synth.finalWavPath);
     await prisma.asset.create({
       data: {
         contentItemId,
         kind: 'VOICEOVER',
         storageState: 'LOCAL',
-        localPath: finalPath,
+        localPath: synth.finalWavPath,
         bytes: BigInt(stats.size),
       },
     });
 
-    // Transition to TTS_DONE
     await prisma.contentItem.update({
       where: { id: contentItemId },
       data: { status: 'TTS_DONE' },
     });
 
-    // Chain: enqueue render job
     await boss.send(QUEUE.STORAGE, { kind: 'render', contentItemId } as RenderJob, {
       singletonKey: `render-${contentItemId}`,
     });
 
-    // eslint-disable-next-line no-console
-    console.log(`[worker:tts] TTS done for ${contentItemId} — enqueued render`);
+    console.log(
+      `[worker:tts] TTS done for ${contentItemId} via ${synth.providerUsed}/${synth.voiceId} — enqueued render`,
+    );
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    // eslint-disable-next-line no-console
     console.error(`[worker:tts] TTS failed for ${contentItemId}:`, errMsg);
 
     await prisma.contentItem.update({
-      where: { id: contentItemId }, data: { status: 'FAILED' },
+      where: { id: contentItemId },
+      data: { status: 'FAILED' },
     });
 
-    const incidentKind = err instanceof AllProvidersExhaustedError
-      ? 'RATE_LIMIT' as const
-      : err instanceof FfmpegNotAvailableError
-        ? 'SYSTEM' as const
-        : 'SYSTEM' as const;
     await raiseIncident(prisma, {
-      kind: incidentKind,
+      kind: err instanceof AllProvidersExhaustedError ? 'RATE_LIMIT' : 'SYSTEM',
       contentItemId,
       title: `TTS failed: ${errMsg.slice(0, 200)}`,
       detail: { error: errMsg },
+    });
+  }
+}
+
+/**
+ * AI-owner package voiceover. On success advances packageStage to VOICE and
+ * enqueues the timed-transcript stage for narration packages.
+ */
+export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
+  const prisma = getPrisma();
+
+  const idea = await prisma.idea.findFirst({
+    where: { id: ideaId, deletedAt: null },
+    include: { brief: true },
+  });
+  if (!idea?.brief) {
+    console.warn(`[worker:tts] idea ${ideaId} or brief missing — skipping idea TTS`);
+    return;
+  }
+
+  const script = idea.brief.script?.trim() ?? '';
+  if (!script) {
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        voiceoverStatus: 'FAILED',
+        voiceoverLocalPath: null,
+        packageStage: 'FAILED',
+        packageStageError: 'Empty narration script — cannot synthesize voiceover.',
+      },
+    });
+    await prisma.idea.update({
+      where: { id: ideaId },
+      data: { packageStatus: 'FAILED', status: 'APPROVED' },
+    });
+    return;
+  }
+
+  const ksRow = await prisma.systemSetting.findUnique({ where: { key: 'killSwitches' } });
+  const ks = (ksRow?.value ?? {}) as Record<string, boolean>;
+  if (ks['ai.global'] || ks['ai.task.TTS']) {
+    console.warn(`[worker:tts] TTS disabled — skipping idea ${ideaId}`);
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        voiceoverStatus: 'FAILED',
+        packageStage: 'FAILED',
+        packageStageError: 'TTS disabled via kill switch',
+      },
+    });
+    await prisma.idea.update({ where: { id: ideaId }, data: { packageStatus: 'FAILED', status: 'APPROVED' } });
+    return;
+  }
+
+  const mkRaw = process.env.MASTER_KEY;
+  const masterKey = mkRaw ? loadMasterKey(mkRaw) : null;
+  if (!masterKey || !STORAGE_ROOT) {
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        voiceoverStatus: 'FAILED',
+        packageStage: 'FAILED',
+        packageStageError: !masterKey ? 'MASTER_KEY not configured' : 'STORAGE_ROOT not configured',
+      },
+    });
+    await prisma.idea.update({ where: { id: ideaId }, data: { packageStatus: 'FAILED', status: 'APPROVED' } });
+    return;
+  }
+
+  await prisma.productionBrief.update({
+    where: { ideaId },
+    data: {
+      voiceoverStatus: 'GENERATING',
+      packageStage: 'VOICE',
+      packageStageError: null,
+    },
+  });
+
+  const voice = await resolveChannelVoice(prisma, idea.accountId);
+  const voDir = join(STORAGE_ROOT, 'ideas', ideaId, 'tts');
+  const words = script.split(/\s+/).filter(Boolean).length;
+  console.log(
+    `[worker:tts] idea ${ideaId} VOICE start: chars=${script.length}, words≈${words}, provider=${voice.provider}, voiceId=${voice.voiceId}`,
+  );
+
+  try {
+    const synth = await synthesizeScript({
+      prisma,
+      masterKey,
+      script,
+      voice,
+      voDir,
+    });
+
+    const transcriptPath =
+      synth.timings.length > 0 ? join(voDir, 'voiceover.srt') : null;
+    if (synth.timings.length > 0 && transcriptPath) {
+      await writeFile(transcriptPath, segmentsToSrt(synth.timings), 'utf8');
+      await writeFile(join(voDir, 'voiceover.vtt'), segmentsToVtt(synth.timings), 'utf8');
+    }
+
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        voiceoverStatus: 'READY',
+        voiceoverLocalPath: synth.finalWavPath,
+        timedTranscript: synth.timings as any,
+        transcriptLocalPath: transcriptPath,
+        voiceIdUsed: `${synth.providerUsed}:${synth.voiceId}`,
+        packageStage: 'VOICE',
+        packageStageError: null,
+      },
+    });
+
+    console.log(
+      `[worker:tts] idea voiceover ready for ${ideaId} via ${synth.providerUsed}/${synth.voiceId}`,
+    );
+
+    if (boss) {
+      await boss.send(
+        QUEUE.AI,
+        { kind: 'idea_transcript', ideaId } satisfies IdeaTranscriptJob,
+        { singletonKey: `idea-transcript-${ideaId}` },
+      );
+      console.log(`[worker:tts] enqueued transcript stage for idea ${ideaId}`);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[worker:tts] idea TTS failed for ${ideaId}:`, errMsg);
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        voiceoverStatus: 'FAILED',
+        voiceoverLocalPath: null,
+        packageStage: 'FAILED',
+        packageStageError: `Voice stage failed: ${errMsg.slice(0, 400)}`,
+      },
+    });
+    await prisma.idea.update({
+      where: { id: ideaId },
+      data: { packageStatus: 'FAILED', status: 'APPROVED' },
+    });
+    await raiseIncident(prisma, {
+      kind: err instanceof AllProvidersExhaustedError ? 'RATE_LIMIT' : 'SYSTEM',
+      title: `Idea TTS failed: ${errMsg.slice(0, 200)}`,
+      detail: { ideaId, error: errMsg },
     });
   }
 }

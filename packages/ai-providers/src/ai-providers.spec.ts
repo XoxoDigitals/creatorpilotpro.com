@@ -396,6 +396,42 @@ describe('GeminiProvider.classifyError', () => {
   it('safety block → CONTENT_BLOCKED', () =>
     expect(g.classifyError({ code: 'CONTENT_BLOCKED' })).toBe('CONTENT_BLOCKED'));
   it('unknown 400 → FATAL', () => expect(g.classifyError({ status: 400, message: 'nope' })).toBe('FATAL'));
+  it('404 model unavailable → FATAL (fallback handled in generate)', () =>
+    expect(
+      g.classifyError({
+        status: 404,
+        message: 'This model models/gemini-2.5-flash is no longer available to new users',
+      }),
+    ).toBe('FATAL'));
+});
+
+describe('resolveGeminiModelChain / isGeminiModelUnavailable', () => {
+  it('puts requested model first then cheap flash/lite chain', async () => {
+    const { resolveGeminiModelChain, DEFAULT_GEMINI_TEXT_MODEL, GEMINI_TEXT_MODEL_CHAIN } =
+      await import('./gemini-models.js');
+    const chain = resolveGeminiModelChain(DEFAULT_GEMINI_TEXT_MODEL);
+    expect(chain[0]).toBe(DEFAULT_GEMINI_TEXT_MODEL);
+    expect(chain).toEqual([...new Set([DEFAULT_GEMINI_TEXT_MODEL, ...GEMINI_TEXT_MODEL_CHAIN])]);
+    expect(chain.some((m) => /pro|ultra|thinking/i.test(m))).toBe(false);
+  });
+
+  it('does not expand specialty TTS models into the text chain', async () => {
+    const { resolveGeminiModelChain } = await import('./gemini-models.js');
+    expect(resolveGeminiModelChain('gemini-2.5-flash-preview-tts')).toEqual([
+      'gemini-2.5-flash-preview-tts',
+    ]);
+  });
+
+  it('detects 404 / no-longer-available as model unavailable', async () => {
+    const { isGeminiModelUnavailable } = await import('./gemini-models.js');
+    expect(
+      isGeminiModelUnavailable({
+        status: 404,
+        message: 'This model models/gemini-2.5-flash is no longer available to new users',
+      }),
+    ).toBe(true);
+    expect(isGeminiModelUnavailable({ status: 429, message: 'rate' })).toBe(false);
+  });
 });
 
 describe('GeminiProvider.generate (structured JSON via mocked fetch)', () => {
@@ -420,6 +456,36 @@ describe('GeminiProvider.generate (structured JSON via mocked fetch)', () => {
     expect(calls[0]?.url).toContain('/models/gemini-2.5-flash:generateContent');
     expect(calls[0]?.body).toContain('"responseMimeType":"application/json"');
     expect(calls).toHaveLength(1);
+  });
+
+  it('falls back to the next model when the primary returns 404 unavailable', async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.includes('/models/gemini-2.5-flash:')) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message:
+                'This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use a newer model for the latest features and improvements.',
+            },
+          }),
+          { status: 404, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return okBody();
+    }) as unknown as typeof fetch;
+
+    const g = new GeminiProvider({ fetchImpl });
+    const res = await g.generate(
+      { task: TaskType.METADATA, model: 'gemini-2.5-flash', system: 's', input: { kind: 'text', text: 'x' }, schema },
+      { id: 'k1', providerId: 'gemini', secret: 'sk_test' },
+    );
+    expect(res.output).toEqual({ title: 'Hi', tags: ['a', 'b'] });
+    expect(res.model).not.toBe('gemini-2.5-flash');
+    expect(calls[0]).toContain('/models/gemini-2.5-flash:');
+    expect(calls.some((u) => u.includes(`/models/${res.model}:`))).toBe(true);
   });
 
   it('runs a repair-retry when the first response is not valid JSON', async () => {

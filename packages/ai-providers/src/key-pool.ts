@@ -32,7 +32,15 @@ export interface KeyState {
 }
 
 export interface KeyStore {
-  /** Load every non-DISABLED key for a provider. Small set — no pagination. */
+  /**
+   * Load every non-DISABLED key for a provider. Small set — no pagination.
+   *
+   * IMPORTANT: `providerId` is the provider's stable **slug** (`AIProvider.id`,
+   * e.g. `"gemini"`), NOT the `ai_providers` row's cuid primary key. Prisma-backed
+   * stores must therefore match on the relation's name
+   * (`where: { provider: { name: providerId } }`) — filtering on the raw
+   * `aiKey.providerId` FK silently returns zero keys.
+   */
   listByProvider(providerId: string): Promise<KeyState[]>;
   /** Persist counter + lastUsedAt bumps. */
   recordSuccess(keyId: string, patch: {

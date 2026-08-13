@@ -12,9 +12,8 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { compactNumber } from '@/lib/format';
-import { getAccountView } from '@/lib/api-data';
+import { getAccountView, getReviewView } from '@/lib/api-data';
 import { api, ApiError } from '@/lib/api';
-import { getReviewItems } from '@/lib/mock-data';
 import { TAB_VISIBILITY, type Account } from '@/lib/domain-types';
 
 export default function AccountLayout({ children }: { children: React.ReactNode }) {
@@ -25,6 +24,7 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
   const [demo, setDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [pendingReviews, setPendingReviews] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -33,6 +33,8 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
       setAccount(acc);
       setDemo(isDemo);
       setPaused(acc?.paused ?? false);
+      const review = await getReviewView(params.id);
+      setPendingReviews(review.items.filter((r) => r.status === 'PENDING').length);
     } finally {
       setLoading(false);
     }
@@ -68,13 +70,14 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
 
   const base = `/accounts/${account.id}`;
   const vis = TAB_VISIBILITY[account.contentType];
-  const pendingReviews = getReviewItems(account.id).filter((r) => r.status === 'PENDING').length;
 
+  // Ordered to follow the production workflow: Ideas → Review → AI → Schedule.
   const tabs: TabItem[] = [
     { href: base, label: 'Overview' },
     ...(vis.sources ? [{ href: `${base}/sources`, label: 'Sources' }] : []),
-    { href: `${base}/review`, label: 'Review', badge: pendingReviews },
     ...(vis.ideas ? [{ href: `${base}/ideas`, label: 'Ideas' }] : []),
+    { href: `${base}/review`, label: 'Review', badge: pendingReviews },
+    { href: `${base}/ai`, label: 'AI' },
     // Dramas is an explicit per-account toggle, not a contentType consequence.
     ...(account.dramasEnabled ? [{ href: `${base}/dramas`, label: 'Dramas' }] : []),
     { href: `${base}/schedule`, label: 'Schedule' },

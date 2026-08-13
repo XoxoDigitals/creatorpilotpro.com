@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/ui/page-header';
@@ -11,13 +12,60 @@ import { ContentTypeBadge } from '@/components/ui/badge';
 import { PlatformIcon } from '@/components/ui/platform-icon';
 import { SeverityBadge } from '@/components/ui/status-badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
+import { Skeleton } from '@/components/ui/skeleton';
 import { compactNumber, relativeTime } from '@/lib/format';
-import { getAccounts, getIncidents, getRollups } from '@/lib/mock-data';
+import { getAccountsView, getIncidentsView, getOverviewView, type AnalyticsOverview } from '@/lib/api-data';
+import type { Account, Incident } from '@/lib/domain-types';
 
 export default function DashboardPage() {
-  const rollups = getRollups();
-  const accounts = getAccounts();
-  const openIncidents = getIncidents().filter((i) => i.status === 'OPEN');
+  const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [demo, setDemo] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const [ov, accts, incs] = await Promise.all([
+        getOverviewView(),
+        getAccountsView(),
+        getIncidentsView(),
+      ]);
+      setOverview(ov.overview);
+      setDemo(ov.demo || accts.demo);
+      setAccounts(accts.accounts);
+      setIncidents(incs.incidents.filter((i) => i.status === 'OPEN'));
+    } catch {
+      // fallback: keep loading state empty
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div>
+        <PageHeader title="Dashboard" description="Everything across all connected accounts, at a glance" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  const ov = overview ?? {
+    totalFollowers: 0,
+    totalViews: 0,
+    totalRevenue: '0',
+    publishedToday: 0,
+    failedToday: 0,
+    scheduledCount: 0,
+    pendingReviews: 0,
+    openIncidents: 0,
+    aiSpendToday: '0',
+  };
 
   return (
     <div>
@@ -25,25 +73,29 @@ export default function DashboardPage() {
         title="Dashboard"
         description="Everything across all connected accounts, at a glance"
       />
+      {demo && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Demo data — connect a real account to see live metrics.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Accounts" value={rollups.accountCount} hint="connected" />
-        <StatCard label="Total followers" value={compactNumber(rollups.totalFollowers)} delta="+3.1%" hint="30 days" />
-        <StatCard label="Views" value={compactNumber(rollups.views30d)} delta="+6.4%" hint="30 days" />
-        <StatCard label="Scheduled" value={rollups.scheduled} hint="upcoming posts" />
+        <StatCard label="Accounts" value={accounts.length} hint="connected" />
+        <StatCard label="Total followers" value={compactNumber(ov.totalFollowers)} hint="latest sync" />
+        <StatCard label="Views" value={compactNumber(ov.totalViews)} hint="today" />
+        <StatCard label="Scheduled" value={ov.scheduledCount} hint="upcoming posts" />
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Published today" value={rollups.publishedToday} />
-        <StatCard label="Pending reviews" value={rollups.pendingReviews} hint="awaiting your approval" />
-        <StatCard label="Failed posts" value={rollups.failed} hint={rollups.failed > 0 ? 'see incidents' : ''} />
-        <StatCard label="Open incidents" value={rollups.openIncidents} hint={rollups.openIncidents > 0 ? 'needs attention' : 'all clear'} />
+        <StatCard label="Published today" value={ov.publishedToday} />
+        <StatCard label="Pending reviews" value={ov.pendingReviews} hint="awaiting your approval" />
+        <StatCard label="Failed posts" value={ov.failedToday} hint={ov.failedToday > 0 ? 'see incidents' : ''} />
+        <StatCard label="Open incidents" value={ov.openIncidents} hint={ov.openIncidents > 0 ? 'needs attention' : 'all clear'} />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-3">
-        {/* Account health table */}
         <Card className="xl:col-span-2">
-          <CardHeader title="Accounts" description="Health and 30-day performance per account" />
+          <CardHeader title="Accounts" description="Health and performance per account" />
           <Table className="rounded-t-none border-0">
             <THead>
               <TR>
@@ -87,7 +139,6 @@ export default function DashboardPage() {
           </Table>
         </Card>
 
-        {/* Open incidents */}
         <Card>
           <CardHeader
             title="Open incidents"
@@ -98,11 +149,11 @@ export default function DashboardPage() {
             }
           />
           <div className="p-4">
-            {openIncidents.length === 0 ? (
-              <p className="text-sm text-zinc-500">No open incidents. 🎉</p>
+            {incidents.length === 0 ? (
+              <p className="text-sm text-zinc-500">No open incidents.</p>
             ) : (
               <ul className="space-y-3">
-                {openIncidents.map((inc) => {
+                {incidents.map((inc) => {
                   const acc = accounts.find((a) => a.id === inc.accountId);
                   return (
                     <li key={inc.id} className="flex items-start gap-2">

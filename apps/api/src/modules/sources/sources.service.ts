@@ -167,6 +167,35 @@ export class SourcesService {
     return videos.map(toSourceVideoView);
   }
 
+  /**
+   * Re-enqueue a DOWNLOAD job for a source video that's stuck in FAILED /
+   * SKIPPED_DUPLICATE (or that we want to force-refresh even when DONE). Clears
+   * the progress counters and near-dup flag so the UI resets. A DOWNLOADING row
+   * is left alone — retrying a live job would race the worker.
+   */
+  async retryDownload(videoId: string): Promise<SourceVideoView> {
+    const video = await this.prisma.client.sourceVideo.findUnique({
+      where: { id: videoId },
+      select: { id: true, downloadStatus: true },
+    });
+    if (!video) throw new NotFoundException('Source video not found.');
+    if (video.downloadStatus === 'DOWNLOADING') {
+      throw new BadRequestException('Download is already in progress — nothing to retry.');
+    }
+    const updated = await this.prisma.client.sourceVideo.update({
+      where: { id: videoId },
+      data: {
+        downloadStatus: 'PENDING',
+        downloadPercent: 0,
+        downloadEtaSec: null,
+        downloadSpeedBps: null,
+        nearDuplicateOfId: null,
+      },
+    });
+    await this.queue.enqueueDownload(videoId);
+    return toSourceVideoView(updated);
+  }
+
   async setRights(videoId: string, rightsNote: string, actorId: string): Promise<SourceVideoView> {
     const existing = await this.prisma.client.sourceVideo.findUnique({
       where: { id: videoId },

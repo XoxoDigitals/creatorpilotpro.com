@@ -54,15 +54,16 @@ export function SeverityBadge({ severity }: { severity: IncidentSeverity }) {
 }
 
 export function IncidentStatusBadge({ status }: { status: IncidentStatus }) {
-  return (
-    <Badge tone={status === 'OPEN' ? 'red' : 'green'}>{status === 'OPEN' ? 'Open' : 'Resolved'}</Badge>
-  );
+  if (status === 'OPEN') return <Badge tone="red">Open</Badge>;
+  if (status === 'ACKED') return <Badge tone="amber">Retrying</Badge>;
+  return <Badge tone="green">Resolved</Badge>;
 }
 
 const TASK: Record<TaskStatus, { tone: BadgeTone; label: string }> = {
   ASSIGNED: { tone: 'neutral', label: 'Assigned' },
   IN_PROGRESS: { tone: 'indigo', label: 'In progress' },
-  SUBMITTED: { tone: 'amber', label: 'Submitted' },
+  UPLOADED: { tone: 'amber', label: 'Uploaded' },
+  REVISION_REQUESTED: { tone: 'red', label: 'Revision' },
   DONE: { tone: 'green', label: 'Done' },
 };
 

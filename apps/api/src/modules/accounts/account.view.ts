@@ -10,10 +10,13 @@ export interface ChannelProfileView {
   masterPrompt: string;
   writingStyle: string;
   narrationStyle: string;
+  styleProfile: unknown;
   language: string;
   voiceSettings: unknown;
   titleTemplate: string;
   descriptionTemplate: string;
+  thumbnailReferencePrompt: string;
+  animationReferencePrompt: string;
   defaultTags: string[];
   aiLabelDefault: boolean;
   approvalPolicy: unknown;
@@ -45,10 +48,13 @@ export function toProfileView(p: ChannelProfile): ChannelProfileView {
     masterPrompt: p.masterPrompt,
     writingStyle: p.writingStyle,
     narrationStyle: p.narrationStyle,
+    styleProfile: p.styleProfile,
     language: p.language,
     voiceSettings: p.voiceSettings,
     titleTemplate: p.titleTemplate,
     descriptionTemplate: p.descriptionTemplate,
+    thumbnailReferencePrompt: p.thumbnailReferencePrompt,
+    animationReferencePrompt: p.animationReferencePrompt,
     defaultTags: p.defaultTags,
     aiLabelDefault: p.aiLabelDefault,
     approvalPolicy: p.approvalPolicy,

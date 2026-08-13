@@ -8,6 +8,9 @@ import {
   OpenAIProvider,
   KokoroProvider,
   WhisperProvider,
+  diagnoseEdgeTts,
+  listEdgeVoices,
+  synthesizeWithEdgeTts,
   cacheKeyFor,
   hashText,
   type AIResult,
@@ -15,12 +18,51 @@ import {
   type UsageLogger,
   type ProviderRegistry,
   type AIProvider as AIProviderInterface,
+  type EdgeVoiceInfo,
 } from '@scp/ai-providers';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CryptoService } from '../../common/crypto/crypto.service';
 import { SettingsService } from '../system/settings.service';
 import { PrismaKeyStore } from './store/prisma-key-store';
-import type { CreateKeyDto, PlaygroundDto } from './dto/ai.dto';
+import type { CreateKeyDto, PlaygroundDto, TtsPreviewDto, ComposeMasterPromptDto } from './dto/ai.dto';
+import {
+  composeChannelStyles,
+  styleProfileAnswersSchema,
+  styleProfileHasAnswers,
+} from '@scp/shared';
+
+function parseComposeJson(raw: string): {
+  masterPrompt?: string;
+  writingStyle?: string;
+  narrationStyle?: string;
+  tags?: string[];
+} | null {
+  const text = raw.trim();
+  if (!text) return null;
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? text).trim();
+  try {
+    const parsed = JSON.parse(candidate) as Record<string, unknown>;
+    const tags = Array.isArray(parsed.tags)
+      ? parsed.tags
+          .filter((t): t is string => typeof t === 'string')
+          .map((t) => t.trim().replace(/^#/, ''))
+          .filter(Boolean)
+          .slice(0, 20)
+      : undefined;
+    return {
+      masterPrompt: typeof parsed.masterPrompt === 'string' ? parsed.masterPrompt.trim() : undefined,
+      writingStyle: typeof parsed.writingStyle === 'string' ? parsed.writingStyle.trim() : undefined,
+      narrationStyle:
+        typeof parsed.narrationStyle === 'string' ? parsed.narrationStyle.trim() : undefined,
+      tags,
+    };
+  } catch {
+    return null;
+  }
+}
+import { readFile, rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 /** Sanitized key view — the secret (keyEnc) is NEVER included (docs/08 §2). */
 export interface AiKeyView {
@@ -333,6 +375,178 @@ export class AiService {
     return result;
   }
 
+  // ── Compose channel master prompt ───────────────────────────────────────
+
+  /**
+   * Build a heavy channel master prompt from ALL channel settings fields.
+   * Uses the deterministic system-style composer, then optionally expands via
+   * BRIEF_GENERATION. Falls back to local compose if the LLM is unavailable.
+   */
+  async composeMasterPrompt(dto: ComposeMasterPromptDto): Promise<{
+    masterPrompt: string;
+    writingStyle: string;
+    narrationStyle: string;
+    tags: string[];
+    source: 'ai' | 'local';
+  }> {
+    const answers = styleProfileAnswersSchema.parse(dto.answers ?? {});
+    const hasExtras = Boolean(
+      dto.animationReferencePrompt?.trim() ||
+        dto.thumbnailReferencePrompt?.trim() ||
+        dto.titleTemplate?.trim() ||
+        dto.descriptionTemplate?.trim() ||
+        dto.writingStyle?.trim() ||
+        dto.narrationStyle?.trim() ||
+        dto.voiceNotes?.trim(),
+    );
+    if (!styleProfileHasAnswers(answers) && !hasExtras) {
+      throw new BadRequestException(
+        'Fill in the style questionnaire (or paste animation / thumbnail guidelines) before generating a prompt.',
+      );
+    }
+
+    const local = composeChannelStyles(answers, dto.language ?? 'en', {
+      animationReferencePrompt: dto.animationReferencePrompt,
+      thumbnailReferencePrompt: dto.thumbnailReferencePrompt,
+      titleTemplate: dto.titleTemplate,
+      descriptionTemplate: dto.descriptionTemplate,
+      writingStyle: dto.writingStyle,
+      narrationStyle: dto.narrationStyle,
+      contentType: dto.contentType,
+      voiceNotes: dto.voiceNotes,
+    });
+
+    if (dto.localOnly) {
+      return { ...local, source: 'local' };
+    }
+
+    const task = 'BRIEF_GENERATION' as TaskType;
+    try {
+      await this.assertNotKilled(task);
+      const registry = this.buildRegistry();
+      const keyStore = new PrismaKeyStore(this.prisma.client, this.crypto);
+      const noopCache: CacheStore = {
+        lookup: async () => null,
+        save: async () => {},
+        recordHit: async () => {},
+      };
+      const memLogger: UsageLogger = { log: async () => {} };
+      const pool = new KeyPool(keyStore);
+      const router = new AIRouter({ cache: noopCache, logger: memLogger, keyPool: pool, registry });
+
+      const result = await router.run({
+        task,
+        model: '',
+        system: `You write channel master briefs for Social Creator Pilot (short-form social video).
+Return ONLY valid JSON (no markdown fences, no preamble) with this shape:
+{
+  "masterPrompt": string,
+  "writingStyle": string,
+  "narrationStyle": string,
+  "tags": string[]
+}
+
+masterPrompt requirements:
+- Long, detailed, production-ready brand brief (aim for substantial coverage — not a short bullet list).
+- Use clear markdown sections (## headings) covering: Role, Channel identity, Brand voice & writing,
+  Presentation/pacing/narration, Visual & editing, Animation guidelines (if provided), Thumbnail style (if provided),
+  Hard rules / do-not, Additional owner notes, Operating checklist.
+- Incorporate ALL fields from the user JSON: questionnaire answers, animation guidelines, thumbnail reference,
+  language, title/description templates, writing/narration notes, content type, voice notes.
+- Keep practical imperative tone. Do not invent unrelated niches.
+- Preserve owner animation / thumbnail guideline text in dedicated sections when present.
+
+writingStyle / narrationStyle: concise operator-facing summaries (1–3 sentences each).
+tags: 8–15 lowercase discovery tags without #, niche-relevant, no spam.`,
+        input: {
+          kind: 'text',
+          text: JSON.stringify(
+            {
+              language: dto.language ?? 'en',
+              contentType: dto.contentType ?? null,
+              answers,
+              animationReferencePrompt: dto.animationReferencePrompt?.trim() || null,
+              thumbnailReferencePrompt: dto.thumbnailReferencePrompt?.trim() || null,
+              titleTemplate: dto.titleTemplate?.trim() || null,
+              descriptionTemplate: dto.descriptionTemplate?.trim() || null,
+              writingStyle: dto.writingStyle?.trim() || null,
+              narrationStyle: dto.narrationStyle?.trim() || null,
+              voiceNotes: dto.voiceNotes?.trim() || null,
+              systemStyleDraft: {
+                masterPrompt: local.masterPrompt,
+                writingStyle: local.writingStyle,
+                narrationStyle: local.narrationStyle,
+                tags: local.tags,
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      });
+
+      const out = typeof result.output === 'string' ? result.output.trim() : '';
+      if (!out) return { ...local, source: 'local' };
+
+      const parsed = parseComposeJson(out);
+      if (parsed?.masterPrompt) {
+        return {
+          masterPrompt: parsed.masterPrompt,
+          writingStyle: parsed.writingStyle || local.writingStyle,
+          narrationStyle: parsed.narrationStyle || local.narrationStyle,
+          tags: parsed.tags?.length ? parsed.tags : local.tags,
+          source: 'ai',
+        };
+      }
+
+      // Model returned plain text instead of JSON — treat as master prompt only.
+      return {
+        masterPrompt: out,
+        writingStyle: local.writingStyle,
+        narrationStyle: local.narrationStyle,
+        tags: local.tags,
+        source: 'ai',
+      };
+    } catch {
+      return { ...local, source: 'local' };
+    }
+  }
+
+  // ── Translation helper ────────────────────────────────────────────────────
+
+  /**
+   * Translate a short piece of text (video title, caption) to English via the
+   * NARRATION_REWRITE chain — the most permissive text-in/text-out task. Returns
+   * the input unchanged if the router fails so callers can degrade gracefully.
+   */
+  async translateToEnglish(text: string): Promise<string> {
+    const task = 'NARRATION_REWRITE' as TaskType;
+    try {
+      await this.assertNotKilled(task);
+      const registry = this.buildRegistry();
+      const keyStore = new PrismaKeyStore(this.prisma.client, this.crypto);
+      const noopCache: CacheStore = {
+        lookup: async () => null,
+        save: async () => {},
+        recordHit: async () => {},
+      };
+      const memLogger: UsageLogger = { log: async () => {} };
+      const pool = new KeyPool(keyStore);
+      const router = new AIRouter({ cache: noopCache, logger: memLogger, keyPool: pool, registry });
+      const result = await router.run({
+        task,
+        model: '',
+        system:
+          'You translate short video titles to fluent, natural English. Return ONLY the translated title — no quotes, no explanation, no source language notes. If the input is already English, return it verbatim.',
+        input: { kind: 'text', text },
+      });
+      const out = typeof result.output === 'string' ? result.output.trim() : '';
+      return out || text;
+    } catch {
+      return text;
+    }
+  }
+
   // ── Usage stats ───────────────────────────────────────────────────────────
 
   async getUsageStats(filters?: {
@@ -416,5 +630,78 @@ export class AiService {
     const found = providers.find((p) => p.id === id);
     if (!found) throw new NotFoundException('AI provider not found');
     return found;
+  }
+
+  // ── Edge Neural TTS ─────────────────────────────────────────────────────
+
+  async getTtsStatus(): Promise<{
+    ok: boolean;
+    source: string;
+    detail: string;
+    versionHint: string;
+    defaultProvider: string;
+  }> {
+    const diag = await diagnoseEdgeTts();
+    return {
+      ok: diag.ok,
+      source: diag.binary.source,
+      detail: diag.binary.detail,
+      versionHint: diag.versionHint,
+      defaultProvider: 'edge',
+    };
+  }
+
+  async listTtsVoices(opts?: {
+    locale?: string;
+    forceRefresh?: boolean;
+  }): Promise<{ voices: EdgeVoiceInfo[]; cached: boolean; locale: string | null }> {
+    try {
+      const voices = await listEdgeVoices({
+        locale: opts?.locale,
+        forceRefresh: opts?.forceRefresh,
+      });
+      return {
+        voices,
+        cached: !opts?.forceRefresh,
+        locale: opts?.locale ?? null,
+      };
+    } catch (err) {
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Failed to list Edge TTS voices',
+      );
+    }
+  }
+
+  async previewTts(dto: TtsPreviewDto): Promise<{
+    voiceId: string;
+    mimeType: string;
+    audioBase64: string;
+    timings: Array<{ startMs: number; endMs: number; text: string }>;
+  }> {
+    const text =
+      dto.text?.trim() ||
+      'Hello from Social Creator Pilot. This is a short voice preview.';
+    try {
+      const synth = await synthesizeWithEdgeTts(text, {
+        voice: dto.voiceId,
+        rate: dto.rate,
+        pitch: dto.pitch,
+        volume: dto.volume,
+        writeSubtitles: true,
+      });
+      const buf = await readFile(synth.mediaPath);
+      // Clean temp dir owned by synthesizeWithEdgeTts when outDir was default.
+      await rm(dirname(synth.mediaPath), { recursive: true, force: true }).catch(() => {});
+      return {
+        voiceId: dto.voiceId,
+        mimeType: 'audio/mpeg',
+        audioBase64: buf.toString('base64'),
+        timings: synth.timings,
+      };
+    } catch (err) {
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Edge TTS preview failed',
+      );
+    }
   }
 }

@@ -1,30 +1,49 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  NotFoundException,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  StreamableFile,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
+import { createReadStream } from 'node:fs';
 import type { ContentItemStatus } from '@scp/db';
 import { ContentService } from './content.service';
-import type { ContentItemView, ReviewItemView } from './content.view';
+import type {
+  AiPipelineItemView,
+  ContentItemView,
+  ReviewItemView,
+} from './content.view';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Audit } from '../../common/decorators/audit.decorator';
 import { ZodBody } from '../../common/pipes/zod-validation.pipe';
 import {
   createContentSchema,
   rejectContentSchema,
+  updatePublishMetadataSchema,
   type CreateContentDto,
   type RejectContentDto,
+  type UpdatePublishMetadataDto,
 } from './dto/content.dto';
 
 /**
  * Content module (docs/03 Domain 4). Content items + the review queue. REVIEWER
- * can review/approve/reject; OWNER/ADMIN/WORKER can create.
+ * can review/approve/reject and create on granted accounts; OWNER/ADMIN full access.
  */
 @ApiTags('content')
-@Roles('OWNER', 'ADMIN', 'REVIEWER', 'WORKER')
+@Roles('OWNER', 'ADMIN', 'REVIEWER')
 @Controller('content')
 export class ContentController {
   constructor(private readonly content: ContentService) {}
 
   @Post()
-  @Roles('OWNER', 'ADMIN', 'WORKER')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.create', 'ContentItem')
   create(@Body(new ZodBody(createContentSchema)) body: CreateContentDto): Promise<ContentItemView> {
     return this.content.create(body);
@@ -38,6 +57,11 @@ export class ContentController {
   @Get('review')
   review(@Query('accountId') accountId?: string): Promise<ReviewItemView[]> {
     return this.content.listReview(accountId);
+  }
+
+  @Get('ai-pipeline')
+  aiPipeline(@Query('accountId') accountId?: string): Promise<AiPipelineItemView[]> {
+    return this.content.listAiPipeline(accountId);
   }
 
   @Get(':id')
@@ -59,6 +83,109 @@ export class ContentController {
     return this.content.approveScript(id);
   }
 
+  @Post(':id/reset-to-review')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.reset_to_review', 'ContentItem')
+  resetToReview(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.resetToReview(id);
+  }
+
+  @Post(':id/retry-ai')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.retry_ai', 'ContentItem')
+  retryAi(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.retryAiPipeline(id);
+  }
+
+  @Post(':id/regenerate-metadata')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.regenerate_metadata', 'ContentItem')
+  regenerateMetadata(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.regenerateMetadata(id);
+  }
+
+  @Patch(':id/publish-metadata')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.update_publish_metadata', 'ContentItem')
+  updatePublishMetadata(
+    @Param('id') id: string,
+    @Body(new ZodBody(updatePublishMetadataSchema)) body: UpdatePublishMetadataDto,
+  ): Promise<AiPipelineItemView> {
+    return this.content.updatePublishMetadata(id, body);
+  }
+
+  @Post(':id/translate-title')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.translate_title', 'ContentItem')
+  translateTitle(@Param('id') id: string) {
+    return this.content.translateTitle(id);
+  }
+
+  /**
+   * Stream the item's video (FINAL, or ORIGINAL as fallback) for inline playback,
+   * or its stored thumbnail image with `?kind=thumbnail`.
+   *
+   * When the asset lives only on Google Drive, redirect to the Drive preview
+   * embed URL (iframe-friendly) instead of streaming from disk.
+   */
+  @Get(':id/media')
+  async media(
+    @Param('id') id: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
+    @Query('kind') kind?: string,
+  ): Promise<StreamableFile | void> {
+    const info =
+      kind?.toUpperCase() === 'THUMBNAIL'
+        ? await this.content.getThumbnailAsset(id)
+        : await this.content.getPlayableAsset(id);
+    if (!info) throw new NotFoundException('No playable asset for this item.');
+    if (!info.path && info.embedUrl) {
+      void reply.redirect(info.embedUrl, 302);
+      return;
+    }
+    if (!info.path || info.bytes == null) {
+      throw new NotFoundException('No playable asset for this item.');
+    }
+    void reply.header('content-type', info.mimeType);
+    void reply.header('content-length', String(info.bytes));
+    void reply.header('accept-ranges', 'bytes');
+    return new StreamableFile(createReadStream(info.path));
+  }
+
+  /**
+   * Resolve embed / stream URLs for UI players without downloading the file.
+   * Prefer Drive preview when archived; otherwise same-origin media stream.
+   */
+  @Get(':id/media-info')
+  async mediaInfo(
+    @Param('id') id: string,
+    @Query('kind') kind?: string,
+  ): Promise<{
+    mode: 'embed' | 'stream';
+    embedUrl: string | null;
+    streamUrl: string;
+    mimeType: string;
+  }> {
+    const info =
+      kind?.toUpperCase() === 'THUMBNAIL'
+        ? await this.content.getThumbnailAsset(id)
+        : await this.content.getPlayableAsset(id);
+    if (!info) throw new NotFoundException('No playable asset for this item.');
+    const streamUrl =
+      kind?.toUpperCase() === 'THUMBNAIL'
+        ? `/api/v1/content/${encodeURIComponent(id)}/media?kind=thumbnail`
+        : `/api/v1/content/${encodeURIComponent(id)}/media`;
+    if (info.embedUrl && !info.path) {
+      return { mode: 'embed', embedUrl: info.embedUrl, streamUrl, mimeType: info.mimeType };
+    }
+    return {
+      mode: 'stream',
+      embedUrl: info.embedUrl ?? null,
+      streamUrl,
+      mimeType: info.mimeType,
+    };
+  }
+
   @Post(':id/reject')
   @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.reject', 'ContentItem')
@@ -67,5 +194,26 @@ export class ContentController {
     @Body(new ZodBody(rejectContentSchema)) body: RejectContentDto,
   ): Promise<ContentItemView> {
     return this.content.reject(id, body.reason);
+  }
+
+  // ── A/B suggestions (Phase 7 #10) ────────────────────────────────────────
+
+  @Get(':id/suggestions')
+  suggestions(@Param('id') id: string) {
+    return this.content.listSuggestions(id);
+  }
+
+  @Post(':id/suggestions/generate')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('content.suggestions_generate', 'ContentItem')
+  generateSuggestions(@Param('id') id: string): Promise<{ enqueued: true }> {
+    return this.content.generateSuggestions(id);
+  }
+
+  @Post('suggestions/:suggestionId/choose')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.suggestion_choose', 'PostSuggestion')
+  chooseSuggestion(@Param('suggestionId') suggestionId: string) {
+    return this.content.chooseSuggestion(suggestionId);
   }
 }

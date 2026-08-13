@@ -3,21 +3,22 @@
  * and +24h. A BLOCK issue (copyright / rejection / processing failure) triggers
  * the failure protocol — target → DRAFT, incident, notify, auto-hold siblings.
  */
-import { FacebookAdapter } from '@scp/publish-adapters';
+import { FacebookAdapter, TikTokAdapter, YouTubeAdapter } from '@scp/publish-adapters';
 import {
   adapterAuth,
   buildAdapter,
   decryptAccountAuth,
-  detectHeaderStyle,
   getMasterKey,
   getPrisma,
-  loadPostquedConfig,
   raiseIncident,
   type AdapterPlatform,
 } from './publish-support.js';
 import type { VerifyJob } from './publish-jobs.js';
 
 const COPYRIGHT_RE = /copyright|claim|takedown/i;
+
+/** Auto-pause the account after this many copyright strikes (docs/10 backlog #8). */
+const STRIKE_PAUSE_THRESHOLD = 3;
 
 export async function runVerify(job: VerifyJob): Promise<void> {
   const prisma = getPrisma();
@@ -33,16 +34,15 @@ export async function runVerify(job: VerifyJob): Promise<void> {
   const { account } = target;
   const platform = account.platform as AdapterPlatform;
 
-  let postqued = null as { apiKey: string; headerStyle: 'bearer' | 'x-api-key'; workspaceId?: string } | null;
-  if (platform !== 'FACEBOOK') {
-    const cfg = await loadPostquedConfig(prisma, masterKey);
-    if (!cfg) return; // can't verify without the key; leave as-is for the next pass.
-    postqued = { apiKey: cfg.apiKey, headerStyle: await detectHeaderStyle(cfg.apiKey), workspaceId: cfg.workspaceId };
-  }
+  // Manual accounts don't publish externally, so nothing to verify against.
+  if (account.connectionMethod === 'MANUAL') return;
 
-  const adapter = buildAdapter(platform, postqued);
+  const adapter = buildAdapter(
+    platform,
+    (account.connectionMethod ?? 'OWN_APP') as 'OWN_APP' | 'MANUAL' | 'POSTQUED',
+  );
 
-  // Facebook's verify() needs the page token re-seeded in this fresh process.
+  // Re-seed per-adapter auth in this fresh worker process so verify() authenticates.
   if (adapter instanceof FacebookAdapter) {
     const auth = adapterAuth('FACEBOOK', decryptAccountAuth(account.authPayload, masterKey)) as {
       pageId?: string;
@@ -53,6 +53,20 @@ export async function runVerify(job: VerifyJob): Promise<void> {
         pageId: auth.pageId,
         pageAccessToken: auth.pageAccessToken,
       });
+    }
+  } else if (adapter instanceof YouTubeAdapter) {
+    const auth = adapterAuth('YOUTUBE', decryptAccountAuth(account.authPayload, masterKey)) as {
+      accessToken?: string;
+    };
+    if (auth.accessToken) {
+      adapter.primeVerifyAuth(job.platformPostId, { accessToken: auth.accessToken });
+    }
+  } else if (adapter instanceof TikTokAdapter) {
+    const auth = adapterAuth('TIKTOK', decryptAccountAuth(account.authPayload, masterKey)) as {
+      accessToken?: string;
+    };
+    if (auth.accessToken) {
+      adapter.primeVerifyAuth(job.platformPostId, { accessToken: auth.accessToken });
     }
   }
 
@@ -78,6 +92,33 @@ export async function runVerify(job: VerifyJob): Promise<void> {
       where: { contentItemId: target.contentItemId, status: 'SCHEDULED', id: { not: target.id } },
       data: { status: 'DRAFT' },
     });
+
+    // Strike counter + auto-pause (docs/10 backlog #8). Only copyright issues
+    // count toward the strike total; platform rejections don't threaten the
+    // channel's standing the same way.
+    if (isCopyright) {
+      const updated = await prisma.socialAccount.update({
+        where: { id: account.id },
+        data: { copyrightStrikeCount: { increment: 1 } },
+        select: { copyrightStrikeCount: true, paused: true },
+      });
+      if (updated.copyrightStrikeCount >= STRIKE_PAUSE_THRESHOLD && !updated.paused) {
+        await prisma.socialAccount.update({
+          where: { id: account.id },
+          data: {
+            paused: true,
+            pausedReason: `Auto-paused: ${updated.copyrightStrikeCount} copyright strikes`,
+          },
+        });
+        await raiseIncident(prisma, {
+          kind: 'COPYRIGHT',
+          severity: 'HIGH',
+          accountId: account.id,
+          title: `Account auto-paused after ${updated.copyrightStrikeCount} copyright strikes`,
+          detail: { strikeCount: updated.copyrightStrikeCount, threshold: STRIKE_PAUSE_THRESHOLD },
+        });
+      }
+    }
     return;
   }
 

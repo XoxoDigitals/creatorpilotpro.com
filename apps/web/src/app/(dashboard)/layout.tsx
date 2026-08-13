@@ -11,9 +11,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <ToastProvider>
-      <div className="flex min-h-screen bg-zinc-50">
+      <div className="flex h-screen overflow-hidden bg-zinc-50">
         <Sidebar user={user} />
-        <main className="min-w-0 flex-1 overflow-x-hidden">
+        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
           <div className="mx-auto max-w-7xl px-6 py-6">{children}</div>
         </main>
       </div>

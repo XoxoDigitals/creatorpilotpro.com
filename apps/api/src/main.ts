@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import fastifyCookie from '@fastify/cookie';
 import fastifyMultipart from '@fastify/multipart';
+import fastifyHelmet from '@fastify/helmet';
 import { AppModule } from './app.module';
 
 /** Manual-upload cap (docs/06 §2: video ≤ 4 GB). */
@@ -26,6 +27,24 @@ async function bootstrap(): Promise<void> {
     throw new Error('SESSION_SECRET is not set — refusing to start without a cookie-signing key.');
   }
   await app.register(fastifyCookie, { secret: sessionSecret });
+
+  // Security headers (docs/08 §1). Helmet applies CSP, HSTS, X-Frame-Options,
+  // X-Content-Type-Options, Referrer-Policy, etc. CSP is relaxed for Swagger UI
+  // which needs inline styles/scripts to render.
+  await app.register(fastifyHelmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  });
 
   // Multipart for manual video uploads (docs/06 §2). Streamed to the hot tier.
   await app.register(fastifyMultipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });

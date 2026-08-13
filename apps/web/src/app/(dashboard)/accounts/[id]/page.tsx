@@ -7,34 +7,70 @@ import { useEffect, useState } from 'react';
 import { Card, CardHeader } from '@/components/ui/card';
 import { StatCard } from '@/components/ui/stat-card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { PostStatusBadge } from '@/components/ui/status-badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
 import { EmptyState } from '@/components/ui/empty-state';
+import { useToast } from '@/components/ui/toast';
 import { compactNumber, relativeTime, absoluteTime } from '@/lib/format';
-import { getAccountView } from '@/lib/api-data';
-import { getPosts, getIncidents } from '@/lib/mock-data';
-import type { Account } from '@/lib/domain-types';
+import {
+  getAccountView, getPostsView, getIncidentsView,
+  downloadTargetUrl, markTargetPublished, getApiAccount,
+} from '@/lib/api-data';
+import type { Account, Incident, Post } from '@/lib/domain-types';
 
 export default function AccountOverviewPage() {
   const { id } = useParams<{ id: string }>();
+  const toast = useToast();
   const [account, setAccount] = useState<Account | null>(null);
+  const [connectionMethod, setConnectionMethod] = useState<string | null>(null);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+
+  async function refreshPosts() {
+    const r = await getPostsView(id);
+    setPosts(r.posts);
+  }
 
   useEffect(() => {
     void getAccountView(id).then(({ account: acc }) => setAccount(acc));
+    void getApiAccount(id).then((a) => setConnectionMethod(a?.connectionMethod ?? null));
+    void refreshPosts();
+    void getIncidentsView().then((r) => setIncidents(r.incidents.filter((i) => i.accountId === id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function handleMarkPublished(publishTargetId: string) {
+    try {
+      await markTargetPublished(publishTargetId);
+      toast('Marked as published', 'success');
+      await refreshPosts();
+    } catch {
+      toast('Failed to mark as published', 'error');
+    }
+  }
 
   if (!account) return null; // layout renders loading / not-found states
 
-  const posts = getPosts(id);
   const recent = [...posts].sort((a, b) => {
     const ta = Date.parse(a.publishedAt ?? a.scheduledAt ?? '') || 0;
     const tb = Date.parse(b.publishedAt ?? b.scheduledAt ?? '') || 0;
     return tb - ta;
   });
-  const openIncidents = getIncidents(id).filter((i) => i.status === 'OPEN');
+  const openIncidents = incidents.filter((i) => i.status === 'OPEN');
 
   return (
     <div className="space-y-6">
+      <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+        <p className="font-medium text-zinc-900">Crossposting</p>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-600">
+          Each connected channel is its own account (YouTube, Facebook, TikTok). Set default
+          publish timing and sibling destinations under{' '}
+          <span className="font-medium">Settings → Publish timing & crosspost</span>. Uploads
+          use those defaults; Review Approve still gates all targets before anything goes live.
+        </p>
+      </div>
+
       {/* Stat row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Followers" value={compactNumber(account.followers)} delta="+2.4%" hint="30 days" />
@@ -46,6 +82,51 @@ export default function AccountOverviewPage() {
           hint={account.openIncidents > 0 ? 'needs attention' : 'all clear'}
         />
       </div>
+
+      {connectionMethod === 'MANUAL' && (() => {
+        // In manual mode the pipeline stops at PUBLISHING (== SCHEDULED in Post
+        // view) — Owner downloads the file, uploads by hand, then marks PUBLISHED.
+        const pending = posts.filter((p) => p.status === 'SCHEDULED' && p.publishedAt == null);
+        return (
+          <Card>
+            <CardHeader
+              title="Manual uploads"
+              description="Videos ready — download the rendered file, upload it to the platform, then mark as published."
+              action={<Badge tone="indigo">MANUAL account</Badge>}
+            />
+            {pending.length === 0 ? (
+              <div className="p-4">
+                <EmptyState
+                  title="Nothing ready to upload"
+                  hint="Approved content items land here once rendering completes."
+                />
+              </div>
+            ) : (
+              <ul className="divide-y divide-zinc-100">
+                {pending.map((p) => (
+                  <li key={p.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-zinc-900">{p.title}</p>
+                      <p className="mt-0.5 text-xs text-zinc-500">rendered {relativeTime(p.scheduledAt)}</p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <a
+                        href={downloadTargetUrl(p.id)}
+                        className="rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                      >
+                        Download
+                      </a>
+                      <Button size="sm" variant="primary" onClick={() => handleMarkPublished(p.id)}>
+                        Mark published
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        );
+      })()}
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Recent & upcoming posts */}

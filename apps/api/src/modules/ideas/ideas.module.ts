@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
+import { IdeasController } from './ideas.controller';
+import { IdeasService } from './ideas.service';
 
-/**
- * Ideas module (docs/02 §3). Phase 0 stub — registered in AppModule so the
- * module boundary exists. TODO(phase 1+): add controllers/services/providers.
- */
-@Module({})
+@Module({
+  controllers: [IdeasController],
+  providers: [IdeasService],
+  exports: [IdeasService],
+})
 export class IdeasModule {}
