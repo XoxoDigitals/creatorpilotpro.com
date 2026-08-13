@@ -178,7 +178,7 @@ function FinalPreviewPanel({
   const [description, setDescription] = useState(parsed.description);
   const [tagsText, setTagsText] = useState(parsed.tags.join(', '));
   const [saving, setSaving] = useState(false);
-  const [thumbBroken, setThumbBroken] = useState(false);
+  const [thumbBroken] = useState(false);
 
   // Sync when the pipeline row refreshes (e.g. metadata job finishes).
   useEffect(() => {
