@@ -133,7 +133,7 @@ export default function PlaygroundPage() {
     }
   }
 
-  function useTemplate(p: PromptVersion) {
+  function applyTemplate(p: PromptVersion) {
     setSystem(p.template);
     setPromptName(p.name);
   }
@@ -260,7 +260,7 @@ export default function PlaygroundPage() {
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <button
-                      onClick={() => useTemplate(p)}
+                      onClick={() => applyTemplate(p)}
                       className="rounded px-2 py-0.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50"
                     >
                       Use

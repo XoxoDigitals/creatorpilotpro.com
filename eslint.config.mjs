@@ -2,6 +2,8 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
+import reactHooks from 'eslint-plugin-react-hooks';
+import nextPlugin from '@next/eslint-plugin-next';
 
 export default tseslint.config(
   {
@@ -27,6 +29,18 @@ export default tseslint.config(
         process: 'readonly',
         console: 'readonly',
       },
+    },
+  },
+  {
+    files: ['apps/web/**/*.{js,jsx,ts,tsx}'],
+    plugins: {
+      'react-hooks': reactHooks,
+      '@next/next': nextPlugin,
+    },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+      '@next/next/no-img-element': 'warn',
     },
   },
   {
