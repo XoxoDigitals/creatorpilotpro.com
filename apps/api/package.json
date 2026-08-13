@@ -16,7 +16,7 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/helmet": "^13.1.0",
     "@fastify/multipart": "^9.0.3",
-    "@fastify/static": "^10.1.0",
+    "@fastify/static": "^10.1.2",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^11.0.1",
@@ -31,7 +31,7 @@
     "@scp/storage": "workspace:*",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.2.0",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^9.0.1",
     "pg-boss": "^10.1.6",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
@@ -45,6 +45,6 @@
     "@types/nodemailer": "^6.4.17",
     "rimraf": "^6.0.1",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^3.2.6"
   }
 }
