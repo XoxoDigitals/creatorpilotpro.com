@@ -128,7 +128,6 @@ export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<v
   });
 
   if (enqueued > 0) {
-    // eslint-disable-next-line no-console
     console.log(`[worker:watcher] source ${source.id} — enqueued ${enqueued} new download(s)`);
   }
 }

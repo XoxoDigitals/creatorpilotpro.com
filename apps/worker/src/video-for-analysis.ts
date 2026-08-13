@@ -43,7 +43,7 @@ export async function prepareAnalysisMedia(opts: {
   contentItemId: string;
 }): Promise<PreparedAnalysisMedia> {
   const { videoPath, sizeBytes, apiKey, contentItemId } = opts;
-  let durationSec = opts.durationSec;
+  const durationSec = opts.durationSec;
 
   if (sizeBytes <= MAX_INLINE_VIDEO_BYTES) {
     const buf = await readFile(videoPath);

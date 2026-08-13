@@ -50,13 +50,11 @@ const maintenanceProcessor: Processor = async (jobs: Job[]) => {
     try {
       const result = await refreshExpiringGoogleTokens();
       if (result.checked > 0) {
-        // eslint-disable-next-line no-console
         console.log(
           `[worker:maintenance] google tokens — checked=${result.checked} refreshed=${result.refreshed} broken=${result.broken}`,
         );
       }
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[worker:maintenance] token refresh failed:', err);
     }
   }
@@ -77,7 +75,6 @@ const publishProcessor: Processor = async (jobs: Job[]) => {
     } else if (isVerifyJob(data)) {
       await runVerify(data);
     } else {
-      // eslint-disable-next-line no-console
       console.warn(`[worker:publish] job ${job.id} has an unrecognized payload — skipping`);
     }
   }
@@ -163,7 +160,6 @@ const storageProcessor: Processor = async (jobs: Job[]) => {
     const data = job.data as unknown;
     if (isRenderJob(data)) await runRender(data.contentItemId, boss);
     else {
-      // eslint-disable-next-line no-console
       console.log(`[worker:storage] received job ${job.id} (${job.name}) — no-op stub`);
     }
   }

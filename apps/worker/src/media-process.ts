@@ -123,6 +123,5 @@ export async function runMedia(sourceVideoId: string, _boss: PgBoss): Promise<vo
     });
   }
 
-  // eslint-disable-next-line no-console
   console.log(`[worker:media] source ${video.id} → content item ${item.id} (REVIEW_PENDING)`);
 }

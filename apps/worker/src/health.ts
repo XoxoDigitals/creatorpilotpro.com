@@ -44,7 +44,6 @@ export function startHealthServer(boss: PgBoss): http.Server {
   });
 
   server.listen(HEALTH_PORT, '0.0.0.0', () => {
-    // eslint-disable-next-line no-console
     console.log(`[worker:health] listening on http://0.0.0.0:${HEALTH_PORT}/health`);
   });
 

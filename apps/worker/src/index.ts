@@ -35,13 +35,11 @@ async function main(): Promise<void> {
   });
 
   boss.on('error', (err) => {
-    // eslint-disable-next-line no-console
     console.error('[worker] pg-boss error:', err);
   });
 
   await boss.start();
   setBoss(boss);
-  // eslint-disable-next-line no-console
   console.log('[worker] pg-boss started');
 
   for (const queue of ALL_QUEUES) {
@@ -70,14 +68,12 @@ async function main(): Promise<void> {
     }
     const batchSize = resolveConcurrency(queue);
     await boss.work(queue, { batchSize }, processors[queue]);
-    // eslint-disable-next-line no-console
     console.log(`[worker] registered queue "${queue}" (batchSize=${batchSize})`);
   }
 
   // Recurring maintenance: refresh Google tokens near expiry every 5 minutes
   // (docs/06 §4). singletonKey via the queue prevents overlapping runs.
   await boss.schedule(QUEUE.MAINTENANCE, '*/5 * * * *');
-  // eslint-disable-next-line no-console
   console.log('[worker] scheduled maintenance cron (*/5 * * * *)');
 
   // Scheduling dispatcher (docs/06 §3 Layer 2): every minute, enqueue publish
@@ -90,19 +86,16 @@ async function main(): Promise<void> {
     void dispatchDueTargets(boss)
       .then((n) => {
         if (n > 0) {
-          // eslint-disable-next-line no-console
           console.log(`[worker:dispatch] enqueued ${n} due publish target(s)`);
         }
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
         console.error('[worker:dispatch] failed:', err);
       })
       .finally(() => {
         dispatching = false;
       });
   }, DISPATCH_INTERVAL_MS);
-  // eslint-disable-next-line no-console
   console.log(`[worker] scheduling dispatcher started (every ${DISPATCH_INTERVAL_MS / 1000}s)`);
 
   // Watcher dispatcher (docs/04 §1): every minute, enqueue a WATCHER job for each
@@ -115,19 +108,16 @@ async function main(): Promise<void> {
     void dispatchDueSources(boss)
       .then((n) => {
         if (n > 0) {
-          // eslint-disable-next-line no-console
           console.log(`[worker:watcher] enqueued ${n} due source poll(s)`);
         }
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
         console.error('[worker:watcher] dispatch failed:', err);
       })
       .finally(() => {
         watching = false;
       });
   }, WATCHER_DISPATCH_INTERVAL_MS);
-  // eslint-disable-next-line no-console
   console.log(`[worker:watcher] source dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`);
 
   // Competitor dispatcher (Phase 4, FR-D1): every minute, enqueue a poll for each
@@ -139,24 +129,20 @@ async function main(): Promise<void> {
     void dispatchDueCompetitors(boss)
       .then((n) => {
         if (n > 0) {
-          // eslint-disable-next-line no-console
           console.log(`[worker:competitor] enqueued ${n} due competitor poll(s)`);
         }
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
         console.error('[worker:competitor] dispatch failed:', err);
       })
       .finally(() => {
         pollingCompetitors = false;
       });
   }, WATCHER_DISPATCH_INTERVAL_MS);
-  // eslint-disable-next-line no-console
   console.log(`[worker:competitor] competitor dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`);
 
   // Analytics nightly cron (docs/07): sync all accounts + recent posts + rollups at 2 AM.
   await boss.schedule(QUEUE.ANALYTICS, '0 2 * * *', { kind: 'nightly_trigger' } as object);
-  // eslint-disable-next-line no-console
   console.log('[worker:analytics] scheduled nightly sync cron (0 2 * * *)');
 
   // Analytics hot sync (every 6 hours): re-sync posts published in the last 7 days.
@@ -168,19 +154,16 @@ async function main(): Promise<void> {
     void dispatchHotSync(boss)
       .then((n) => {
         if (n > 0) {
-          // eslint-disable-next-line no-console
           console.log(`[worker:analytics] hot-sync enqueued ${n} post sync(s)`);
         }
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
         console.error('[worker:analytics] hot-sync dispatch failed:', err);
       })
       .finally(() => {
         syncingHot = false;
       });
   }, HOT_SYNC_INTERVAL_MS);
-  // eslint-disable-next-line no-console
   console.log(`[worker:analytics] hot-sync dispatcher started (every ${HOT_SYNC_INTERVAL_MS / 3_600_000}h)`);
 
   // Worker health check server (docs/08 §1) for pm2/uptime monitors.
@@ -207,11 +190,9 @@ async function main(): Promise<void> {
     );
   }
 
-  // eslint-disable-next-line no-console
   console.log(`[worker] startup complete — ${ALL_QUEUES.length} queues registered`);
 
   const shutdown = async (signal: string): Promise<void> => {
-    // eslint-disable-next-line no-console
     console.log(`[worker] ${signal} received — shutting down gracefully...`);
     clearInterval(dispatchTimer);
     clearInterval(watcherTimer);
@@ -220,11 +201,9 @@ async function main(): Promise<void> {
     healthServer.close();
     try {
       await boss.stop({ graceful: true, timeout: 30_000 });
-      // eslint-disable-next-line no-console
       console.log('[worker] pg-boss stopped cleanly');
       process.exit(0);
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[worker] error during shutdown:', err);
       process.exit(1);
     }
@@ -235,7 +214,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('[worker] fatal startup error:', err);
   process.exit(1);
 });

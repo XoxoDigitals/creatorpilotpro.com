@@ -66,13 +66,11 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     include: { assets: true },
   });
   if (!item) {
-    // eslint-disable-next-line no-console
     console.warn(`[worker:render] content item ${contentItemId} not found — skipping`);
     return;
   }
 
   if (item.status !== 'TTS_DONE') {
-    // eslint-disable-next-line no-console
     console.log(`[worker:render] item ${contentItemId} is ${item.status}, not TTS_DONE — skipping`);
     return;
   }
@@ -139,7 +137,6 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     const hasDemucs = await demucsAvailable();
 
     if (hasDemucs) {
-      // eslint-disable-next-line no-console
       console.log(`[worker:render] running Demucs separation for ${contentItemId}`);
       bgAudioPath = await runDemucs(videoAsset.localPath, renderDir);
       if (bgAudioPath) {
@@ -256,11 +253,9 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
       singletonKey: `subtitles-${contentItemId}`,
     });
 
-    // eslint-disable-next-line no-console
     console.log(`[worker:render] render done for ${contentItemId} — enqueued metadata`);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    // eslint-disable-next-line no-console
     console.error(`[worker:render] render failed for ${contentItemId}:`, errMsg);
 
     await prisma.contentItem.update({

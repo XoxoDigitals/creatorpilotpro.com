@@ -315,7 +315,6 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
     },
   });
   if (!item) {
-    // eslint-disable-next-line no-console
     console.warn(`[worker:ai] content item ${contentItemId} not found — skipping`);
     return;
   }
@@ -328,14 +327,12 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
 
   const spec = taskMap[kind];
   if (!spec) {
-    // eslint-disable-next-line no-console
     console.warn(`[worker:ai] unknown AI job kind "${kind}" — skipping`);
     return;
   }
 
   const killed = await checkKillSwitch(prisma, spec.task);
   if (killed) {
-    // eslint-disable-next-line no-console
     console.warn(`[worker:ai] ${killed} — skipping job for ${contentItemId}`);
     return;
   }
@@ -343,7 +340,6 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
   // For 'analyze': transition APPROVED→ANALYZING
   if (kind === 'analyze') {
     if (item.status !== 'APPROVED') {
-      // eslint-disable-next-line no-console
       console.log(`[worker:ai] item ${contentItemId} is ${item.status}, not APPROVED — skipping analyze`);
       return;
     }
@@ -531,7 +527,6 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       await boss.send(QUEUE.AI, { kind: 'narration', contentItemId } as AiJob, {
         singletonKey: `narration-${contentItemId}`,
       });
-      // eslint-disable-next-line no-console
       console.log(
         `[worker:ai] analyze done for ${contentItemId} (media=${media?.mode ?? 'none'}) — enqueued narration`,
       );
@@ -544,7 +539,6 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
         where: { id: contentItemId },
         data: { currentStep: updatedStep as any, status: 'SCRIPT_READY' },
       });
-      // eslint-disable-next-line no-console
       console.log(`[worker:ai] narration done for ${contentItemId} — awaiting script approval`);
     } else {
       updatedStep.metadata = result.output;
@@ -556,12 +550,10 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       await boss.send(QUEUE.AI, { kind: 'ab_suggestions', contentItemId }, {
         singletonKey: `ab-${contentItemId}`,
       });
-      // eslint-disable-next-line no-console
       console.log(`[worker:ai] metadata done for ${contentItemId} — enqueued A/B suggestions`);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    // eslint-disable-next-line no-console
     console.error(`[worker:ai] ${kind} failed for ${contentItemId}:`, errMsg);
 
     // Transient upstream failures (Gemini 503 "high demand", rate limits, quota
@@ -572,7 +564,6 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       err instanceof AllProvidersExhaustedError && err.allTransient;
     if (isTransient) {
       // Keep the item where it is (ANALYZING/etc.); throw so pg-boss retries.
-      // eslint-disable-next-line no-console
       console.warn(
         `[worker:ai] ${kind} transient failure for ${contentItemId} — letting pg-boss retry`,
       );
@@ -591,7 +582,6 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
     const attempts =
       err instanceof AllProvidersExhaustedError ? err.attempts : undefined;
     if (attempts?.length) {
-      // eslint-disable-next-line no-console
       console.error(`[worker:ai] provider attempts:`, JSON.stringify(attempts));
     }
     await raiseIncident(prisma, {

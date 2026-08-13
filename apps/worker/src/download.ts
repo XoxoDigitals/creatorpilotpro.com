@@ -128,7 +128,6 @@ export async function runDownload(sourceVideoId: string, boss: PgBoss): Promise<
             nearDuplicateOfId: exact.id,
           },
         });
-        // eslint-disable-next-line no-console
         console.log(
           `[worker:download] ${video.id} is an exact duplicate of ${exact.id} on the same account — skipped`,
         );
