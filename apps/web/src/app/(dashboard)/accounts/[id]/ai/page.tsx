@@ -41,6 +41,10 @@ import {
   type AiPipelineItem,
 } from '@/lib/api-data';
 import { IdeaPackagesPanel } from '@/components/idea-packages-panel';
+import {
+  DEFAULT_BACKGROUND_BED_PERCENT,
+  clampBackgroundBedPercent,
+} from '@scp/shared';
 
 function readableAiText(value: string): string {
   const trimmed = value.trim();
@@ -849,6 +853,8 @@ export default function AccountAiPipelinePage() {
   const toast = useToast();
   const [items, setItems] = useState<AiPipelineItem[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [rerenderItem, setRerenderItem] = useState<AiPipelineItem | null>(null);
+  const [rerenderBedPercent, setRerenderBedPercent] = useState(DEFAULT_BACKGROUND_BED_PERCENT);
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -976,18 +982,24 @@ export default function AccountAiPipelinePage() {
     }
   }
 
-  async function onRegenerateRender(itemId: string) {
-    if (
-      !confirm(
-        'Re-render the video with the existing voiceover? Use this after mix/bed changes — TTS will not run again.',
-      )
-    ) {
-      return;
-    }
+  function openRerenderModal(item: AiPipelineItem) {
+    setRerenderItem(item);
+    setRerenderBedPercent(
+      clampBackgroundBedPercent(
+        item.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
+      ),
+    );
+  }
+
+  async function onConfirmRerender() {
+    if (!rerenderItem) return;
+    const itemId = rerenderItem.id;
+    const percent = clampBackgroundBedPercent(rerenderBedPercent);
     setBusyId(itemId);
     try {
-      await regenerateRender(itemId);
-      toast('Re-rendering video…', 'info');
+      await regenerateRender(itemId, { backgroundBedPercent: percent });
+      toast(`Re-rendering with background at ${percent}%…`, 'info');
+      setRerenderItem(null);
       await refresh();
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Failed to re-render', 'error');
@@ -1203,7 +1215,7 @@ export default function AccountAiPipelinePage() {
                           <Button
                             size="sm"
                             variant="secondary"
-                            onClick={() => void onRegenerateRender(it.id)}
+                            onClick={() => openRerenderModal(it)}
                             disabled={busyId === it.id}
                           >
                             Re-render
@@ -1375,6 +1387,65 @@ export default function AccountAiPipelinePage() {
           })}
         </div>
       )}
+
+      <Modal
+        open={rerenderItem != null}
+        onClose={() => {
+          if (busyId) return;
+          setRerenderItem(null);
+        }}
+        title="Re-render video"
+        description={
+          rerenderItem
+            ? `Remix “${rerenderItem.title}” with the existing voiceover. Adjust background for this video only.`
+            : undefined
+        }
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRerenderItem(null)}
+              disabled={busyId === rerenderItem?.id}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void onConfirmRerender()}
+              disabled={busyId === rerenderItem?.id}
+            >
+              {busyId === rerenderItem?.id ? 'Starting…' : 'Re-render'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <Label>Background music / ambience</Label>
+            <span className="text-sm font-semibold tabular-nums text-zinc-800">
+              {rerenderBedPercent}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={1}
+            max={100}
+            step={1}
+            value={rerenderBedPercent}
+            onChange={(e) =>
+              setRerenderBedPercent(clampBackgroundBedPercent(e.target.value))
+            }
+            className="w-full accent-indigo-600"
+            aria-label="Background level for this video"
+            disabled={busyId === rerenderItem?.id}
+          />
+          <p className="text-[11px] text-zinc-500">
+            1% = almost silent · 100% = full bed. Saved on this video only (channel Settings
+            default is unchanged). TTS will not run again.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

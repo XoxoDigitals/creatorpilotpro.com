@@ -30,11 +30,13 @@ import {
   updatePublishMetadataSchema,
   updateScriptSchema,
   rewriteScriptSchema,
+  rerenderContentSchema,
   type CreateContentDto,
   type RejectContentDto,
   type UpdatePublishMetadataDto,
   type UpdateScriptDto,
   type RewriteScriptDto,
+  type RerenderContentDto,
 } from './dto/content.dto';
 
 /**
@@ -131,8 +133,11 @@ export class ContentController {
   @Post(':id/rerender')
   @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.rerender', 'ContentItem')
-  regenerateRender(@Param('id') id: string): Promise<ContentItemView> {
-    return this.content.regenerateRender(id);
+  regenerateRender(
+    @Param('id') id: string,
+    @Body(new ZodBody(rerenderContentSchema)) body: RerenderContentDto,
+  ): Promise<ContentItemView> {
+    return this.content.regenerateRender(id, body);
   }
 
   @Delete(':id')

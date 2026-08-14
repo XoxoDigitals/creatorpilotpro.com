@@ -438,13 +438,17 @@ export class ContentService {
 
   /**
    * Re-mix the FINAL video from the existing VOICEOVER (skip TTS).
-   * Use after mix/bed settings change.
+   * Optional per-video `backgroundBedPercent` is stored on currentStep.
    */
-  async regenerateRender(id: string): Promise<ContentItemView> {
+  async regenerateRender(
+    id: string,
+    dto: { backgroundBedPercent?: number } = {},
+  ): Promise<ContentItemView> {
     const item = await this.prisma.client.contentItem.findFirst({
       where: { id, deletedAt: null },
       select: {
         status: true,
+        currentStep: true,
         assets: {
           where: { kind: 'VOICEOVER' },
           select: { id: true, localPath: true },
@@ -469,6 +473,15 @@ export class ContentService {
       throw new BadRequestException(
         `Cannot re-render from status ${item.status}. Wait until voiceover is ready.`,
       );
+    }
+    if (dto.backgroundBedPercent != null) {
+      const percent = Math.max(1, Math.min(100, Math.round(dto.backgroundBedPercent)));
+      const step = { ...((item.currentStep ?? {}) as Record<string, unknown>) };
+      step.backgroundBedPercent = percent;
+      await this.prisma.client.contentItem.update({
+        where: { id },
+        data: { currentStep: step as Prisma.InputJsonValue },
+      });
     }
     return this.transition(id, 'TTS_DONE');
   }

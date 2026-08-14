@@ -19,6 +19,12 @@ export const updatePublishMetadataSchema = z.object({
 });
 export type UpdatePublishMetadataDto = z.infer<typeof updatePublishMetadataSchema>;
 
+/** Re-render FINAL from existing VO; optional per-video bed level. */
+export const rerenderContentSchema = z.object({
+  backgroundBedPercent: z.number().int().min(1).max(100).optional(),
+});
+export type RerenderContentDto = z.infer<typeof rerenderContentSchema>;
+
 /** Inline save of the narration script on the AI pipeline panel. */
 export const updateScriptSchema = z
   .object({

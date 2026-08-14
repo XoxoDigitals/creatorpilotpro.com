@@ -111,6 +111,11 @@ export interface AiPipelineItemView {
   /** Drive preview for the ORIGINAL source asset, when archived. */
   originalVideoEmbedUrl: string | null;
   thumbnailEmbedUrl: string | null;
+  /**
+   * Per-video background bed override (1–100) from currentStep, when set.
+   * Null means use the channel Settings default at render time.
+   */
+  backgroundBedPercent: number | null;
 }
 
 function parseScriptVariants(step: Record<string, unknown>): {
@@ -264,6 +269,13 @@ export function toAiPipelineItemView(
     videoEmbedUrl: pickEmbedUrl(assets, ['FINAL', 'ORIGINAL']),
     originalVideoEmbedUrl: pickEmbedUrl(assets, ['ORIGINAL']),
     thumbnailEmbedUrl: pickEmbedUrl(assets, ['THUMBNAIL']),
+    backgroundBedPercent: (() => {
+      const raw = step.backgroundBedPercent;
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        return Math.max(1, Math.min(100, Math.round(raw)));
+      }
+      return null;
+    })(),
   };
 }
 

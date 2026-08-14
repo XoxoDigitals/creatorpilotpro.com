@@ -51,12 +51,17 @@ async function resolveBackgroundBedPercent(contentItemId: string): Promise<numbe
   const item = await prisma.contentItem.findUnique({
     where: { id: contentItemId },
     select: {
+      currentStep: true,
       idea: { select: { accountId: true } },
       sourceVideo: {
         select: { watchedSource: { select: { targetAccountId: true } } },
       },
     },
   });
+  const step = (item?.currentStep ?? {}) as Record<string, unknown>;
+  if (typeof step.backgroundBedPercent === 'number' && Number.isFinite(step.backgroundBedPercent)) {
+    return Math.max(1, Math.min(100, Math.round(step.backgroundBedPercent)));
+  }
   const accountId =
     item?.idea?.accountId ?? item?.sourceVideo?.watchedSource?.targetAccountId ?? null;
   if (!accountId) return parseVoiceSettings(null).backgroundBedPercent ?? 100;

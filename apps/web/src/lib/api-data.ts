@@ -507,6 +507,8 @@ export interface AiPipelineItem {
   videoEmbedUrl?: string | null;
   originalVideoEmbedUrl?: string | null;
   thumbnailEmbedUrl?: string | null;
+  /** Per-video bed override (1–100); null = channel default. */
+  backgroundBedPercent?: number | null;
 }
 
 export async function getAiPipeline(accountId?: string): Promise<AiPipelineItem[]> {
@@ -545,9 +547,12 @@ export async function regenerateVoiceover(id: string): Promise<void> {
   await api.post(`/content/${id}/regenerate-voiceover`);
 }
 
-/** Re-mix FINAL from existing voiceover (no TTS). */
-export async function regenerateRender(id: string): Promise<void> {
-  await api.post(`/content/${id}/rerender`);
+/** Re-mix FINAL from existing voiceover (no TTS). Optional per-video bed %. */
+export async function regenerateRender(
+  id: string,
+  opts?: { backgroundBedPercent?: number },
+): Promise<void> {
+  await api.post(`/content/${id}/rerender`, opts ?? {});
 }
 
 export async function deleteContent(id: string): Promise<void> {
