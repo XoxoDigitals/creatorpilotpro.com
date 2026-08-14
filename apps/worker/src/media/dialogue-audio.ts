@@ -84,7 +84,7 @@ export function analysisIndicatesDialogue(analysis: unknown): boolean {
     if (NO_DIALOGUE_HINT.test(text)) return false;
   }
 
-  return flagged === true;
+  return false;
 }
 
 export interface DialogueTimeRange {

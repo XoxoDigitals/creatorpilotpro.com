@@ -570,7 +570,7 @@ async function synthesizeSceneAligned(opts: {
   await mkdir(voDir, { recursive: true });
   const ffmpeg = new Ffmpeg();
   if (!(await ffmpeg.available())) {
-    throw new FfmpegNotAvailableError();
+    throw new FfmpegNotAvailableError('ffmpeg');
   }
 
   const clipPaths: string[] = [];
