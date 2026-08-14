@@ -1,11 +1,13 @@
 /**
  * DOWNLOAD processor (docs/04 §2). Fetch one discovered source video to the hot
  * tier, hash it (md5 + best-effort perceptual hash), and dedupe **per account**:
- *  - exact md5 match against a DONE video on the same target account
+ *  - exact md5 match against a DONE video on the same target account whose
+ *    watched source is still active (not soft-deleted)
  *    ⇒ SKIPPED_DUPLICATE (no further work);
  *  - perceptual near-duplicate on the same account ⇒ flag nearDuplicateOfId but
  *    still process so a human reviews it behind a "possible duplicate" banner.
- * The same external URL/file may legitimately be imported on different accounts.
+ * The same external URL/file may legitimately be imported on different accounts,
+ * or re-imported after the user deletes the pipeline item and the source.
  * A successful, non-exact-duplicate download enqueues MEDIA.
  */
 import { mkdir, rm } from 'node:fs/promises';
@@ -32,16 +34,20 @@ const NEAR_DUP_SCAN_LIMIT = 500;
  * Scope duplicate lookups to the current SocialAccount. Same file on another
  * channel must still ingest. When the watched source has no target account,
  * fall back to the same watched source only (never global).
+ *
+ * Soft-deleted watched sources are excluded: "Remove" on a source used to leave
+ * SourceVideo rows (and their md5 / pHash) in place, so re-importing the same
+ * URL after a full delete was still SKIPPED_DUPLICATE.
  */
-function sameAccountDupWhere(
+export function sameAccountDupWhere(
   video: { id: string; watchedSourceId: string | null; watchedSource: { targetAccountId: string | null } | null },
 ): Prisma.SourceVideoWhereInput {
   const accountId = video.watchedSource?.targetAccountId ?? null;
   if (accountId) {
-    return { watchedSource: { targetAccountId: accountId } };
+    return { watchedSource: { targetAccountId: accountId, deletedAt: null } };
   }
   if (video.watchedSourceId) {
-    return { watchedSourceId: video.watchedSourceId };
+    return { watchedSourceId: video.watchedSourceId, watchedSource: { deletedAt: null } };
   }
   // Orphan row with no source binding — only compare against other orphans.
   return { watchedSourceId: null };

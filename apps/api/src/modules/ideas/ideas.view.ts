@@ -83,6 +83,8 @@ export interface ProductionBriefView {
   storySummary: string;
   script: string;
   narrationScript: string;
+  /** English summary of non-English voiceover (empty when output language is English). */
+  englishSummary: string;
   presentationMode: string;
   sceneBreakdown: unknown[];
   characterPrompts: unknown[];
@@ -289,6 +291,7 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
     storySummary: brief.researchSummary,
     script: brief.script,
     narrationScript,
+    englishSummary: brief.englishSummary?.trim() || '',
     presentationMode,
     sceneBreakdown,
     characterPrompts,

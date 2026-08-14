@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
-import { getIdeaPackage, getIdeasView, ideaTranscriptUrl, ideaVoiceoverUrl, retryIdeaPackage } from '@/lib/api-data';
+import { getIdeaPackage, getIdeasView, ideaTranscriptUrl, ideaVoiceoverUrl, retryIdeaPackage, regenerateIdeaPackage, deleteIdea } from '@/lib/api-data';
 import { IdeaFinalUpload } from '@/components/idea-final-upload';
 import { Button } from '@/components/ui/button';
 import { absoluteTime, relativeTime } from '@/lib/format';
@@ -181,7 +181,11 @@ function CopyButton({
     <button
       type="button"
       onClick={() => onCopy(copyKey, value)}
-      className="rounded px-2 py-0.5 text-[11px] font-medium text-indigo-600 hover:bg-indigo-50"
+      className={`rounded px-2 py-0.5 text-[11px] font-medium ${
+        copiedKey === copyKey
+          ? 'text-emerald-600'
+          : 'text-indigo-600 hover:bg-indigo-50'
+      }`}
     >
       {copiedKey === copyKey ? 'Copied' : label}
     </button>
@@ -262,6 +266,20 @@ function sceneVideoPrompt(scene: ProductionScene, presentationMode = ''): string
   return missing.length
     ? `${scene.animationPrompt}${scene.animationPrompt ? '\n\n' : ''}Dialogue:\n${missing.join('\n')}`
     : scene.animationPrompt;
+}
+
+function sceneCopyPayload(prompt: string, scene: ProductionScene): string {
+  const main = prompt.trim();
+  const imageNeg = (scene.negativePrompt ?? '').trim();
+  const videoNeg = (scene.animationNegativePrompt ?? '').trim();
+  const blocks = [main];
+  if (imageNeg && videoNeg && imageNeg !== videoNeg) {
+    blocks.push(`Image negative:\n${imageNeg}`, `Video negative:\n${videoNeg}`);
+  } else {
+    const single = imageNeg || videoNeg;
+    if (single) blocks.push(`Negative:\n${single}`);
+  }
+  return blocks.join('\n\n');
 }
 
 function sceneTimeLabel(scene: ProductionScene): string {
@@ -410,7 +428,7 @@ function PromptGroup({
             summary={sceneTimeLabel(item.scene)}
             actions={
               <CopyButton
-                value={item.prompt}
+                value={sceneCopyPayload(item.prompt, item.scene)}
                 copyKey={`${ideaId}:${kind}:${item.index}`}
                 copiedKey={copiedKey}
                 onCopy={onCopy}
@@ -687,6 +705,8 @@ function PackageDetails({
   onCopy,
   onUploaded,
   onRetry,
+  onRegenerate,
+  onDelete,
 }: {
   idea: Idea;
   pkg: ProductionBrief | undefined;
@@ -696,11 +716,14 @@ function PackageDetails({
   onCopy: (key: string, value: unknown) => void;
   onUploaded: () => void | Promise<void>;
   onRetry: (idea: Idea) => void | Promise<void>;
+  onRegenerate: (idea: Idea, stage: 'script' | 'voiceover' | 'visuals') => void | Promise<void>;
+  onDelete: (idea: Idea) => void | Promise<void>;
 }) {
   const finished = packageFinished(idea, pkg);
   const generating = idea.packageStatus === 'GENERATING' && !finished;
   const failed = idea.packageStatus === 'FAILED' || pkg?.packageStage === 'FAILED';
   const canRetry = !demo && failed;
+  const canRegen = !demo && !generating && (!!pkg || idea.hasBrief);
   return (
     <>
       {generating && <PipelineProgress stage={pkg?.packageStage ?? idea.packageStage} />}
@@ -715,13 +738,20 @@ function PackageDetails({
         </div>
       ) : null}
       {!pkg ? (
-        <p className="text-sm text-zinc-500">
-          {generating
-            ? 'Research, script, voice, transcript, and visual prompts are being generated…'
-            : failed
-              ? 'No package details available yet — retry to resume from the failed stage.'
-              : 'Package details are loading…'}
-        </p>
+        <div className="space-y-2">
+          <p className="text-sm text-zinc-500">
+            {generating
+              ? 'Research, script, voice, transcript, and visual prompts are being generated…'
+              : failed
+                ? 'No package details available yet — retry to resume from the failed stage.'
+                : 'Package details are loading…'}
+          </p>
+          {!demo && !generating && (
+            <Button size="sm" variant="danger" onClick={() => void onDelete(idea)}>
+              Delete
+            </Button>
+          )}
+        </div>
       ) : (
         <div className="space-y-4 text-sm">
           {pkg.packageStageError && (
@@ -734,6 +764,32 @@ function PackageDetails({
                   </Button>
                 </div>
               ) : null}
+            </div>
+          )}
+          {canRegen && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={() => void onRegenerate(idea, 'script')}>
+                Regenerate script
+              </Button>
+              <Button
+                size="sm"
+                disabled={!pkg.narrationScript}
+                title={!pkg.narrationScript ? 'Generate a script first' : undefined}
+                onClick={() => void onRegenerate(idea, 'voiceover')}
+              >
+                Regenerate voiceover
+              </Button>
+              <Button
+                size="sm"
+                disabled={!(pkg.timedTranscript?.length ?? 0)}
+                title={!(pkg.timedTranscript?.length ?? 0) ? 'Voiceover/transcript needed first' : undefined}
+                onClick={() => void onRegenerate(idea, 'visuals')}
+              >
+                Regenerate visuals
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => void onDelete(idea)}>
+                Delete
+              </Button>
             </div>
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -762,6 +818,9 @@ function PackageDetails({
                 thumbnailPromptVariants: pkg.thumbnailPromptVariants,
                 universalVideoPrompt: pkg.universalVideoPrompt,
                 voiceoverNarration: pkg.narrationScript,
+                ...(pkg.englishSummary?.trim()
+                  ? { englishSummary: pkg.englishSummary.trim() }
+                  : {}),
               }}
               copyKey={`${idea.id}:all`}
               copiedKey={copiedKey}
@@ -800,6 +859,16 @@ function PackageDetails({
               copyLabel="Copy narration"
             />
           )}
+          {pkg.englishSummary?.trim() ? (
+            <PackageSection
+              title="English summary"
+              value={pkg.englishSummary.trim()}
+              copyKey={`${idea.id}:english-summary`}
+              copiedKey={copiedKey}
+              onCopy={onCopy}
+              copyLabel="Copy English summary"
+            />
+          ) : null}
           <CharacterPromptsSection
             characters={pkg.characterPrompts}
             ideaId={idea.id}
@@ -1032,6 +1101,38 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
     [load, toast],
   );
 
+  const regenerateIdea = useCallback(
+    async (idea: Idea, stage: 'script' | 'voiceover' | 'visuals') => {
+      const label =
+        stage === 'script' ? 'script' : stage === 'voiceover' ? 'voiceover' : 'visuals';
+      if (!confirm(`Regenerate ${label} for “${idea.title}”?`)) return;
+      try {
+        await regenerateIdeaPackage(idea.id, stage);
+        toast(`Regenerating ${label}…`, 'success');
+        await load();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : `Could not regenerate ${label}`;
+        toast(message, 'error');
+      }
+    },
+    [load, toast],
+  );
+
+  const removeIdea = useCallback(
+    async (idea: Idea) => {
+      if (!confirm(`Delete AI package “${idea.title}”?`)) return;
+      try {
+        await deleteIdea(idea.id);
+        toast('Idea deleted', 'success');
+        await load();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Could not delete idea';
+        toast(message, 'error');
+      }
+    },
+    [load, toast],
+  );
+
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 5000);
@@ -1108,6 +1209,8 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
                   onCopy={(key, value) => void copy(key, value)}
                   onUploaded={load}
                   onRetry={(currentIdea) => void retryIdea(currentIdea)}
+                  onRegenerate={(currentIdea, stage) => void regenerateIdea(currentIdea, stage)}
+                  onDelete={(currentIdea) => void removeIdea(currentIdea)}
                 />
               </div>
             )}

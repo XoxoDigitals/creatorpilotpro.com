@@ -27,8 +27,13 @@ import { PrismaKeyStore } from './store/prisma-key-store';
 import type { CreateKeyDto, PlaygroundDto, TtsPreviewDto, ComposeMasterPromptDto } from './dto/ai.dto';
 import {
   composeChannelStyles,
+  formatOutputLanguagePolicy,
+  languageDisplayName,
   styleProfileAnswersSchema,
   styleProfileHasAnswers,
+  needsEnglishVoiceoverSummary,
+  englishVoiceoverSummarySystemPrompt,
+  extractEnglishSummaryText,
 } from '@scp/shared';
 
 function parseComposeJson(raw: string): {
@@ -61,6 +66,29 @@ function parseComposeJson(raw: string): {
     return null;
   }
 }
+
+/** Pull TTS-ready prose from a rewrite result (plain text or `{ script }`). */
+function extractSpokenScript(output: unknown): string {
+  if (output && typeof output === 'object' && !Array.isArray(output)) {
+    const script = (output as { script?: unknown }).script;
+    if (typeof script === 'string' && script.trim()) return script.trim();
+  }
+  if (typeof output === 'string') {
+    let trimmed = output.trim();
+    trimmed = trimmed.replace(/^```(?:json|text)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed) as { script?: unknown };
+        if (typeof parsed.script === 'string' && parsed.script.trim()) return parsed.script.trim();
+      } catch {
+        /* fall through */
+      }
+    }
+    return trimmed;
+  }
+  return String(output ?? '').trim();
+}
+
 import { readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -455,6 +483,7 @@ masterPrompt requirements:
   language, title/description templates, writing/narration notes, content type, voice notes.
 - Keep practical imperative tone. Do not invent unrelated niches.
 - Preserve owner animation / thumbnail guideline text in dedicated sections when present.
+- Include the LANGUAGE POLICY from the user JSON verbatim in Channel identity (ideas/stories/image+video prompts stay English; voiceover, dialogue, on-screen text, and publish title/description/tags use the selected language).
 
 writingStyle / narrationStyle: concise operator-facing summaries (1–3 sentences each).
 tags: 8–15 lowercase discovery tags without #, niche-relevant, no spam.`,
@@ -463,6 +492,7 @@ tags: 8–15 lowercase discovery tags without #, niche-relevant, no spam.`,
           text: JSON.stringify(
             {
               language: dto.language ?? 'en',
+              languagePolicy: formatOutputLanguagePolicy(dto.language ?? 'en'),
               contentType: dto.contentType ?? null,
               answers,
               animationReferencePrompt: dto.animationReferencePrompt?.trim() || null,
@@ -545,6 +575,107 @@ tags: 8–15 lowercase discovery tags without #, niche-relevant, no spam.`,
     } catch {
       return text;
     }
+  }
+
+  /**
+   * Instruction-driven rewrite of a narration script. System prompt stays English;
+   * spoken output follows the channel language policy. Not cached (one-shot).
+   */
+  async rewriteNarrationScript(input: {
+    script: string;
+    instruction: string;
+    analysis?: string | null;
+    language?: string | null;
+  }): Promise<string> {
+    const task = 'NARRATION_REWRITE' as TaskType;
+    await this.assertNotKilled(task);
+    const lang = input.language ?? 'en';
+    const analysis =
+      typeof input.analysis === 'string' && input.analysis.trim()
+        ? input.analysis.trim().slice(0, 8000)
+        : '';
+
+    const registry = this.buildRegistry();
+    const keyStore = new PrismaKeyStore(this.prisma.client, this.crypto);
+    const noopCache: CacheStore = {
+      lookup: async () => null,
+      save: async () => {},
+      recordHit: async () => {},
+    };
+    const memLogger: UsageLogger = { log: async () => {} };
+    const pool = new KeyPool(keyStore);
+    const router = new AIRouter({ cache: noopCache, logger: memLogger, keyPool: pool, registry });
+
+    const result = await router.run({
+      task,
+      model: '',
+      maxTokens: 8192,
+      system: `You rewrite short-form video voiceover narration for Social Creator Pilot.
+Keep these instructions in English.
+${formatOutputLanguagePolicy(lang)}
+Return ONLY the rewritten spoken narration as plain prose. No JSON, no markdown fences, no stage directions, no title, no commentary.
+Apply the user's instruction. Keep facts the analysis supports; do not invent events, people, or claims.
+Keep spoken duration within the source video length (a little under is fine; never longer). If the instruction is not about length, still do not add so many words that the VO would overrun the picture.
+The spoken script must be in ${languageDisplayName(lang)}.`,
+      input: {
+        kind: 'text',
+        text: JSON.stringify({
+          currentScript: input.script,
+          instruction: input.instruction,
+          ...(analysis ? { analysis } : {}),
+        }),
+      },
+    });
+
+    const spoken = extractSpokenScript(result.output);
+    if (!spoken) {
+      throw new BadRequestException('AI returned an empty narration script.');
+    }
+    return spoken;
+  }
+
+  /**
+   * Concise English summary of a non-English voiceover script for the owner.
+   * Returns empty string when the channel language is English or the script is empty.
+   */
+  async summarizeNarrationInEnglish(input: {
+    script: string;
+    language?: string | null;
+  }): Promise<string> {
+    if (!needsEnglishVoiceoverSummary(input.language)) return '';
+    const script = input.script.trim();
+    if (!script) return '';
+
+    const task = 'NARRATION_REWRITE' as TaskType;
+    await this.assertNotKilled(task);
+
+    const registry = this.buildRegistry();
+    const keyStore = new PrismaKeyStore(this.prisma.client, this.crypto);
+    const noopCache: CacheStore = {
+      lookup: async () => null,
+      save: async () => {},
+      recordHit: async () => {},
+    };
+    const memLogger: UsageLogger = { log: async () => {} };
+    const pool = new KeyPool(keyStore);
+    const router = new AIRouter({ cache: noopCache, logger: memLogger, keyPool: pool, registry });
+
+    const result = await router.run({
+      task,
+      model: '',
+      maxTokens: 1024,
+      system: englishVoiceoverSummarySystemPrompt(input.language),
+      input: {
+        kind: 'text',
+        text: JSON.stringify({
+          sourceLanguage: languageDisplayName(input.language),
+          spokenScript: script,
+          instruction: 'Write a concise English summary of this voiceover for the channel owner.',
+        }),
+      },
+    });
+
+    return extractEnglishSummaryText(result.output);
   }
 
   // ── Usage stats ───────────────────────────────────────────────────────────

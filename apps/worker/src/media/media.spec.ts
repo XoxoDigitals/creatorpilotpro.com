@@ -5,6 +5,28 @@ import {
   FfmpegNotAvailableError,
   DHASH_FRAME_WIDTH,
   DHASH_FRAME_HEIGHT,
+  VOICEOVER_ENHANCE_AF,
+  VOICEOVER_MIX_ENHANCE_AF,
+  VO_MIX_VOICE_GAIN,
+  VO_MIX_BED_GAIN,
+  VO_MIX_DIALOGUE_BED_GAIN,
+  VO_MIX_DEMUCS_BED_GAIN,
+  VO_MIX_BED_CONTROL,
+  VO_MIX_SIDECHAIN,
+  VO_MIX_DIALOGUE_SIDECHAIN,
+  VOCAL_STRIP_AF,
+  DIALOGUE_BED_CLEANUP_AF,
+  voiceoverBedMixFilter,
+  voiceoverDialogueBedMixFilter,
+  voiceoverDialogueBedMixFilterWithRanges,
+  padMixToVideoDuration,
+  muxStopAtPictureArgs,
+  VO_ONLY_PAD_TO_VIDEO_FILTER,
+  PADDED_MIX_AUDIO_MAP,
+  muteDialogueRangesAf,
+  muteAfterVoAf,
+  summarizeFfmpegStderr,
+  signedExitCode,
   type CommandRunner,
   type RunResult,
 } from './ffmpeg.js';
@@ -97,6 +119,196 @@ describe('Ffmpeg.available', () => {
   it('is false when the binary is missing (ENOENT)', async () => {
     const { runner } = mockRunner({ available: false });
     expect(await new Ffmpeg('ffmpeg', runner).available()).toBe(false);
+  });
+});
+
+describe('Ffmpeg.enhanceVoiceover', () => {
+  it('applies the EQ/compressor/loudnorm chain to a 44.1k mono wav', async () => {
+    const { runner, calls } = mockRunner();
+    await new Ffmpeg('ffmpeg', runner).enhanceVoiceover('/raw.mp3', '/enhanced.wav');
+    const enc = calls.find((c) => c.args.includes('-af'));
+    expect(enc?.args).toEqual(
+      expect.arrayContaining([
+        '-i',
+        '/raw.mp3',
+        '-af',
+        VOICEOVER_ENHANCE_AF,
+        '-ar',
+        '44100',
+        '-ac',
+        '1',
+        '-y',
+        '/enhanced.wav',
+      ]),
+    );
+  });
+
+  it('throws FfmpegNotAvailableError when ffmpeg is missing', async () => {
+    const { runner } = mockRunner({ available: false });
+    await expect(
+      new Ffmpeg('ffmpeg', runner).enhanceVoiceover('/raw.mp3', '/enhanced.wav'),
+    ).rejects.toBeInstanceOf(FfmpegNotAvailableError);
+  });
+});
+
+describe('voiceoverBedMixFilter', () => {
+  it('keeps the TTS enhance chain plus EBU loudnorm', () => {
+    expect(VOICEOVER_ENHANCE_AF).toBe(
+      `${VOICEOVER_MIX_ENHANCE_AF},loudnorm=I=-16:TP=-1:LRA=7`,
+    );
+    expect(VOICEOVER_MIX_ENHANCE_AF).toContain('highpass=f=70');
+    expect(VOICEOVER_MIX_ENHANCE_AF).toContain('acompressor=');
+  });
+
+  it('keeps VO clearly above a capped, ducked bed', () => {
+    expect(VO_MIX_VOICE_GAIN).toBe(0.85);
+    expect(VO_MIX_BED_GAIN).toBe(0.16);
+    expect(VO_MIX_VOICE_GAIN).toBeGreaterThan(VO_MIX_BED_GAIN);
+    expect(VO_MIX_BED_CONTROL).toContain('loudnorm=I=-28');
+    expect(VO_MIX_BED_CONTROL).toContain('alimiter=limit=0.38');
+    expect(VO_MIX_BED_CONTROL).toContain('acompressor=');
+    expect(VO_MIX_SIDECHAIN).toContain('threshold=0.05');
+    expect(VO_MIX_SIDECHAIN).toContain('ratio=6');
+    expect(VO_MIX_SIDECHAIN).toContain('knee=6');
+    expect(VO_MIX_SIDECHAIN).not.toContain('knee=10');
+    const graph = voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN);
+    expect(graph).toContain(`[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`);
+    expect(graph).toContain(`[0:a]${VO_MIX_BED_CONTROL},volume=${VO_MIX_BED_GAIN}[bg]`);
+    expect(graph).toContain(`[bg][vo_sc]${VO_MIX_SIDECHAIN}[ducked]`);
+    expect(graph).toContain('amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]');
+  });
+
+  it('mutes the bed after the voiceover ends', () => {
+    expect(muteAfterVoAf(null)).toBeNull();
+    expect(muteAfterVoAf(12.5)).toContain("volume=0:enable='gte(t\\,12.5)'");
+    const graph = voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN, VO_MIX_SIDECHAIN, 45);
+    expect(graph).toContain("volume=0:enable='gte(t\\,45)'");
+    expect(graph).toContain(VO_MIX_BED_CONTROL);
+  });
+
+  it('uses a very quiet dialogue bed with hard duck', () => {
+    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(0.08);
+    expect(VO_MIX_DEMUCS_BED_GAIN).toBe(VO_MIX_DIALOGUE_BED_GAIN);
+    expect(VO_MIX_DIALOGUE_BED_GAIN).toBeLessThan(VO_MIX_BED_GAIN);
+    expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('ratio=12');
+    expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('threshold=0.04');
+    const graph = voiceoverDialogueBedMixFilter('2:a');
+    expect(graph).toContain(`[2:a]${VO_MIX_BED_CONTROL},volume=${VO_MIX_DIALOGUE_BED_GAIN}[bg]`);
+    expect(graph).toContain(VO_MIX_DIALOGUE_SIDECHAIN);
+    expect(graph).toContain(`[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`);
+  });
+
+  it('hard-mutes AI dialogue ranges on the bed before duck', () => {
+    expect(muteDialogueRangesAf([])).toBeNull();
+    expect(muteDialogueRangesAf([{ startSec: 1.2, endSec: 3.5 }])).toContain(
+      "volume=0:enable='between(t\\,1.2\\,3.5)'",
+    );
+    const graph = voiceoverDialogueBedMixFilterWithRanges([
+      { startSec: 1, endSec: 2 },
+      { startSec: 5, endSec: 7 },
+    ]);
+    expect(graph).toContain('volume=0:enable=');
+    expect(graph).toContain('between(t\\,1\\,2)');
+    expect(graph).toContain('between(t\\,5\\,7)');
+    expect(graph).toContain(VO_MIX_DIALOGUE_SIDECHAIN);
+  });
+
+  it('pads mixed/VO audio so mux duration follows picture, not voiceover', () => {
+    const graph = padMixToVideoDuration(voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN));
+    expect(graph).toContain('amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]');
+    expect(graph).toContain('[mixed]apad[aud]');
+    const ranged = padMixToVideoDuration(
+      voiceoverDialogueBedMixFilterWithRanges([{ startSec: 1, endSec: 2 }]),
+    );
+    expect(ranged).toContain('volume=0:enable=');
+    expect(ranged).toContain('[mixed]apad[aud]');
+    expect(VO_ONLY_PAD_TO_VIDEO_FILTER).toBe('[1:a]apad[aud]');
+    expect(PADDED_MIX_AUDIO_MAP).toBe('[aud]');
+    expect(muxStopAtPictureArgs(14)).toEqual(['-shortest', '-t', '14.000']);
+    expect(muxStopAtPictureArgs(null)).toEqual(['-shortest']);
+  });
+
+  it('exports an aggressive vocal-strip filter (not weak karaoke alone)', () => {
+    expect(VOCAL_STRIP_AF).toContain('stereotools=mlev=0.02');
+    expect(VOCAL_STRIP_AF).toContain('agate=');
+    expect(VOCAL_STRIP_AF).toContain('equalizer=f=1800');
+    expect(DIALOGUE_BED_CLEANUP_AF).toContain('agate=');
+    expect(DIALOGUE_BED_CLEANUP_AF).toContain('equalizer=f=1600');
+  });
+});
+
+describe('Ffmpeg.stripVocalsToWav', () => {
+  it('extracts a stereo no-vocals wav', async () => {
+    const { runner, calls } = mockRunner();
+    await new Ffmpeg('ffmpeg', runner).stripVocalsToWav('/in.mp4', '/bed.wav');
+    const enc = calls.find((c) => c.args.includes(VOCAL_STRIP_AF));
+    expect(enc?.args).toEqual(
+      expect.arrayContaining([
+        '-i',
+        '/in.mp4',
+        '-vn',
+        '-af',
+        VOCAL_STRIP_AF,
+        '-y',
+        '/bed.wav',
+      ]),
+    );
+  });
+});
+
+describe('Ffmpeg.cleanupDialogueBed', () => {
+  it('applies residual speech cleanup', async () => {
+    const { runner, calls } = mockRunner();
+    await new Ffmpeg('ffmpeg', runner).cleanupDialogueBed('/raw.wav', '/clean.wav');
+    const enc = calls.find((c) => c.args.includes(DIALOGUE_BED_CLEANUP_AF));
+    expect(enc?.args).toEqual(
+      expect.arrayContaining([
+        '-i',
+        '/raw.wav',
+        '-vn',
+        '-af',
+        DIALOGUE_BED_CLEANUP_AF,
+        '-y',
+        '/clean.wav',
+      ]),
+    );
+  });
+});
+
+describe('summarizeFfmpegStderr', () => {
+  it('prefers Error / filter-parse lines over the version banner', () => {
+    const stderr = [
+      'ffmpeg version N-125365-g9a01c1cb6a-20260630 Copyright (c) 2000-2026 the FFmpeg developers',
+      'built with gcc 15.2.0 (crosstool-NG 1.28.0.23_185f348)',
+      'configuration: --prefix=/ffbuild/prefix --pkg-config-flags=--static',
+      "[Parsed_sidechaincompress_3 @ 0000] Value 10.000000 for parameter 'knee' out of range [1 - 8]",
+      "[fc#0 @ 0000] Error applying option 'knee' to filter 'sidechaincompress': Result too large",
+      'Error : Result too large',
+    ].join('\n');
+    const summary = summarizeFfmpegStderr(stderr);
+    expect(summary).toMatch(/out of range/);
+    expect(summary).toMatch(/Error applying option 'knee'/);
+    expect(summary).not.toMatch(/ffmpeg version/);
+    expect(summary).not.toMatch(/configuration:/);
+  });
+
+  it('maps Windows unsigned wrap of -34', () => {
+    expect(signedExitCode(4294967262)).toBe(-34);
+  });
+});
+
+describe('Ffmpeg.exec', () => {
+  it('surfaces the Error line instead of the version banner', async () => {
+    const { runner } = mockRunner({
+      result: {
+        code: 4294967262,
+        stderr:
+          'ffmpeg version N-125365 Copyright (c) 2000-2026\nconfiguration: --prefix=/ffbuild\nError applying option knee: Result too large\n',
+      },
+    });
+    await expect(new Ffmpeg('ffmpeg', runner).exec(['-i', '/in.mp4'])).rejects.toThrow(
+      /ffmpeg failed \(-34\): .*Error applying option knee/,
+    );
   });
 });
 

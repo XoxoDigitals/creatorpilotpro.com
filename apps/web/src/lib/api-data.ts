@@ -451,9 +451,22 @@ export interface ReviewResult {
   demo: boolean;
 }
 
-export async function getReviewView(accountId?: string): Promise<ReviewResult> {
-  if (await inDemoMode()) return { items: mockReviewItems(accountId), demo: true };
-  const qs = accountId ? `?accountId=${encodeURIComponent(accountId)}` : '';
+export async function getReviewView(
+  accountId?: string,
+  opts?: { excludeScheduled?: boolean },
+): Promise<ReviewResult> {
+  if (await inDemoMode()) {
+    return {
+      items: mockReviewItems(accountId, { excludeScheduled: opts?.excludeScheduled }),
+      demo: true,
+    };
+  }
+  const params = new URLSearchParams();
+  if (accountId) params.set('accountId', accountId);
+  // Account Review uses excludeScheduled so held publish packages only appear on
+  // the global Review Queue (see listReview on the API).
+  if (opts?.excludeScheduled) params.set('excludeScheduled', 'true');
+  const qs = params.toString() ? `?${params.toString()}` : '';
   const raw = await api.get<ApiReviewItem[]>(`/content/review${qs}`);
   return { items: raw.map(mapReviewItem), demo: false };
 }
@@ -470,14 +483,29 @@ export interface AiPipelineItem {
   updatedAt: string;
   analysis: string | null;
   script: string | null;
+  scriptVariants?: {
+    id: string;
+    label: string;
+    style: string;
+    hook: string;
+    script: string;
+    englishSummary?: string;
+    estimatedSpokenSec: number | null;
+  }[];
+  selectedScriptId?: string | null;
+  /** English summary for the active narration (non-English channels only). */
+  englishSummary?: string;
   metadata: string | null;
   /** Parsed AI publish title (null until metadata is ready). */
   publishTitle: string | null;
   publishDescription: string | null;
   publishTags: string[];
   hasFinalVideo: boolean;
+  /** Source/hot-tier ORIGINAL asset (pre-render preview). */
+  hasOriginalVideo?: boolean;
   hasThumbnail: boolean;
   videoEmbedUrl?: string | null;
+  originalVideoEmbedUrl?: string | null;
   thumbnailEmbedUrl?: string | null;
 }
 
@@ -509,12 +537,64 @@ export async function regenerateMetadata(id: string): Promise<void> {
   await api.post(`/content/${id}/regenerate-metadata`);
 }
 
+export async function regenerateScript(id: string): Promise<void> {
+  await api.post(`/content/${id}/regenerate-script`);
+}
+
+export async function regenerateVoiceover(id: string): Promise<void> {
+  await api.post(`/content/${id}/regenerate-voiceover`);
+}
+
+export async function deleteContent(id: string): Promise<void> {
+  await api.del(`/content/${encodeURIComponent(id)}`);
+}
+
+export async function deleteAccount(id: string): Promise<void> {
+  await api.del(`/accounts/${encodeURIComponent(id)}`);
+}
+
+export async function deleteIdea(id: string): Promise<void> {
+  await api.del(`/ideas/${encodeURIComponent(id)}`);
+}
+
+export async function deleteSourceVideo(id: string): Promise<void> {
+  await api.del(`/sources/video/${encodeURIComponent(id)}`);
+}
+
 /** Save owner edits to publish title / description / tags on the content item. */
 export async function updatePublishMetadata(
   id: string,
   input: { title: string; description: string; tags: string[] },
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/publish-metadata`, input);
+}
+
+/** Save an inline edit of the narration script (AI pipeline panel). */
+export async function updateNarrationScript(
+  id: string,
+  script: string,
+  selectedScriptId?: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, {
+    script,
+    ...(selectedScriptId ? { selectedScriptId } : {}),
+  });
+}
+
+/** Switch which of the three narration options is active (does not rewrite copy). */
+export async function selectNarrationScript(
+  id: string,
+  selectedScriptId: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedScriptId });
+}
+
+/** Ask AI to rewrite the narration from an instruction; caller PATCHes to save. */
+export async function rewriteNarrationScript(
+  id: string,
+  input: { instruction: string; script?: string },
+): Promise<{ script: string }> {
+  return api.post<{ script: string }>(`/content/${id}/rewrite-script`, input);
 }
 
 /**
@@ -552,6 +632,11 @@ export async function translateTitle(
 /** Same-origin URL to stream a content item's video (Next rewrites to the API). */
 export function contentMediaUrl(id: string): string {
   return `/api/v1/content/${encodeURIComponent(id)}/media`;
+}
+
+/** Same-origin URL to stream the source/hot-tier ORIGINAL (not the rendered FINAL). */
+export function contentOriginalMediaUrl(id: string): string {
+  return `/api/v1/content/${encodeURIComponent(id)}/media?kind=original`;
 }
 
 /** Same-origin URL for a content item's stored thumbnail image. */
@@ -824,6 +909,7 @@ interface ApiProductionBrief {
   storySummary?: string;
   script: string;
   narrationScript?: string;
+  englishSummary?: string;
   presentationMode?: string;
   sceneBreakdown: unknown[];
   characterPrompts: unknown[];
@@ -955,6 +1041,7 @@ function mapBrief(b: ApiProductionBrief): ProductionBrief {
     storySummary: b.storySummary ?? b.researchSummary,
     script: b.script,
     narrationScript: b.narrationScript ?? (voiceoverStatus === 'NONE' ? '' : b.script),
+    englishSummary: b.englishSummary?.trim() || '',
     presentationMode: b.presentationMode ?? '',
     sceneBreakdown: scenes,
     characterPrompts: characters,
@@ -1118,6 +1205,13 @@ export async function generateIdeaPackage(
 /** Resume a FAILED package from the failed stage (keeps prior successful artifacts). */
 export async function retryIdeaPackage(ideaId: string): Promise<void> {
   await api.post(`/ideas/${encodeURIComponent(ideaId)}/package/retry`);
+}
+
+export async function regenerateIdeaPackage(
+  ideaId: string,
+  stage: 'script' | 'voiceover' | 'visuals',
+): Promise<void> {
+  await api.post(`/ideas/${encodeURIComponent(ideaId)}/package/regenerate`, { stage });
 }
 
 export async function getIdeaPackage(ideaId: string): Promise<ProductionBrief> {

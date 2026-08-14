@@ -9,6 +9,7 @@ import {
   getIdeasGenerationStatus,
   getIdeasView,
   rejectIdea,
+  deleteIdea,
   type IdeaGenerationStatus,
 } from '@/lib/api-data';
 import type { CompetitorChannel, Idea } from '@/lib/domain-types';
@@ -206,6 +207,24 @@ export default function AccountIdeasPage() {
     }
   }
 
+  async function handleDelete(ideaId: string, title: string) {
+    if (demo) {
+      toast('Demo mode — connect a real account to delete ideas', 'info');
+      return;
+    }
+    if (!confirm(`Delete topic “${title}”? This hides it from the ideas list.`)) return;
+    setBusyId(ideaId);
+    try {
+      await deleteIdea(ideaId);
+      setIdeas((current) => current.filter((idea) => idea.id !== ideaId));
+      toast('Topic deleted', 'success');
+    } catch {
+      toast('Failed to delete idea', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -359,6 +378,14 @@ export default function AccountIdeasPage() {
                   disabled={busyId === idea.id}
                 >
                   Reject
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => void handleDelete(idea.id, idea.title)}
+                  disabled={busyId === idea.id}
+                >
+                  Delete
                 </Button>
               </div>
             </article>

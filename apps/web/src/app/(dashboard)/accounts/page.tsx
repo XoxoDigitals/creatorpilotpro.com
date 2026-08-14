@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { ConnectWizard } from '@/components/connect-wizard';
 import { compactNumber } from '@/lib/format';
-import { getAccountsView } from '@/lib/api-data';
+import { deleteAccount, getAccountsView } from '@/lib/api-data';
 import { api } from '@/lib/api';
 import { isSystemAdmin, type SessionUser } from '@/lib/types';
 import type { Account, Platform } from '@/lib/domain-types';
@@ -33,6 +33,7 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [canConnect, setCanConnect] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
     void api
@@ -55,6 +56,27 @@ export default function AccountsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function onDelete(account: Account) {
+    if (!canConnect) return;
+    if (
+      !confirm(
+        `Delete account “${account.name}”? It will be disconnected and hidden. This cannot be undone from the UI.`,
+      )
+    ) {
+      return;
+    }
+    setBusyId(account.id);
+    try {
+      await deleteAccount(account.id);
+      toast('Account deleted', 'success');
+      await load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Failed to delete account', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   // Surface OAuth errors bounced back by the API (?connect=google|meta&error=1).
   useEffect(() => {
@@ -122,8 +144,8 @@ export default function AccountsPage() {
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {group.map((a) => (
-                    <Link key={a.id} href={`/accounts/${a.id}` as Route}>
-                      <Card className="p-4 transition-shadow hover:shadow-md">
+                    <Card key={a.id} className="p-4 transition-shadow hover:shadow-md">
+                      <Link href={`/accounts/${a.id}` as Route} className="block">
                         <div className="flex items-start justify-between">
                           <div className="flex items-center gap-3">
                             <Avatar name={a.name} size="lg" />
@@ -159,8 +181,20 @@ export default function AccountsPage() {
                             <p className="text-[10px] uppercase tracking-wide text-zinc-400">Scheduled</p>
                           </div>
                         </div>
-                      </Card>
-                    </Link>
+                      </Link>
+                      {canConnect && (
+                        <div className="mt-3 flex justify-end border-t border-zinc-100 pt-3">
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            disabled={busyId === a.id}
+                            onClick={() => void onDelete(a)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      )}
+                    </Card>
                   ))}
                 </div>
               </section>

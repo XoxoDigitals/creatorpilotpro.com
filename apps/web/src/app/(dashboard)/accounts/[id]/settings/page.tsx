@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   emptyStyleProfileAnswers,
   defaultVoiceForLanguage,
+  contentLanguageSelectOptions,
+  contentLanguageOptionLabel,
   type StyleProfileAnswers,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -23,6 +25,7 @@ import {
   getApiAccount,
   getAccountView,
   publishDefaultsFromProfile,
+  deleteAccount,
   type ApiAccount,
   type ChannelScheduleMode,
 } from '@/lib/api-data';
@@ -478,14 +481,20 @@ export default function AccountSettingsPage() {
               <option value="MIXED">Both (mixed)</option>
             </Select>
           </Field>
-          <Field label="Language">
+          <Field label="Output language">
             <Select value={language} onChange={(e) => applyLanguage(e.target.value)}>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="ur">Urdu</option>
-              <option value="hi">Hindi</option>
+              {contentLanguageSelectOptions(language).map((lang) => (
+                <option key={lang.code} value={lang.code}>
+                  {contentLanguageOptionLabel(lang)}
+                </option>
+              ))}
             </Select>
           </Field>
+          <p className="sm:col-span-2 text-xs text-zinc-500">
+            Voiceover, dialogues, on-screen text, and publish title / description / tags use this
+            language. Ideas, stories, and image / video prompts stay in English. Saving also picks
+            a matching Edge Neural voice (you can still change the specific voice below).
+          </p>
           <div className="sm:col-span-2">
             <Toggle
               checked={dramasEnabled}
@@ -700,7 +709,7 @@ export default function AccountSettingsPage() {
               </Select>
             </Field>
             {ttsProvider === 'edge' ? (
-              <Field label="Language / locale filter">
+              <Field label="Voice locale">
                 <Select
                   value={voiceLocale}
                   onChange={(e) => {
@@ -815,6 +824,41 @@ export default function AccountSettingsPage() {
           </p>
         </div>
       </Card>
+
+      {real && (
+        <Card className="border-red-200">
+          <CardHeader
+            title="Delete this account"
+            description="Soft-deletes the connection. Content and ideas stay in the database but the account disappears from the UI."
+          />
+          <div className="px-4 pb-4">
+            <Button
+              variant="danger"
+              disabled={saving}
+              onClick={() => {
+                if (
+                  !confirm(
+                    `Delete account “${real.name}”? It will be disconnected and hidden.`,
+                  )
+                ) {
+                  return;
+                }
+                void (async () => {
+                  try {
+                    await deleteAccount(id);
+                    toast('Account deleted', 'success');
+                    window.location.href = '/accounts';
+                  } catch (err) {
+                    toast(err instanceof Error ? err.message : 'Failed to delete account', 'error');
+                  }
+                })();
+              }}
+            >
+              Delete account
+            </Button>
+          </div>
+        </Card>
+      )}
 
       <div className="flex justify-end gap-2">
         <Button onClick={() => void load()}>Discard</Button>

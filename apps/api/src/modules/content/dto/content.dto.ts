@@ -18,3 +18,23 @@ export const updatePublishMetadataSchema = z.object({
   tags: z.array(z.string().min(1).max(100)).max(30).default([]),
 });
 export type UpdatePublishMetadataDto = z.infer<typeof updatePublishMetadataSchema>;
+
+/** Inline save of the narration script on the AI pipeline panel. */
+export const updateScriptSchema = z
+  .object({
+    script: z.string().min(1).max(50000).optional(),
+    /** Switch the active variant (explainer / styleB / styleC) without rewriting copy. */
+    selectedScriptId: z.string().min(1).max(40).optional(),
+  })
+  .refine((d) => Boolean(d.script?.trim() || d.selectedScriptId?.trim()), {
+    message: 'script or selectedScriptId is required',
+  });
+export type UpdateScriptDto = z.infer<typeof updateScriptSchema>;
+
+/** Instruction-driven rewrite of the current narration script (preview; not saved until PATCH). */
+export const rewriteScriptSchema = z.object({
+  instruction: z.string().min(1).max(2000),
+  /** Optional unsaved draft; otherwise the stored script is used. */
+  script: z.string().min(1).max(50000).optional(),
+});
+export type RewriteScriptDto = z.infer<typeof rewriteScriptSchema>;

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev --port 333",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "next start --port 333",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "clean": "rimraf .next .turbo"

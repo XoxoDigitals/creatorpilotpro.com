@@ -51,6 +51,13 @@ export class SourcesController {
     return this.sources.retryDownload(id);
   }
 
+  @Delete('video/:id')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('source.video.delete', 'SourceVideo')
+  deleteVideo(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
+    return this.sources.deleteVideo(id);
+  }
+
   @Patch('video/:id/rights')
   @Audit('source.video.rights', 'SourceVideo')
   setRights(

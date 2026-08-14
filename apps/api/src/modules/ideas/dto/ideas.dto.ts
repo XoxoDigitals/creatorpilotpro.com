@@ -49,3 +49,9 @@ export const uploadIdeaVideoSchema = z.object({
   scheduleMode: z.enum(['NOW', 'QUEUE_SLOT']).default('QUEUE_SLOT'),
 });
 export type UploadIdeaVideoDto = z.infer<typeof uploadIdeaVideoSchema>;
+
+/** Re-run one creative-package stage (script / voiceover / visuals). */
+export const regeneratePackageSchema = z.object({
+  stage: z.enum(['script', 'voiceover', 'visuals']),
+});
+export type RegeneratePackageDto = z.infer<typeof regeneratePackageSchema>;

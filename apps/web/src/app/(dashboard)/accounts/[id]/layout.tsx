@@ -33,7 +33,8 @@ export default function AccountLayout({ children }: { children: React.ReactNode 
       setAccount(acc);
       setDemo(isDemo);
       setPaused(acc?.paused ?? false);
-      const review = await getReviewView(params.id);
+      // Badge matches account Review tab: exclude schedule-approval packages.
+      const review = await getReviewView(params.id, { excludeScheduled: true });
       setPendingReviews(review.items.filter((r) => r.status === 'PENDING').length);
     } finally {
       setLoading(false);

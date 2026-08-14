@@ -28,9 +28,8 @@ const KIND: Record<ReviewKind, { tone: BadgeTone; label: string }> = {
 /**
  * Review queue rows with approve/reject actions. When `onDecide` is provided the
  * decision is persisted via the real API (content approve/reject); otherwise it
- * falls back to local-state only (demo mode / mock contract). Ingested videos are
- * gated: they cannot be approved until a rights note is recorded (docs/04), set
- * inline via `onSetRights` (or local-only in demo).
+ * falls back to local-state only (demo mode / mock contract). Approve is one click
+ * with no note prompt.
  *
  * Produced / scheduled uploads show thumbnail, description, and schedule slot so
  * the reviewer can vet the final publish package before Approve releases publish.
@@ -39,19 +38,16 @@ export function ReviewList({
   items,
   emptyHint,
   onDecide,
-  onSetRights,
+  onDelete,
 }: {
   items: ReviewItem[];
   emptyHint: string;
   onDecide?: (item: ReviewItem, status: ReviewStatus) => Promise<void>;
-  onSetRights?: (item: ReviewItem, rightsNote: string) => Promise<void>;
+  onDelete?: (item: ReviewItem) => Promise<void>;
 }) {
   const toast = useToast();
   const [decisions, setDecisions] = useState<Record<string, ReviewStatus>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
-  const [rightsById, setRightsById] = useState<Record<string, string>>({});
-  const [editing, setEditing] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
   const [playing, setPlaying] = useState<string | null>(null);
   const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>({});
   const [translating, setTranslating] = useState<Record<string, boolean>>({});
@@ -87,14 +83,7 @@ export function ReviewList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
-  const effectiveRights = (item: ReviewItem): string | null =>
-    rightsById[item.id] ?? item.rightsNote;
-
   const decide = async (item: ReviewItem, status: ReviewStatus) => {
-    if (status === 'APPROVED' && item.kind === 'INGESTED_VIDEO' && !effectiveRights(item)) {
-      toast('Add a rights note before approving this ingested video.', 'error');
-      return;
-    }
     if (!onDecide) {
       setDecisions((d) => ({ ...d, [item.id]: status }));
       toast(
@@ -118,18 +107,14 @@ export function ReviewList({
     }
   };
 
-  const saveRights = async (item: ReviewItem) => {
-    const note = draft.trim();
-    if (!note) return toast('Enter a rights note.', 'error');
+  const remove = async (item: ReviewItem) => {
+    if (!onDelete) return;
     setBusy((b) => ({ ...b, [item.id]: true }));
     try {
-      if (onSetRights) await onSetRights(item, note);
-      setRightsById((r) => ({ ...r, [item.id]: note }));
-      setEditing(null);
-      setDraft('');
-      toast('Rights note saved', 'success');
+      await onDelete(item);
+      toast(`Deleted: ${effectiveTitle(item)}`, 'success');
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Could not save rights note', 'error');
+      toast(err instanceof Error ? err.message : 'Could not delete', 'error');
     } finally {
       setBusy((b) => ({ ...b, [item.id]: false }));
     }
@@ -144,8 +129,6 @@ export function ReviewList({
       {items.map((item) => {
         const status = decisions[item.id] ?? item.status;
         const kind = KIND[item.kind];
-        const rights = effectiveRights(item);
-        const gated = item.kind === 'INGESTED_VIDEO' && !rights;
         const title = effectiveTitle(item);
         const isVideo = item.kind === 'INGESTED_VIDEO' || item.kind === 'PRODUCED_VIDEO';
         const isPlaying = playing === item.id;
@@ -252,18 +235,11 @@ export function ReviewList({
                     </a>
                   </>
                 )}
-                {rights ? (
+                {item.rightsNote && (
                   <>
                     <span className="text-zinc-300">|</span>
-                    <span className="text-green-600">rights: {rights}</span>
+                    <span className="text-green-600">rights: {item.rightsNote}</span>
                   </>
-                ) : (
-                  item.kind === 'INGESTED_VIDEO' && (
-                    <>
-                      <span className="text-zinc-300">|</span>
-                      <span className="text-amber-600">rights note required before approval</span>
-                    </>
-                  )
                 )}
               </p>
 
@@ -275,37 +251,9 @@ export function ReviewList({
                   className="mt-3 aspect-video w-full max-w-md rounded-md border border-zinc-200 bg-black shadow-sm"
                 />
               )}
-
-              {editing === item.id && (
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <input
-                    type="text"
-                    autoFocus
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder="e.g. Licensed via SourcePack A / owner-confirmed"
-                    className="min-w-[240px] flex-1 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs outline-none focus:border-indigo-500"
-                  />
-                  <Button size="sm" variant="primary" disabled={busy[item.id]} onClick={() => void saveRights(item)}>
-                    Save
-                  </Button>
-                  <Button size="sm" disabled={busy[item.id]} onClick={() => { setEditing(null); setDraft(''); }}>
-                    Cancel
-                  </Button>
-                </div>
-              )}
             </div>
             {status === 'PENDING' && (
               <div className="flex shrink-0 items-center gap-2 pt-1">
-                {gated && editing !== item.id && (
-                  <Button
-                    size="sm"
-                    disabled={busy[item.id]}
-                    onClick={() => { setEditing(item.id); setDraft(''); }}
-                  >
-                    Add rights note
-                  </Button>
-                )}
                 <Button
                   size="sm"
                   variant="danger"
@@ -317,11 +265,32 @@ export function ReviewList({
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={busy[item.id] || gated}
-                  title={gated ? 'Add a rights note before approving' : undefined}
+                  disabled={busy[item.id]}
                   onClick={() => void decide(item, 'APPROVED')}
                 >
                   Approve
+                </Button>
+                {onDelete && (
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={busy[item.id]}
+                    onClick={() => void remove(item)}
+                  >
+                    Delete
+                  </Button>
+                )}
+              </div>
+            )}
+            {status !== 'PENDING' && onDelete && (
+              <div className="flex shrink-0 items-center gap-2 pt-1">
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={busy[item.id]}
+                  onClick={() => void remove(item)}
+                >
+                  Delete
                 </Button>
               </div>
             )}

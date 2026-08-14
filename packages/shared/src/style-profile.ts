@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  formatOutputLanguagePolicy,
+  languageDisplayName,
+  OUTPUT_LANGUAGE_POLICY_REV,
+} from './content-languages.js';
 
 /**
  * Channel brand / style questionnaire (account settings → Master prompt & styles).
@@ -231,19 +236,6 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
   },
 ];
 
-const LANG_LABELS: Record<string, string> = {
-  en: 'English',
-  es: 'Spanish',
-  ur: 'Urdu',
-  hi: 'Hindi',
-};
-
-/** Human-readable language name from channel profile `language` code. */
-export function languageDisplayName(language: string | null | undefined): string {
-  const code = (language ?? 'en').trim() || 'en';
-  return LANG_LABELS[code] ?? code;
-}
-
 /**
  * True when the style questionnaire indicates drama/skit format and/or
  * dialogue presentation — used to tighten creative-package prompt rules.
@@ -406,7 +398,8 @@ export function formatDramaDialoguePackageRules(options: {
   const negatives = options.includeNegativePrompts !== false;
 
   return `DRAMA / DIALOGUE package rules (mandatory):
-- Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions may stay in English (or as configured); only the spoken words must match ${lang}.
+- Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions stay in English; only the spoken words must match ${lang}.
+- imagePrompt and animationPrompt bodies stay in English. Quote any on-screen overlay text and spoken lines in ${lang} inside those English prompts.
 - Clip density: each scene is ~${clip}s. Fill that duration with enough dialogue exchanges and physical action beats — never one short line plus silence. Target roughly ${minWords}-${maxWords} spoken words of dialogue per ${clip}s scene (conversational pace), with clear action/blocking timed across the full clip in animationPrompt.
 - Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for dialogue speaker labels inside animationPrompt where practical.
 - Quality keyword: include the exact phrase "ultra realistic" in every imagePrompt and animationPrompt (and thumbnailPrompt when writing one).
@@ -507,7 +500,7 @@ export function composeChannelStyles(
   options?: ComposeChannelStylesOptions,
 ): ComposedChannelStyles {
   const a = styleProfileAnswersSchema.parse(answers);
-  const lang = LANG_LABELS[language] ?? language;
+  const lang = languageDisplayName(language);
   const nicheTags = labelsFor('nicheTags', a.nicheTags);
   const formats = labelsFor('formats', a.formats);
   const visuals = labelsFor('visualStyles', a.visualStyles);
@@ -539,7 +532,7 @@ export function composeChannelStyles(
 
   const identity: string[] = ['## Channel identity'];
   if (contentType) identity.push(`Content pipeline: ${contentType}`);
-  identity.push(`Primary language for all spoken and written output: ${lang}`);
+  identity.push(formatOutputLanguagePolicy(language));
   if (a.niche.trim() || nicheTags.length) {
     const topic = a.niche.trim() || joinList(nicheTags);
     identity.push(`Channel topic / niche: ${topic}`);
@@ -561,7 +554,7 @@ export function composeChannelStyles(
   }
   if (existingWriting) voice.push(`Writing style notes: ${existingWriting}`);
   voice.push(
-    'Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. Keep titles and captions platform-native for short-form video.',
+    `Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. Keep publish titles, descriptions, tags, and on-screen captions in ${lang}.`,
   );
   if (titleTemplate) {
     voice.push(`Default title template pattern: ${titleTemplate}`);
@@ -582,7 +575,7 @@ export function composeChannelStyles(
   if (existingNarration) delivery.push(`Narration style notes: ${existingNarration}`);
   if (voiceNotes) delivery.push(`Voice / TTS notes: ${voiceNotes}`);
   delivery.push(
-    'Match pacing to the energy profile. Keep narration natural for the chosen presentation mode. Align on-screen text with caption rules.',
+    `Match pacing to the energy profile. Keep narration natural for the chosen presentation mode, spoken in ${lang}. Align on-screen text with caption rules and write overlay lettering in ${lang}.`,
   );
   sections.push(delivery.join('\n'));
 
@@ -624,9 +617,10 @@ export function composeChannelStyles(
   sections.push(
     [
       '## Operating checklist',
-      '- Ideas: on-niche, format-fit, hook-first.',
-      '- Scripts / narration: match presentation, pacing, tone, and language.',
-      '- Captions / titles / descriptions: follow templates and caption style when set.',
+      '- Ideas and story drafts: English, on-niche, format-fit, hook-first.',
+      `- Scripts / narration / dialogue: match presentation, pacing, and tone; speak ${lang}.`,
+      `- On-screen text, publish titles, descriptions, and tags: ${lang}; follow templates and caption style when set.`,
+      '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language.',
       '- Tags: discoverable, niche-relevant, no spam stuffing.',
       '- Thumbnails & animationPrompts: obey visual + animation guideline sections.',
     ].join('\n'),
@@ -701,13 +695,15 @@ export function formatThumbnailPromptInstructions(
   profile: ChannelStyleFields | null | undefined,
 ): string {
   const ref = profile?.thumbnailReferencePrompt?.trim();
+  const overlayLang = languageDisplayName(profile?.language);
+  const overlayRule = ` If the thumbnail includes on-image lettering, quote that text in ${overlayLang}; keep the rest of the prompt in English.`;
   if (ref) {
-    return `thumbnailPrompt: Write one detailed, ready-to-paste thumbnail image generation prompt for this specific video. Match the structure, composition language, lighting cues, color grade, text-overlay style, and overall look of the channel thumbnail reference below — adapt subject, title, and story beats to this video only.
+    return `thumbnailPrompt: Write one detailed, ready-to-paste thumbnail image generation prompt for this specific video. Match the structure, composition language, lighting cues, color grade, text-overlay style, and overall look of the channel thumbnail reference below — adapt subject, title, and story beats to this video only.${overlayRule}
 
 Channel thumbnail reference (follow closely):
 ${ref}`;
   }
-  return `thumbnailPrompt: Write one highly detailed, ready-to-paste thumbnail image generation prompt covering subject, framing/composition, expression, lighting, contrast, color grade, background, mood, and any on-image text guidance — tailored to this video's title and story.`;
+  return `thumbnailPrompt: Write one highly detailed, ready-to-paste thumbnail image generation prompt covering subject, framing/composition, expression, lighting, contrast, color grade, background, mood, and any on-image text guidance — tailored to this video's title and story.${overlayRule}`;
 }
 
 /**
@@ -785,6 +781,71 @@ export function formatSceneVisualPromptRulesWithChannel(
 }
 
 /**
+ * Compact identity block for idea generation: what OUR channel is about
+ * (name / niche / audience / formats), kept distinct from reference-channel
+ * inspiration so the model does not treat competitor patterns as our niche.
+ */
+export function formatOurChannelAboutBlock(
+  profile: ChannelStyleFields | null | undefined,
+  accountName?: string | null,
+): string {
+  const lines: string[] = [];
+  const name = accountName?.trim();
+  if (name) lines.push(`Channel name: ${name}`);
+
+  const answers = parseStyleProfile(profile?.styleProfile).answers;
+  const nicheTags = labelsFor('nicheTags', answers.nicheTags);
+  const formats = labelsFor('formats', answers.formats);
+  const presentation = labelFor('presentation', answers.presentation);
+  const hasAbout = Boolean(
+    answers.niche.trim() ||
+      nicheTags.length ||
+      answers.audience.trim() ||
+      formats.length ||
+      presentation ||
+      answers.avoid.trim() ||
+      answers.extraNotes.trim(),
+  );
+
+  if (answers.niche.trim()) {
+    lines.push(`What this channel is about: ${answers.niche.trim()}`);
+  }
+  if (nicheTags.length) {
+    lines.push(`Topic tags: ${joinList(nicheTags)}`);
+  }
+  if (answers.audience.trim()) {
+    lines.push(`Target audience: ${answers.audience.trim()}`);
+  }
+  if (formats.length) {
+    lines.push(`Preferred content formats: ${joinList(formats)}`);
+  }
+  if (presentation) {
+    lines.push(`Presentation: ${presentation}`);
+  }
+  if (profile?.language?.trim()) {
+    const lang = languageDisplayName(profile.language);
+    lines.push(
+      `Idea language: English. Audience language for later voiceover, dialogue, on-screen text, and publish metadata: ${lang}.`,
+    );
+  }
+  if (answers.avoid.trim()) {
+    lines.push(`Do not cover: ${answers.avoid.trim()}`);
+  }
+  if (answers.extraNotes.trim()) {
+    lines.push(`Owner notes: ${answers.extraNotes.trim()}`);
+  }
+
+  if (!hasAbout && (profile?.masterPrompt?.trim() || profile?.writingStyle?.trim())) {
+    lines.push(
+      'Niche/about details are in the channel brand & style block below — treat that brief as ground truth for what this channel is about.',
+    );
+  }
+
+  if (!lines.length) return '';
+  return `---\nOUR CHANNEL (generate ideas FOR this account — stay on this niche and brand; do not become a copy of the reference channels):\n${lines.join('\n')}`;
+}
+
+/**
  * Block appended to AI system prompts so channel brand settings influence
  * idea generation, briefs, narration, etc.
  */
@@ -818,6 +879,7 @@ export function formatChannelStyleBlock(profile: ChannelStyleFields | null | und
       `Animation / video generation guidelines (match when writing animationPrompts):\n${profile.animationReferencePrompt.trim()}`,
     );
   }
+  parts.push(formatOutputLanguagePolicy(profile.language));
   if (!parts.length) return '';
   return `---\nChannel brand & style (follow for this account):\n${parts.join('\n\n')}`;
 }
@@ -840,6 +902,8 @@ export function styleVersionFromProfile(profile: ChannelStyleFields | null | und
     profile.writingStyle ?? '',
     profile.narrationStyle ?? '',
     profile.language ?? '',
+    `langPolicy:${OUTPUT_LANGUAGE_POLICY_REV}`,
+    formatOutputLanguagePolicy(profile.language),
     profile.thumbnailReferencePrompt ?? '',
     profile.animationReferencePrompt ?? '',
     JSON.stringify(profile.styleProfile ?? {}),

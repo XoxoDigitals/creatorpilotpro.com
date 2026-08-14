@@ -311,7 +311,8 @@ model WatchedSource {
 /// A single discovered/imported source video (docs/03 Domain 3). Deduped by
 /// (watchedSourceId, sourcePlatformId) at insert time; after download, exact
 /// md5 / perceptual near-dup checks are scoped to the same targetAccountId
-/// (same file may be imported on different SocialAccounts).
+/// **and** a non-deleted WatchedSource (same file may be imported on different
+/// SocialAccounts, or re-imported after the source is removed).
 /// `nearDuplicateOfId` self-references the item this was flagged as a dup of.
 model SourceVideo {
   id                  String         @id @default(cuid())
@@ -819,6 +820,8 @@ model ProductionBrief {
   idea                 Idea    @relation(fields: [ideaId], references: [id], onDelete: Cascade)
   researchSummary      String  @default("")
   script               String  @default("")
+  /// English summary of non-English voiceover narration (empty when output language is English).
+  englishSummary       String  @default("")
   /// Structured scenes: [{sceneIndex, imagePrompt, animationPrompt, negativePrompt?, dialogue, durationSec?}].
   sceneBreakdown       Json    @default("[]")
   characterPrompts     Json    @default("[]")

@@ -9,7 +9,7 @@ import { PlatformIcon } from '@/components/ui/platform-icon';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ReviewList } from '@/components/review-list';
-import { getAccountsView, getReviewView, decideReview, setSourceRights } from '@/lib/api-data';
+import { getAccountsView, getReviewView, decideReview } from '@/lib/api-data';
 import type { Account, ReviewItem, ReviewStatus } from '@/lib/domain-types';
 
 export default function GlobalReviewPage() {
@@ -37,14 +37,6 @@ export default function GlobalReviewPage() {
     ? undefined
     : async (item: ReviewItem, status: ReviewStatus) => {
         await decideReview(item.id, status);
-        await load();
-      };
-
-  const onSetRights = demo
-    ? undefined
-    : async (item: ReviewItem, rightsNote: string) => {
-        if (!item.sourceVideoId) throw new Error('This item has no source video to attach a rights note to.');
-        await setSourceRights(item.sourceVideoId, rightsNote);
         await load();
       };
 
@@ -101,7 +93,6 @@ export default function GlobalReviewPage() {
               <ReviewList
                 items={acctItems}
                 onDecide={onDecide}
-                onSetRights={onSetRights}
                 emptyHint="Nothing pending for this account."
               />
             </section>

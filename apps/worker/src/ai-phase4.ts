@@ -12,6 +12,7 @@ import {
   QUEUE,
   styleVersionFromProfile,
   withChannelStyle,
+  formatOurChannelAboutBlock,
   presentationNeedsVoiceover,
   parseStyleProfile,
   buildChannelPerformanceMemory,
@@ -29,6 +30,7 @@ import {
   isDocumentaryVoiceoverPackage,
   isNarrationVoiceoverPackage,
   languageDisplayName,
+  formatOutputLanguagePolicy,
   DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT,
   DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT,
@@ -44,6 +46,7 @@ import {
   formatFernNarrationRules,
   joinProductionBriefEditingExtras,
   splitProductionBriefEditingExtras,
+  needsEnglishVoiceoverSummary,
   type AiPerformanceInsights,
   type ChannelStyleFields,
 } from '@scp/shared';
@@ -76,6 +79,7 @@ import { join } from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.js';
 import type { IdeaTtsJob, IdeaVisualsJob } from './ai-jobs.js';
+import { summarizeVoiceoverInEnglish } from './english-voiceover-summary.js';
 
 // ── Shared infra (same as ai-process.ts) ───────────────────────────────────
 
@@ -569,13 +573,26 @@ export async function runIdeaGeneration(
     where: { competitorChannel: { ownAccountId: accountId, deletedAt: null } },
     orderBy: { fetchedAt: 'desc' },
     take: 30,
-    select: { videoId: true, title: true, views: true, transcript: true, durationSec: true },
+    select: {
+      videoId: true,
+      title: true,
+      views: true,
+      transcript: true,
+      durationSec: true,
+      competitorChannel: { select: { name: true } },
+    },
   });
 
-  const refChannels = await prisma.competitorChannel.findMany({
-    where: { ownAccountId: accountId, deletedAt: null },
-    select: { name: true, performanceMemory: true },
-  });
+  const [refChannels, account] = await Promise.all([
+    prisma.competitorChannel.findMany({
+      where: { ownAccountId: accountId, deletedAt: null },
+      select: { name: true, performanceMemory: true },
+    }),
+    prisma.socialAccount.findUnique({
+      where: { id: accountId },
+      select: { name: true, handle: true },
+    }),
+  ]);
   const channelMemoryBlocks = refChannels
     .map((ch) =>
       formatChannelPerformanceForPrompt(
@@ -595,17 +612,20 @@ export async function runIdeaGeneration(
   const channelStyle = await loadChannelStyle(prisma, accountId);
   const documentaryIdeas = isDocumentaryIdeaGeneration(channelStyle?.styleProfile);
   const prompt = await getActivePrompt(prisma, task, 'default', accountId);
+  const styleAnswers = parseStyleProfile(channelStyle?.styleProfile).answers;
+  const ourChannelBlock = formatOurChannelAboutBlock(channelStyle, account?.name);
   const seedBlock = seed
     ? `\n\n---\nOwner topic seed (REQUIRED inspiration):\n"${seed}"
 - Generate ideas inspired by and expanding on this seed topic — not unrelated tangents.
 - Do NOT use the seed text itself (or a trivial rephrase) as any title; invent original, catchy titles.
 - Still match competitor-channel headline FORMAT, pacing, and specificity when references are present.
-- Categories RELEVANT / SIMILAR / UNIQUE are relative to this seed plus reference-channel patterns.
-- Honor channel style profile and performance memory when choosing angles and hooks.`
+- Categories RELEVANT / SIMILAR / UNIQUE are relative to this seed plus OUR channel niche and reference-channel patterns.
+- Honor OUR channel about/niche and performance memory when choosing angles and hooks.`
     : '';
   const ideaOutputContract = `Return a JSON array of up to ${targetCount} ideas, each with {title, angle, hook, rationale, category, viralScore}.
 - Every title SHOULD target ${IDEA_TITLE_TARGET_MIN}-${IDEA_TITLE_TARGET_MAX} characters INCLUDING spaces (aim for catchy clickbait length). Stay within ${IDEA_TITLE_ACCEPTED_MIN}-${IDEA_TITLE_ACCEPTED_MAX} characters.
 - Make every title compelling, specific, and curiosity-driven/clickable while remaining natural language. Avoid vague, generic, sensational, repetitive, or spammy nonsense.
+- Stay on OUR CHANNEL niche, audience, and brand. Use REFERENCE CHANNELS only for headline FORMAT, pacing, hooks, and proven topic shapes.
 - Match the same headline FORMAT used by the strongest competitor-channel titles: mirror their structure (question, reveal, mystery, list/number, engineering/history breakdown, etc.), pacing, and specificity.
 - Derive FRESH ORIGINAL ideas inspired by patterns — never copy or lightly rephrase reference titles.
 - title MUST be a plain-text string only (never stringify the whole object into title).
@@ -613,18 +633,24 @@ export async function runIdeaGeneration(
 - viralScore is REQUIRED and MUST be an integer from 0 through 100.
 - viralScore MUST evaluate the complete idea. Title quality contributes 30/100 points: specificity (10), curiosity/click appeal (10), and channel/reference fit plus natural wording (10). Weak or generic titles cannot receive a high score.
 - Return JSON only. Do not use markdown code fences.
-- Never use em dashes (—) in titles or any other field. Use commas, colons, parentheses, or plain hyphens instead.`;
+- Never use em dashes (—) in titles or any other field. Use commas, colons, parentheses, or plain hyphens instead.
+- Write every idea title, angle, hook, and rationale in English. Do not translate ideas into the channel audience language.`;
   const documentaryIdeaRules = documentaryIdeas ? `\n${formatDocumentaryIdeaRules()}` : '';
-  const memoryBlock =
-    channelMemoryBlocks.length > 0
-      ? `\n\n---\nReference channel performance memory (use as inspiration only):\n${channelMemoryBlocks.join('\n\n')}`
-      : '';
+  const refChannelNames = refChannels.map((ch) => ch.name).filter(Boolean);
+  const referenceBlock = [
+    refChannelNames.length > 0
+      ? `---\nREFERENCE CHANNELS (inspiration only — invent original on-niche ideas for OUR channel, never copy titles):\nTracked: ${refChannelNames.join(', ')}`
+      : '',
+    channelMemoryBlocks.length > 0 ? channelMemoryBlocks.join('\n\n') : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   const systemPrompt = withChannelStyle(
-    `${prompt?.template ?? 'You are a content strategist. Generate original video content ideas based on reference-channel analysis.'}
+    `${prompt?.template ?? 'You are a content strategist. Generate original video content ideas for OUR channel, using reference-channel analysis for patterns only.'}
 
 ${ideaOutputContract}
 ${documentaryIdeaRules}
-Aim for a mix across the three categories. Honor the channel brand & style when choosing topics, angles, and hooks.${seedBlock}${memoryBlock}`,
+Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about/niche/brand; use reference channels for format and performance patterns only.${seedBlock}${ourChannelBlock ? `\n\n${ourChannelBlock}` : ''}${referenceBlock ? `\n\n${referenceBlock}` : ''}`,
     channelStyle,
   );
   const promptVersion = prompt?.version ?? 1;
@@ -632,7 +658,21 @@ Aim for a mix across the three categories. Honor the channel brand & style when 
   const inputText = JSON.stringify({
     count: targetCount,
     ...(seed ? { topicSeed: seed } : {}),
+    ourChannel: {
+      name: account?.name,
+      handle: account?.handle,
+      language: channelStyle?.language,
+      niche: styleAnswers.niche || undefined,
+      nicheTags: styleAnswers.nicheTags.length ? styleAnswers.nicheTags : undefined,
+      audience: styleAnswers.audience || undefined,
+      formats: styleAnswers.formats.length ? styleAnswers.formats : undefined,
+      presentation: styleAnswers.presentation || undefined,
+      avoid: styleAnswers.avoid || undefined,
+      extraNotes: styleAnswers.extraNotes || undefined,
+    },
+    referenceChannels: refChannels.map((ch) => ch.name),
     competitorVideos: recentVideos.map((v) => ({
+      channel: v.competitorChannel.name,
       title: v.title,
       views: v.views.toString(),
       transcript: v.transcript?.slice(0, 500),
@@ -653,7 +693,7 @@ Aim for a mix across the three categories. Honor the channel brand & style when 
     styleVersion: styleVersionFromProfile(channelStyle),
     // Contract marker busts caches that used the old hard length-refine schema.
     inputContentHash: hashText(
-      `idea-title-contract-v4:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
+      `idea-title-contract-v6:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
     ),
   });
 
@@ -667,8 +707,8 @@ Aim for a mix across the three categories. Honor the channel brand & style when 
       input: {
         kind: 'text',
         text: seed
-          ? `${inputText}\n\nUsing the owner topic seed above, generate exactly ${targetCount} distinct ideas as a JSON array.`
-          : `${inputText}\n\nGenerate exactly ${targetCount} distinct ideas as a JSON array.`,
+          ? `${inputText}\n\nUsing OUR CHANNEL about/niche plus the owner topic seed above, and reference channels for patterns only, generate exactly ${targetCount} distinct ideas as a JSON array.`
+          : `${inputText}\n\nUsing OUR CHANNEL about/niche as the topic ground truth and reference channels for patterns only, generate exactly ${targetCount} distinct ideas as a JSON array.`,
       },
       // Schema validates structure only; title length is fitted after parse so
       // a few off-target titles cannot fail the entire generation.
@@ -1179,6 +1219,7 @@ ${formatFernNarrationRules(videoDurationSec)}
 - Do not invent scene image/video prompts yet.`
         : `Presentation mode is VOICEOVER NARRATION (audio-first pipeline).
 - narrationScript must be one complete, cohesive narration covering the full ${videoDurationSec} seconds (roughly ${Math.round(videoDurationSec * 2.3)}-${Math.round(videoDurationSec * 2.8)} spoken words).
+- Open with a HOOKY first sentence. If the idea/hook/angle is about a person (or characters[] will include a notable person), write like a compelling host: "this person from [place] is famous for…" / "you've seen this face — here's why they matter…" — specific to the idea, never a generic template, never invent biography.
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
 - Do not invent scene image/video prompts yet.`
       : presentation === 'dialogue'
@@ -1198,6 +1239,7 @@ ${formatFernNarrationRules(videoDurationSec)}
 - Note any character dialogue ideas inside storySummary or editingInstructions for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
             : `Presentation mode is MIXED VOICEOVER + DIALOGUE (audio-first for narrator).
 - narrationScript contains only the narrator portions, cohesive across the full ${videoDurationSec} seconds (in ${languageDisplayName(channelLanguage)}).
+- Open narrator portions with a hooky person/subject line when the idea is about a notable person (same "this person from [place] is famous for…" energy), then continue the story.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
 - Note any character dialogue ideas inside storySummary or editingInstructions for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
@@ -1224,10 +1266,17 @@ ${formatFernNarrationRules(videoDurationSec)}
     ? formatDocumentaryThumbnailInstructions(channelStyle?.thumbnailReferencePrompt)
     : formatThumbnailPromptInstructions(channelStyle);
 
+  const languageRules = formatOutputLanguagePolicy(channelLanguage);
+
   const systemPrompt = withChannelStyle(
     `${prompt?.template ?? 'You are a creative package writer for short-form video. The owner will produce the video externally (no in-app render).'}
 
 ${packageOutputContract}
+${languageRules}
+- videoTitle and videoDescription are publish-facing: write them in ${languageDisplayName(channelLanguage)}.
+- storySummary and character appearance/wardrobe/personality stay in English.
+- narrationScript (voiceover) and dialogue[].line are spoken output: write them in ${languageDisplayName(channelLanguage)}.
+- imagePrompt, animationPrompt, and thumbnailPrompt stay in English except quoted on-screen text and spoken lines, which must be in ${languageDisplayName(channelLanguage)}.
 ${presentationInstructions}
 ${dramaRules}
 ${documentaryVisualRules}
@@ -1281,7 +1330,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     promptVersion,
     styleVersion: styleVersionFromProfile(channelStyle),
     inputContentHash: hashText(
-      `creative-package-v8:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${channelLanguage}:${inputText}`,
+      `creative-package-v9:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${channelLanguage}:${inputText}`,
     ),
   });
 
@@ -1336,12 +1385,26 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
       thumbnailNegativePrompt: normalized.thumbnailNegativePrompt,
     });
 
+    let englishSummary = '';
+    if (
+      needsEnglishVoiceoverSummary(channelLanguage) &&
+      needsVo &&
+      scriptText.trim()
+    ) {
+      englishSummary = await summarizeVoiceoverInEnglish(router, {
+        script: scriptText,
+        language: channelLanguage,
+        ideaId,
+      });
+    }
+
     await prisma.productionBrief.deleteMany({ where: { ideaId } });
     await prisma.productionBrief.create({
       data: {
         ideaId,
         researchSummary: normalized.storySummary,
         script: scriptText,
+        englishSummary,
         sceneBreakdown: (audioFirst ? [] : normalized.scenes) as any,
         characterPrompts: normalized.characters as any,
         editingInstructions,
@@ -1627,6 +1690,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
   const thumbnailInstructions = documentaryCollage
     ? formatDocumentaryThumbnailInstructions(channelStyle?.thumbnailReferencePrompt)
     : formatThumbnailPromptInstructions(channelStyle);
+  const languageRules = formatOutputLanguagePolicy(channelLanguage);
   const systemPrompt = withChannelStyle(
     `You generate production visual prompts for a short-form video whose voiceover already exists.
 Return JSON only:
@@ -1649,6 +1713,8 @@ Return JSON only:
   "editingInstructions": string
 }
 Rules:
+${languageRules}
+- imagePrompt and animationPrompt bodies stay in English; quote any on-screen overlay text and spoken dialogue in ${languageDisplayName(channelLanguage)}.
 - Return about ${sceneCount} scenes covering the full narration timeline (~${videoDurationSec}s total${
       documentaryCollage
         ? ', preferring ~2-3s beats / 5-8 words per beat where practical'
@@ -1869,9 +1935,14 @@ export async function runDramaBible(seriesId: string, _boss: PgBoss): Promise<vo
   }
 
   const prompt = await getActivePrompt(prisma, task, 'default', series.accountId);
-  const systemPrompt =
-    prompt?.template ??
-    'You are a drama series writer. Given series parameters, generate a series bible as JSON with {outline, world, tone} and characterSheets as a JSON array of {name, description, visualDescriptor, role, personality}.';
+  const channelStyle = await loadChannelStyle(prisma, series.accountId);
+  const systemPrompt = withChannelStyle(
+    `${prompt?.template ?? 'You are a drama series writer. Given series parameters, generate a series bible as JSON with {outline, world, tone} and characterSheets as a JSON array of {name, description, visualDescriptor, role, personality}.'}
+${formatOutputLanguagePolicy(channelStyle?.language)}
+- Write outline, world, tone, and character descriptions/visualDescriptor in English.
+- Character names may stay in the form natural to the series; spoken sample lines, if any, must be in ${languageDisplayName(channelStyle?.language)}.`,
+    channelStyle,
+  );
   const promptVersion = prompt?.version ?? 1;
 
   const inputText = JSON.stringify({
@@ -1888,7 +1959,7 @@ export async function runDramaBible(seriesId: string, _boss: PgBoss): Promise<vo
     task: task as any,
     model: DEFAULT_GEMINI_TEXT_MODEL,
     promptVersion,
-    styleVersion: 1,
+    styleVersion: styleVersionFromProfile(channelStyle),
     inputContentHash: hashText(inputText),
   });
 
@@ -2004,9 +2075,16 @@ export async function runDramaEpisode(episodeId: string, _boss: PgBoss): Promise
   });
 
   const prompt = await getActivePrompt(prisma, task, 'default', series.accountId);
-  const systemPrompt =
-    prompt?.template ??
-    'You are a drama episode writer. Given the series bible, character sheets, and previous episode recaps, generate the next episode as JSON with {summary, script, scenePrompts (array of {description, imagePrompt, videoPrompt}), narration, productionNotes, recap}.';
+  const channelStyle = await loadChannelStyle(prisma, series.accountId);
+  const lang = languageDisplayName(channelStyle?.language);
+  const systemPrompt = withChannelStyle(
+    `${prompt?.template ?? 'You are a drama episode writer. Given the series bible, character sheets, and previous episode recaps, generate the next episode as JSON with {summary, script, scenePrompts (array of {description, imagePrompt, videoPrompt}), narration, productionNotes, recap}.'}
+${formatOutputLanguagePolicy(channelStyle?.language)}
+- summary, recap, and productionNotes stay in English.
+- script and narration are spoken output: write them in ${lang}.
+- scenePrompts description/imagePrompt/videoPrompt stay in English; quote spoken dialogue and on-screen text in ${lang}.`,
+    channelStyle,
+  );
   const promptVersion = prompt?.version ?? 1;
 
   const inputText = JSON.stringify({
@@ -2026,7 +2104,7 @@ export async function runDramaEpisode(episodeId: string, _boss: PgBoss): Promise
     task: task as any,
     model: DEFAULT_GEMINI_TEXT_MODEL,
     promptVersion,
-    styleVersion: 1,
+    styleVersion: styleVersionFromProfile(channelStyle),
     inputContentHash: hashText(inputText),
   });
 
@@ -2128,7 +2206,7 @@ export async function runAbSuggestions(contentItemId: string, _boss: PgBoss): Pr
   const prompt = await getActivePrompt(prisma, task, 'default', accountId ?? null);
   const systemPrompt = withChannelStyle(
     prompt?.template ??
-      'You generate viral video variants. Given a video title and its script/analysis, produce a JSON object with two arrays: {"titles": ["...", "...", "..."], "thumbnailPrompts": ["...", "...", "..."]}. Titles should be under 70 chars, use curiosity or specificity, avoid clickbait. Thumbnail prompts describe a single striking image. Match the channel brand & style.',
+      `You generate viral video variants. Given a video title and its script/analysis, produce a JSON object with two arrays: {"titles": ["...", "...", "..."], "thumbnailPrompts": ["...", "...", "..."]}. Titles should be under 70 chars, use curiosity or specificity, avoid clickbait, and be written in ${languageDisplayName(channelStyle?.language)} (publish-facing). Thumbnail prompts describe a single striking image in English; quote any on-image lettering in ${languageDisplayName(channelStyle?.language)}. Match the channel brand & style.`,
     channelStyle,
   );
   const promptVersion = prompt?.version ?? 1;

@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,12 +10,13 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/components/ui/toast';
 import { relativeTime, absoluteTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import { AddWatchedProfileModal, BulkImportModal } from '@/components/source-modals';
+import { BulkImportModal } from '@/components/source-modals';
 import {
   getSourcesView,
   checkSourceNow,
   setSourcePaused,
   deleteSource,
+  deleteSourceVideo,
   getSourceVideos,
   retryDownload,
   type SourceVideoView,
@@ -23,13 +24,24 @@ import {
 import { ApiError } from '@/lib/api';
 import type { Source } from '@/lib/domain-types';
 
-const STATUS_TONE: Record<SourceVideoView['downloadStatus'], 'neutral' | 'amber' | 'green' | 'red' | 'indigo'> = {
-  PENDING: 'neutral',
-  DOWNLOADING: 'amber',
-  DONE: 'green',
-  FAILED: 'red',
-  SKIPPED_DUPLICATE: 'indigo',
+/** Internal DownloadStatus → user-facing pill. DB keeps DONE / SKIPPED_DUPLICATE. */
+const DOWNLOAD_STATUS_UI: Record<
+  SourceVideoView['downloadStatus'],
+  { tone: 'neutral' | 'amber' | 'green' | 'red' | 'indigo'; label: string }
+> = {
+  PENDING: { tone: 'neutral', label: 'QUEUED' },
+  DOWNLOADING: { tone: 'amber', label: 'DOWNLOADING' },
+  DONE: { tone: 'green', label: 'DOWNLOADED' },
+  FAILED: { tone: 'red', label: 'FAILED' },
+  SKIPPED_DUPLICATE: { tone: 'indigo', label: 'SKIPPED' },
 };
+
+const FAST_POLL_MS = 2_000;
+const IDLE_POLL_MS = 15_000;
+
+function isActiveDownload(status: string): boolean {
+  return status === 'PENDING' || status === 'DOWNLOADING' || status === 'PROCESSING';
+}
 
 export default function AccountSourcesPage() {
   const { id } = useParams<{ id: string }>();
@@ -38,20 +50,36 @@ export default function AccountSourcesPage() {
   const [demo, setDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [videosBySource, setVideosBySource] = useState<Record<string, SourceVideoView[] | 'loading' | 'error'>>({});
+
+  const videosRef = useRef(videosBySource);
+  videosRef.current = videosBySource;
+  const expandedRef = useRef(expandedId);
+  expandedRef.current = expandedId;
 
   /** Silent re-fetch (no 'loading' flash) — used for polling live progress. */
   const refreshVideos = useCallback(async (sourceId: string) => {
     try {
       const v = await getSourceVideos(sourceId);
       setVideosBySource((m) => ({ ...m, [sourceId]: v }));
+      return v;
     } catch {
-      /* keep the last good list */
+      return null;
     }
   }, []);
+
+  const refreshSources = useCallback(async () => {
+    try {
+      const { sources: list, demo: isDemo } = await getSourcesView(id);
+      setSources(list);
+      setDemo(isDemo);
+      return list;
+    } catch {
+      return null;
+    }
+  }, [id]);
 
   async function toggleExpand(sourceId: string) {
     if (expandedId === sourceId) {
@@ -70,32 +98,83 @@ export default function AccountSourcesPage() {
     }
   }
 
-  // Poll the expanded source's videos every 2s while any are still downloading
-  // (PENDING or DOWNLOADING) so the progress bars advance live.
-  useEffect(() => {
-    if (!expandedId) return;
-    const vids = videosBySource[expandedId];
-    if (!Array.isArray(vids)) return;
-    const active = vids.some((v) => v.downloadStatus === 'DOWNLOADING' || v.downloadStatus === 'PENDING');
-    if (!active) return;
-    const t = setInterval(() => void refreshVideos(expandedId), 2000);
-    return () => clearInterval(t);
-  }, [expandedId, videosBySource, refreshVideos]);
+  const hasActiveDownloads = Object.values(videosBySource).some(
+    (vids) => Array.isArray(vids) && vids.some((v) => isActiveDownload(v.downloadStatus)),
+  );
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { sources: list, demo: isDemo } = await getSourcesView(id);
-      setSources(list);
-      setDemo(isDemo);
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const { sources: list, demo: isDemo } = await getSourcesView(id);
+        if (cancelled) return;
+        setSources(list);
+        setDemo(isDemo);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
+  // Prefetch video lists so in-flight downloads are visible on parent rows
+  // without requiring the Videos panel to be open.
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (loading || demo) return;
+    for (const s of sources) {
+      if (videosBySource[s.id] === undefined) void refreshVideos(s.id);
+    }
+  }, [loading, demo, sources, videosBySource, refreshVideos]);
+
+  // Fast poll while any item is PENDING/DOWNLOADING/PROCESSING; slow poll when
+  // idle so parent-row counts/status still catch up. Never flashes 'loading'.
+  useEffect(() => {
+    if (demo || loading) return;
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        const { sources: list, demo: isDemo } = await getSourcesView(id);
+        if (cancelled) return;
+        setSources(list);
+        setDemo(isDemo);
+
+        const ids = new Set<string>();
+        const expanded = expandedRef.current;
+        if (expanded) ids.add(expanded);
+        for (const s of list) {
+          const vids = videosRef.current[s.id];
+          if (Array.isArray(vids) && vids.some((v) => isActiveDownload(v.downloadStatus))) {
+            ids.add(s.id);
+          }
+        }
+        await Promise.all(
+          [...ids].map(async (sourceId) => {
+            if (cancelled) return;
+            try {
+              const v = await getSourceVideos(sourceId);
+              if (cancelled) return;
+              setVideosBySource((m) => ({ ...m, [sourceId]: v }));
+            } catch {
+              /* keep the last good list */
+            }
+          }),
+        );
+      } catch {
+        /* keep the last good list */
+      }
+    };
+
+    void tick();
+    const t = window.setInterval(() => void tick(), hasActiveDownloads ? FAST_POLL_MS : IDLE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [id, demo, loading, hasActiveDownloads]);
 
   const runAction = async (sourceId: string, action: () => Promise<void>, done: string) => {
     if (demo) return toast('Connect a real account to manage sources', 'info');
@@ -103,7 +182,8 @@ export default function AccountSourcesPage() {
     try {
       await action();
       toast(done, 'success');
-      await load();
+      await refreshSources();
+      if (expandedRef.current) void refreshVideos(expandedRef.current);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Action failed', 'error');
     } finally {
@@ -111,20 +191,24 @@ export default function AccountSourcesPage() {
     }
   };
 
-  const onDone = () => void load();
+  const onDone = async () => {
+    const list = await refreshSources();
+    const newest = list?.[0];
+    if (newest) {
+      setExpandedId(newest.id);
+      void refreshVideos(newest.id);
+    }
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-zinc-500">
-          Watched profiles are checked automatically; new videos land in this account&apos;s review queue.
+          Bulk-import video URLs to ingest them. Existing watched profiles stay listed and are still checked automatically.
         </p>
         <div className="flex gap-2">
-          <Button size="sm" onClick={() => setImportOpen(true)}>
+          <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
             Bulk import URLs
-          </Button>
-          <Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>
-            Add watched profile
           </Button>
         </div>
       </div>
@@ -134,10 +218,10 @@ export default function AccountSourcesPage() {
       ) : sources.length === 0 ? (
         <EmptyState
           title="No sources yet"
-          hint="Add a watched profile URL or bulk-import video URLs to start the ingestion pipeline for this account."
+          hint="Bulk-import video URLs to start the ingestion pipeline for this account."
           cta={
-            <Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>
-              Add watched profile
+            <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
+              Bulk import URLs
             </Button>
           }
         />
@@ -186,7 +270,7 @@ export default function AccountSourcesPage() {
                       )}
                     </TD>
                     <TD>
-                      <SourceStatusBadge status={s.status} />
+                      <SourceRowStatus status={s.status} videos={vids} />
                     </TD>
                     <TD>
                       <div className="flex gap-1.5">
@@ -236,7 +320,12 @@ export default function AccountSourcesPage() {
                   {expanded && (
                     <TR>
                       <TD colSpan={7} className="bg-zinc-50">
-                        <SourceVideosPanel videos={vids} />
+                        <SourceVideosPanel
+                          videos={vids}
+                          onChanged={() => {
+                            if (expandedId) void refreshVideos(expandedId);
+                          }}
+                        />
                       </TD>
                     </TR>
                   )}
@@ -248,34 +337,83 @@ export default function AccountSourcesPage() {
       )}
 
       <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
-        Once a video reaches <b>DONE</b> here, the media processor turns it into a content item and it lands in this account&apos;s <a className="font-medium underline" href={`/accounts/${id}/review`}>Review queue</a>.
+        Once a video reaches <b>DOWNLOADED</b> here, the media processor turns it into a content item and it lands in this account&apos;s <a className="font-medium underline" href={`/accounts/${id}/review`}>Review queue</a>.
       </div>
 
-      <AddWatchedProfileModal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        accountId={id}
-        onDone={onDone}
-      />
       <BulkImportModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
         accountId={id}
-        onDone={onDone}
+        onDone={() => void onDone()}
       />
     </div>
   );
 }
 
-function SourceVideosPanel({ videos }: { videos: SourceVideoView[] | 'loading' | 'error' | undefined }) {
+function SourceRowStatus({
+  status,
+  videos,
+}: {
+  status: Source['status'];
+  videos: SourceVideoView[] | 'loading' | 'error' | undefined;
+}) {
+  if (Array.isArray(videos)) {
+    const downloading = videos.filter((v) => v.downloadStatus === 'DOWNLOADING');
+    if (downloading.length > 0) {
+      const pct = Math.round(
+        downloading.reduce((n, v) => n + v.downloadPercent, 0) / downloading.length,
+      );
+      return <Badge tone="amber">DOWNLOADING {pct}%</Badge>;
+    }
+    if (videos.some((v) => v.downloadStatus === 'PENDING')) {
+      return <Badge tone="neutral">{DOWNLOAD_STATUS_UI.PENDING.label}</Badge>;
+    }
+    if (videos.length > 0) {
+      const keys: Array<keyof typeof DOWNLOAD_STATUS_UI> = [];
+      if (videos.some((v) => v.downloadStatus === 'DONE')) keys.push('DONE');
+      if (videos.some((v) => v.downloadStatus === 'SKIPPED_DUPLICATE')) keys.push('SKIPPED_DUPLICATE');
+      if (videos.some((v) => v.downloadStatus === 'FAILED')) keys.push('FAILED');
+      const showSource = status === 'PAUSED' || status === 'ERROR';
+      return (
+        <span className="inline-flex flex-wrap items-center gap-1">
+          {keys.map((k) => (
+            <Badge key={k} tone={DOWNLOAD_STATUS_UI[k].tone}>
+              {DOWNLOAD_STATUS_UI[k].label}
+            </Badge>
+          ))}
+          {showSource && <SourceStatusBadge status={status} />}
+        </span>
+      );
+    }
+  }
+  return <SourceStatusBadge status={status} />;
+}
+
+function SourceVideosPanel({
+  videos,
+  onChanged,
+}: {
+  videos: SourceVideoView[] | 'loading' | 'error' | undefined;
+  onChanged?: () => void;
+}) {
   const toast = useToast();
   const onRetry = async (videoId: string) => {
     try {
       await retryDownload(videoId);
-      // The 2s auto-poll in the parent will pick up the reset row & new progress.
       toast('Download re-queued.', 'success');
+      onChanged?.();
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Retry failed', 'error');
+    }
+  };
+  const onDelete = async (video: SourceVideoView) => {
+    if (!confirm(`Delete video “${video.title ?? video.sourceUrl}”?`)) return;
+    try {
+      await deleteSourceVideo(video.id);
+      toast('Video deleted', 'success');
+      onChanged?.();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Delete failed', 'error');
     }
   };
   if (videos === undefined || videos === 'loading') {
@@ -295,8 +433,9 @@ function SourceVideosPanel({ videos }: { videos: SourceVideoView[] | 'loading' |
             <th className="px-2 py-1 text-left">URL</th>
             <th className="px-2 py-1 text-left">Title</th>
             <th className="px-2 py-1 text-left">Status</th>
-            <th className="w-[240px] px-2 py-1 text-left">Progress</th>
+            <th className="px-2 py-1 text-left">Progress</th>
             <th className="px-2 py-1 text-left">Added</th>
+            <th className="px-2 py-1 text-left"> </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-zinc-100">
@@ -314,13 +453,24 @@ function SourceVideosPanel({ videos }: { videos: SourceVideoView[] | 'loading' |
               </td>
               <td className="px-2 py-1 text-zinc-800">{v.title ?? '—'}</td>
               <td className="px-2 py-1">
-                <Badge tone={STATUS_TONE[v.downloadStatus]}>{v.downloadStatus}</Badge>
+                <Badge tone={DOWNLOAD_STATUS_UI[v.downloadStatus].tone}>
+                  {DOWNLOAD_STATUS_UI[v.downloadStatus].label}
+                </Badge>
               </td>
               <td className="px-2 py-1">
                 <ProgressCell v={v} onRetry={() => onRetry(v.id)} />
               </td>
               <td className="px-2 py-1 text-zinc-500" title={absoluteTime(v.createdAt)}>
                 {relativeTime(v.createdAt)}
+              </td>
+              <td className="px-2 py-1">
+                <button
+                  type="button"
+                  onClick={() => void onDelete(v)}
+                  className="rounded-md border border-red-300 bg-white px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-50"
+                >
+                  Delete
+                </button>
               </td>
             </tr>
           ))}

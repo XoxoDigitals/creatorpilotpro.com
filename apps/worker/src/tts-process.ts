@@ -3,8 +3,10 @@
  * content item's script has been approved (SCRIPT_APPROVED), or for AI-owner
  * package voiceovers (idea_tts). Chain default: Edge Neural → Kokoro → Gemini → OpenAI.
  *
- * Long scripts are chunked at sentence boundaries, synthesized, concatenated
- * with silence padding, and loudness-normalized (EBU R128) via ffmpeg.
+ * Repurposed VO with timed lines[] is laid out on analysis beats: silence gaps
+ * between scenes, natural speaking pace (never speed up a clip to fit a short
+ * beat — if VO is longer than the beat, place it as-is and push later lines).
+ * Without timed lines, falls back to one continuous synth of the full script.
  * Edge TTS timings (VTT/SRT) are preferred over re-transcription.
  */
 import { join } from 'node:path';
@@ -32,7 +34,13 @@ import {
   type KeyState,
   type TimedSegment,
 } from '@scp/ai-providers';
-import { Ffmpeg } from './media/ffmpeg.js';
+import { Ffmpeg, FfmpegNotAvailableError } from './media/ffmpeg.js';
+import {
+  analysisDurationSec,
+  timedLinesFromStep,
+  timelinePadPlan,
+  type TimedNarrationLine,
+} from './media/vo-timing.js';
 import type { RenderJob, IdeaTranscriptJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.js';
 
@@ -397,11 +405,11 @@ async function synthesizeScript(opts: {
         : [];
     allTimings.push(...offsetTimings(chunkTimings, offsetMs));
     const dur = await probeDurationMs(ffmpeg, wavChunk);
-    offsetMs += dur > 0 ? dur + 300 : estimateDurationFromTimings(chunkTimings) + 300;
+    offsetMs += dur > 0 ? dur : estimateDurationFromTimings(chunkTimings);
   }
 
   const finalPath = join(voDir, 'voiceover.wav');
-  await concatNormalize(ffmpeg, ffmpegAvail, chunkPaths, voDir, finalPath, contentItemId, prisma);
+  await concatNormalize(ffmpeg, ffmpegAvail, chunkPaths, voDir, finalPath);
 
   for (const cp of chunkPaths) {
     if (cp && cp !== finalPath) await unlink(cp).catch(() => {});
@@ -460,7 +468,7 @@ async function synthesizeViaEdge(
     chunkWavs.push(wavChunk);
     allTimings.push(...offsetTimings(synth.timings, offsetMs));
     const dur = await probeDurationMs(ffmpeg, wavChunk);
-    offsetMs += dur > 0 ? dur + 300 : estimateDurationFromTimings(synth.timings) + 300;
+    offsetMs += dur > 0 ? dur : estimateDurationFromTimings(synth.timings);
     console.log(
       `[worker:tts] Edge chunk ${i + 1}/${chunks.length} done in ${Date.now() - chunkStart}ms (audio~${dur}ms)`,
     );
@@ -496,73 +504,178 @@ async function concatNormalize(
   chunkPaths: string[],
   voDir: string,
   finalPath: string,
-  contentItemId?: string,
-  prisma?: PrismaClient,
 ): Promise<void> {
-  // Always pin 44.1 kHz mono on the final WAV. Edge/ffmpeg paths have produced
-  // 192 kHz PCM (~4× larger, slower loudnorm) when sample rate was left implicit.
+  // Enhancement (EQ + compressor + loudnorm) requires ffmpeg. Fail clearly
+  // rather than storing unprocessed TTS — ffmpeg is an operational dependency.
+  if (!ffmpegAvail) {
+    throw new FfmpegNotAvailableError('ffmpeg');
+  }
+
   const wavOut = ['-ar', '44100', '-ac', '1'] as const;
 
   if (chunkPaths.length === 1) {
-    if (ffmpegAvail) {
-      await ffmpeg.exec([
-        '-i',
-        chunkPaths[0]!,
-        '-af',
-        'loudnorm=I=-16:LRA=11:TP=-1.5',
-        ...wavOut,
-        '-y',
-        finalPath,
-      ]);
-    } else {
-      await copyFile(chunkPaths[0]!, finalPath);
-    }
+    await ffmpeg.enhanceVoiceover(chunkPaths[0]!, finalPath);
     return;
   }
 
-  if (ffmpegAvail) {
-    const listPath = join(voDir, 'concat.txt');
-    await writeFile(
-      listPath,
-      chunkPaths.map((p) => `file '${p!.replace(/\\/g, '/')}'`).join('\n'),
-    );
-    const concatPath = join(voDir, 'concat_raw.wav');
-    await ffmpeg.exec([
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      listPath,
-      '-af',
-      'apad=pad_dur=0.3',
-      ...wavOut,
-      '-y',
-      concatPath,
-    ]);
-    await ffmpeg.exec([
-      '-i',
-      concatPath,
-      '-af',
-      'loudnorm=I=-16:LRA=11:TP=-1.5',
-      ...wavOut,
-      '-y',
-      finalPath,
-    ]);
-    await unlink(listPath).catch(() => {});
-    await unlink(concatPath).catch(() => {});
-    return;
+  const listPath = join(voDir, 'concat.txt');
+  await writeFile(
+    listPath,
+    chunkPaths.map((p) => `file '${p!.replace(/\\/g, '/')}'`).join('\n'),
+  );
+  const concatPath = join(voDir, 'concat_raw.wav');
+  // End-to-end concat (no inter-chunk silence) then enhance once.
+  await ffmpeg.exec([
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    listPath,
+    ...wavOut,
+    '-y',
+    concatPath,
+  ]);
+  await ffmpeg.enhanceVoiceover(concatPath, finalPath);
+  await unlink(listPath).catch(() => {});
+  await unlink(concatPath).catch(() => {});
+}
+
+/**
+ * Never speed up VO. If audio somehow overruns picture, hard-trim only.
+ * Scene-aligned clips keep natural pace even when longer than their beat.
+ */
+async function trimWavToMaxDuration(ffmpeg: Ffmpeg, srcPath: string, maxSec: number): Promise<void> {
+  if (!(maxSec > 0)) return;
+  const actual = await ffmpeg.probeDurationSec(srcPath);
+  if (actual == null || actual <= maxSec * 1.02) return;
+  const trimmed = srcPath.replace(/(\.[^.]+)$/, '.trim$1');
+  await ffmpeg.trimAudioTo(srcPath, trimmed, maxSec);
+  await copyFile(trimmed, srcPath);
+  await unlink(trimmed).catch(() => {});
+}
+
+/**
+ * Synth each timed line at natural pace, insert silence so clips start on
+ * analysis timestamps. If a clip is longer than its beat, do NOT speed it —
+ * place as-is; later lines start after it (timelinePadPlan).
+ */
+async function synthesizeSceneAligned(opts: {
+  lines: TimedNarrationLine[];
+  voice: VoiceSettings;
+  voDir: string;
+  videoDurationSec: number | null;
+}): Promise<SynthBundle> {
+  const { lines, voice, voDir, videoDurationSec } = opts;
+  await mkdir(voDir, { recursive: true });
+  const ffmpeg = new Ffmpeg();
+  if (!(await ffmpeg.available())) {
+    throw new FfmpegNotAvailableError();
   }
 
-  await copyFile(chunkPaths[0]!, finalPath);
-  if (prisma && contentItemId) {
-    await raiseIncident(prisma, {
-      kind: 'SYSTEM',
-      severity: 'LOW',
-      contentItemId,
-      title: 'TTS: ffmpeg absent — chunks not concatenated/normalized',
+  const clipPaths: string[] = [];
+  const clipMeta: { startSec: number; durationSec: number }[] = [];
+  const allTimings: TimedSegment[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const text = line.text.trim();
+    if (!text) continue;
+    const base = `line_${String(i).padStart(3, '0')}`;
+    const wavPath = join(voDir, `${base}.wav`);
+    const synth = await synthesizeWithEdgeTts(text, {
+      voice: voice.voiceId,
+      rate: voice.rate,
+      pitch: voice.pitch,
+      volume: voice.volume,
+      outDir: voDir,
+      basename: base,
+      writeSubtitles: true,
     });
+    await ffmpeg.exec([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      synth.mediaPath,
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      wavPath,
+    ]);
+    if (synth.mediaPath !== wavPath) await unlink(synth.mediaPath).catch(() => {});
+    if (synth.subtitlePath) await unlink(synth.subtitlePath).catch(() => {});
+
+    const durSec =
+      (await ffmpeg.probeDurationSec(wavPath)) ??
+      Math.max(0.4, text.split(/\s+/).filter(Boolean).length / 2.2);
+    clipPaths.push(wavPath);
+    clipMeta.push({ startSec: Math.max(0, line.startSec), durationSec: durSec });
+    const offsetMs = Math.round(line.startSec * 1000);
+    if (Array.isArray(synth.timings)) {
+      allTimings.push(...offsetTimings(synth.timings, offsetMs));
+    }
   }
+
+  if (clipPaths.length === 0) {
+    throw new Error('Scene-aligned TTS produced no clips');
+  }
+
+  const plan = timelinePadPlan(clipMeta, videoDurationSec);
+  const concatEntries: string[] = [];
+  const tempSilence: string[] = [];
+  let silenceIdx = 0;
+  for (const step of plan) {
+    if (step.kind === 'silence' && step.durationSec != null && step.durationSec >= 0.04) {
+      const silPath = join(voDir, `sil_${String(silenceIdx++).padStart(3, '0')}.wav`);
+      await ffmpeg.generateSilenceWav(silPath, step.durationSec);
+      tempSilence.push(silPath);
+      concatEntries.push(silPath);
+    } else if (step.kind === 'audio' && step.index != null) {
+      const p = clipPaths[step.index];
+      if (p) concatEntries.push(p);
+    }
+  }
+
+  const listPath = join(voDir, 'scene_concat.txt');
+  await writeFile(
+    listPath,
+    concatEntries.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'),
+  );
+  const concatPath = join(voDir, 'scene_raw.wav');
+  const finalPath = join(voDir, 'voiceover.wav');
+  await ffmpeg.exec([
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    listPath,
+    '-ar',
+    '44100',
+    '-ac',
+    '1',
+    '-y',
+    concatPath,
+  ]);
+  await ffmpeg.enhanceVoiceover(concatPath, finalPath);
+  await unlink(listPath).catch(() => {});
+  await unlink(concatPath).catch(() => {});
+  for (const s of tempSilence) await unlink(s).catch(() => {});
+  for (const c of clipPaths) await unlink(c).catch(() => {});
+
+  if (videoDurationSec != null && videoDurationSec > 1) {
+    await trimWavToMaxDuration(ffmpeg, finalPath, videoDurationSec);
+  }
+
+  return {
+    finalWavPath: finalPath,
+    timings: allTimings,
+    providerUsed: 'edge',
+    voiceId: voice.voiceId,
+  };
 }
 
 export async function runTts(contentItemId: string, boss: PgBoss): Promise<void> {
@@ -572,7 +685,13 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
     where: { id: contentItemId },
     include: {
       idea: { select: { accountId: true } },
-      sourceVideo: { select: { watchedSource: { select: { targetAccountId: true } } } },
+      sourceVideo: {
+        select: {
+          durationSec: true,
+          watchedSource: { select: { targetAccountId: true } },
+        },
+      },
+      assets: { where: { kind: { in: ['ORIGINAL', 'FINAL'] } }, select: { kind: true, localPath: true } },
     },
   });
   if (!item) {
@@ -645,25 +764,100 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
   const voDir = join(STORAGE_ROOT, 'content', contentItemId, 'tts');
 
   try {
-    const synth = await synthesizeScript({
-      prisma,
-      masterKey,
-      script,
-      voice,
-      voDir,
-      contentItemId,
-    });
+    let videoDur = analysisDurationSec(
+      currentStep.analysis,
+      typeof item.sourceVideo?.durationSec === 'number' ? item.sourceVideo.durationSec : null,
+    );
+    if (videoDur == null) {
+      const probeFfmpeg = new Ffmpeg();
+      const asset =
+        item.assets.find((a) => a.kind === 'FINAL' && a.localPath) ??
+        item.assets.find((a) => a.kind === 'ORIGINAL' && a.localPath);
+      if (asset?.localPath && (await probeFfmpeg.available())) {
+        videoDur = await probeFfmpeg.probeDurationSec(asset.localPath);
+      }
+    }
+    const timedLines = timedLinesFromStep(currentStep).filter((l) => l.text.trim());
+    let synth: SynthBundle;
+    if (timedLines.length >= 2) {
+      console.log(
+        `[worker:tts] scene-aligned synth for ${contentItemId} (${timedLines.length} lines, natural pace, no speedup)` +
+          (videoDur != null ? ` videoDur=${videoDur.toFixed(2)}s` : ''),
+      );
+      try {
+        synth = await synthesizeSceneAligned({
+          lines: timedLines,
+          voice,
+          voDir,
+          videoDurationSec: videoDur,
+        });
+      } catch (err) {
+        console.warn(
+          `[worker:tts] scene-aligned failed, falling back to continuous: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        synth = await synthesizeScript({
+          prisma,
+          masterKey,
+          script,
+          voice,
+          voDir,
+          contentItemId,
+        });
+        if (videoDur != null) {
+          const ffmpeg = new Ffmpeg();
+          if (await ffmpeg.available()) {
+            await trimWavToMaxDuration(ffmpeg, synth.finalWavPath, videoDur);
+          }
+        }
+      }
+    } else {
+      console.log(
+        `[worker:tts] continuous synth for ${contentItemId}` +
+          (videoDur != null ? ` (trimTo=${videoDur.toFixed(2)}s if overrun)` : ''),
+      );
+      synth = await synthesizeScript({
+        prisma,
+        masterKey,
+        script,
+        voice,
+        voDir,
+        contentItemId,
+      });
+      if (videoDur != null) {
+        const ffmpeg = new Ffmpeg();
+        if (await ffmpeg.available()) {
+          await trimWavToMaxDuration(ffmpeg, synth.finalWavPath, videoDur);
+        }
+      }
+    }
 
     const stats = await stat(synth.finalWavPath);
-    await prisma.asset.create({
-      data: {
-        contentItemId,
-        kind: 'VOICEOVER',
-        storageState: 'LOCAL',
-        localPath: synth.finalWavPath,
-        bytes: BigInt(stats.size),
-      },
+    const existingVo = await prisma.asset.findFirst({
+      where: { contentItemId, kind: 'VOICEOVER' },
+      orderBy: { createdAt: 'desc' },
     });
+    if (existingVo) {
+      await prisma.asset.update({
+        where: { id: existingVo.id },
+        data: {
+          localPath: synth.finalWavPath,
+          bytes: BigInt(stats.size),
+          storageState: 'LOCAL',
+        },
+      });
+    } else {
+      await prisma.asset.create({
+        data: {
+          contentItemId,
+          kind: 'VOICEOVER',
+          storageState: 'LOCAL',
+          localPath: synth.finalWavPath,
+          bytes: BigInt(stats.size),
+        },
+      });
+    }
 
     await prisma.contentItem.update({
       where: { id: contentItemId },

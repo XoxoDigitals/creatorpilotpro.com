@@ -171,6 +171,8 @@ export interface ProductionBrief {
   storySummary: string;
   script: string;
   narrationScript: string;
+  /** English summary of non-English voiceover (empty when output language is English). */
+  englishSummary: string;
   presentationMode: string;
   sceneBreakdown: ProductionScene[];
   characterPrompts: CharacterPrompt[];

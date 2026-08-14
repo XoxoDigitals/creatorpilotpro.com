@@ -4,6 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
 import { toWatchedSourceView, type WatchedSourceView } from './watched-source.view';
 import { toSourceVideoView, type SourceVideoView } from './source-video.view';
+import { extractVideoUrls } from '@scp/shared';
 import type { BulkImportDto, CreateSourceDto, PatchSourceDto } from './dto/sources.dto';
 
 const SOURCE_WITH_COUNT = { _count: { select: { videos: true } } } as const;
@@ -100,6 +101,14 @@ export class SourcesService {
       select: { id: true },
     });
     if (!existing) throw new NotFoundException('Watched source not found.');
+    const videos = await this.prisma.client.sourceVideo.findMany({
+      where: { watchedSourceId: id },
+      select: { id: true },
+    });
+    await this.purgeSourceVideos(
+      videos.map((v) => v.id),
+      'Cannot remove this source while a video is publishing.',
+    );
     await this.prisma.client.watchedSource.update({
       where: { id },
       data: { deletedAt: new Date(), status: 'PAUSED' },
@@ -132,7 +141,7 @@ export class SourcesService {
    */
   async bulkImport(dto: BulkImportDto): Promise<WatchedSourceView> {
     if (dto.targetAccountId) await this.assertAccount(dto.targetAccountId);
-    const urls = [...new Set(dto.urls.map((u) => u.trim()).filter(Boolean))];
+    const urls = [...new Set(dto.urls.flatMap((u) => extractVideoUrls(u)))];
     if (urls.length === 0) throw new BadRequestException('No valid URLs to import.');
 
     const label = dto.label ?? `Batch import ${new Date().toISOString().slice(0, 10)}`;
@@ -194,6 +203,52 @@ export class SourcesService {
     });
     await this.queue.enqueueDownload(videoId);
     return toSourceVideoView(updated);
+  }
+
+  /**
+   * Remove a discovered source video. Linked content items are soft-deleted
+   * (same pattern as other user-facing entities); the source-video row has no
+   * deletedAt column so it is hard-deleted — that also drops md5 / pHash so the
+   * same URL can be imported again.
+   */
+  async deleteVideo(videoId: string): Promise<{ id: string; deleted: true }> {
+    const video = await this.prisma.client.sourceVideo.findUnique({
+      where: { id: videoId },
+      select: { id: true },
+    });
+    if (!video) throw new NotFoundException('Source video not found.');
+    await this.purgeSourceVideos(
+      [videoId],
+      'Cannot delete a video while it is publishing.',
+    );
+    return { id: videoId, deleted: true };
+  }
+
+  /**
+   * Soft-delete active pipeline items, then hard-delete source-video rows so
+   * their md5 / perceptual hashes cannot keep matching as duplicates.
+   */
+  private async purgeSourceVideos(videoIds: string[], publishingMessage: string): Promise<void> {
+    if (videoIds.length === 0) return;
+    const linked = await this.prisma.client.contentItem.findMany({
+      where: { sourceVideoId: { in: videoIds }, deletedAt: null },
+      select: { id: true, status: true },
+    });
+    if (linked.some((c) => c.status === 'PUBLISHING')) {
+      throw new BadRequestException(publishingMessage);
+    }
+    if (linked.length > 0) {
+      const ids = linked.map((c) => c.id);
+      await this.prisma.client.publishTarget.updateMany({
+        where: { contentItemId: { in: ids }, status: { in: ['PENDING', 'SCHEDULED'] } },
+        data: { status: 'DRAFT' },
+      });
+      await this.prisma.client.contentItem.updateMany({
+        where: { id: { in: ids } },
+        data: { deletedAt: new Date() },
+      });
+    }
+    await this.prisma.client.sourceVideo.deleteMany({ where: { id: { in: videoIds } } });
   }
 
   async setRights(videoId: string, rightsNote: string, actorId: string): Promise<SourceVideoView> {

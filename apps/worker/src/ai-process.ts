@@ -42,9 +42,20 @@ import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.j
 import {
   builtinSystemPrompt,
   extractNarrationScript,
+  normalizeNarrationVariants,
   repurposePromptVersion,
   schemaForRepurposeTask,
 } from './repurpose-prompts.js';
+import { summarizeVoiceoverVariantsInEnglish } from './english-voiceover-summary.js';
+import { analysisPeople, analysisIndicatesDialogue } from './media/dialogue-audio.js';
+import {
+  analysisBeats,
+  analysisDurationSec,
+  beatsForPrompt,
+  clampTimedLinesToBeats,
+  narrationBudgetSec,
+  narrationWordBudget,
+} from './media/vo-timing.js';
 import {
   peekGeminiApiKey,
   prepareAnalysisMedia,
@@ -451,7 +462,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       durationSec,
       mediaMode: media?.mode ?? 'metadata_only',
       instruction:
-        'Analyze the full video timeline. Return beat-by-beat segments covering start→end. Prefer the attached video/frames over metadata.',
+        'Analyze the full video timeline. Return beat-by-beat segments covering start→end. When spoken dialogue is audible, set hasDialogue true and fill dialogueRanges with precise {startSec,endSec} windows for every talking interval. Prefer the attached video/frames over metadata.',
     });
 
     if (media && media.parts.length > 0) {
@@ -463,12 +474,38 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       runInput = { kind: 'text', text: inputText };
     }
   } else if (kind === 'narration') {
+    const people = analysisPeople(currentStep.analysis);
+    const hasDialogue = analysisIndicatesDialogue(currentStep.analysis);
+    const personHook =
+      people.length > 0
+        ? `A person/subject is on screen (${people
+            .map((p) =>
+              [p.label, p.originOrContext, p.whyNotable].filter(Boolean).join(' — '),
+            )
+            .join('; ')}). Open with a compelling narrator hook about them (e.g. "this person from China is very famous for…") using only facts supported by the analysis.`
+        : 'If the analysis identifies a person as the subject, open with a compelling hook about them; otherwise use a curiosity/stakes hook.';
+    const dialogueHook = hasDialogue
+      ? 'DIALOGUE PRESENT: For the explainer variant, narrate what characters said and replied in third person (She asks… / He replies… / The vendor explains…) using speechOrAudio / analysis — do not ignore spoken conversation.'
+      : '';
+    const durationSec = analysisDurationSec(
+      currentStep.analysis,
+      typeof item.sourceVideo?.durationSec === 'number' ? item.sourceVideo.durationSec : null,
+    );
+    const beats = analysisBeats(currentStep.analysis);
+    const maxSpokenSec = narrationBudgetSec(durationSec);
+    const maxWords = narrationWordBudget(durationSec);
     inputText = JSON.stringify({
       title: item.title,
-      durationSec: item.sourceVideo?.durationSec ?? null,
+      durationSec,
+      maxSpokenSec,
+      maxWords,
+      beats: beatsForPrompt(beats),
       analysis: currentStep.analysis ?? item.title,
-      instruction:
-        'Write a hooky storytelling narration script timed to the analysis segments and video length. Output JSON with script + hook.',
+      people,
+      hasDialogue,
+      // Present when the owner clicks Regenerate script — busts the AI cache.
+      ...(currentStep.scriptNonce != null ? { regenerateNonce: currentStep.scriptNonce } : {}),
+      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Scene-aligned lines[] required when beats are present. ${personHook} ${dialogueHook} Output JSON with variants[].`,
     });
     runInput = { kind: 'text', text: inputText };
   } else {
@@ -483,7 +520,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
         ? { regenerateNonce: currentStep.metadataNonce }
         : {}),
       instruction:
-        'Write publish-ready title, description, and tags optimized for the given platform. Follow channel style. Return JSON only.',
+        'Write publish-ready title, description, and tags optimized for the given platform. Follow channel style. Title, description, and tags must use the channel output language. Return JSON only.',
     });
     runInput = { kind: 'text', text: inputText };
   }
@@ -531,9 +568,36 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
         `[worker:ai] analyze done for ${contentItemId} (media=${media?.mode ?? 'none'}) — enqueued narration`,
       );
     } else if (kind === 'narration') {
-      // Persist plain TTS-ready script; keep structured output for review UI.
-      const scriptText = extractNarrationScript(result.output);
+      const beats = analysisBeats(currentStep.analysis);
+      let variants = normalizeNarrationVariants(result.output);
+      // Prefer shortening over extreme atempo: clamp each line to beat word budget.
+      variants = variants.map((v) => {
+        if (!v.lines.length) return v;
+        const clamped = clampTimedLinesToBeats(v.lines, beats);
+        return {
+          ...v,
+          lines: clamped,
+          script: clamped.map((l) => l.text).join(' ').trim() || v.script,
+        };
+      });
+      const language = channelStyle?.language ?? 'en';
+      const summaries = await summarizeVoiceoverVariantsInEnglish(router, {
+        variants: variants.map((v) => ({ id: v.id, script: v.script })),
+        language,
+        contentItemId,
+      });
+      if (summaries.size > 0) {
+        variants = variants.map((v) => {
+          const englishSummary = summaries.get(v.id) ?? '';
+          return englishSummary ? { ...v, englishSummary } : v;
+        });
+      }
+      const selected = variants.find((v) => v.id === 'explainer') ?? variants[0];
+      const scriptText = selected?.script || extractNarrationScript(result.output);
       updatedStep.script = scriptText;
+      updatedStep.selectedScriptId = selected?.id ?? 'explainer';
+      updatedStep.scriptVariants = variants;
+      updatedStep.englishSummary = selected?.englishSummary ?? '';
       updatedStep.narration = result.output;
       await prisma.contentItem.update({
         where: { id: contentItemId },

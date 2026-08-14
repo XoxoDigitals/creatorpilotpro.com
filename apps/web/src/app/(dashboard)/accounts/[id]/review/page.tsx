@@ -7,10 +7,11 @@ import { useParams } from 'next/navigation';
 import { ReviewList } from '@/components/review-list';
 import {
   decideReview,
+  deleteContent,
+  deleteIdea,
   generateIdeaPackage,
   getIdeasView,
   getReviewView,
-  setSourceRights,
 } from '@/lib/api-data';
 import type { Idea, ReviewItem, ReviewStatus } from '@/lib/domain-types';
 import { Button } from '@/components/ui/button';
@@ -48,12 +49,14 @@ export default function AccountReviewPage() {
   const [customVideoDuration, setCustomVideoDuration] = useState(false);
   const [clipDurationSec, setClipDurationSec] = useState<8 | 10 | 15 | 30>(10);
   const [starting, setStarting] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [{ items: list, demo: isDemo }, ideasResult] = await Promise.all([
-        getReviewView(id),
+        // Exclude held/scheduled publish packages — those approve only on Review Queue.
+        getReviewView(id, { excludeScheduled: true }),
         getIdeasView(id),
       ]);
       setItems(list);
@@ -80,14 +83,6 @@ export default function AccountReviewPage() {
         await load();
       };
 
-  const onSetRights = demo
-    ? undefined
-    : async (item: ReviewItem, rightsNote: string) => {
-        if (!item.sourceVideoId) throw new Error('This item has no source video to attach a rights note to.');
-        await setSourceRights(item.sourceVideoId, rightsNote);
-        await load();
-      };
-
   function openGeneration(idea: Idea) {
     setSelectedIdea(idea);
     const duration = idea.requestedVideoDurationSec ?? 60;
@@ -110,6 +105,32 @@ export default function AccountReviewPage() {
       setStarting(false);
     }
   }
+
+  async function onDeleteIdea(idea: Idea) {
+    if (demo) {
+      toast('Connect a real account to delete ideas', 'info');
+      return;
+    }
+    if (!confirm(`Delete idea “${idea.title}”?`)) return;
+    setBusyId(idea.id);
+    try {
+      await deleteIdea(idea.id);
+      toast('Idea deleted', 'success');
+      await load();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to delete idea', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const onDeleteContent = demo
+    ? undefined
+    : async (item: ReviewItem) => {
+        if (!confirm(`Delete video “${item.title}”?`)) return;
+        await deleteContent(item.id);
+        await load();
+      };
 
   if (loading) return <p className="p-4 text-sm text-zinc-500">Loading review queue…</p>;
 
@@ -147,20 +168,29 @@ export default function AccountReviewPage() {
                     </span>
                   )}
                 </div>
-                <Button
-                  className="mt-3"
-                  size="sm"
-                  variant="primary"
-                  onClick={() => openGeneration(idea)}
-                  disabled={demo || !!blocker}
-                  title={
-                    blocker
-                      ? `Upload the final video and thumbnail for “${blocker.title}” first.`
-                      : undefined
-                  }
-                >
-                  Start Generation
-                </Button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => openGeneration(idea)}
+                    disabled={demo || !!blocker}
+                    title={
+                      blocker
+                        ? `Upload the final video and thumbnail for “${blocker.title}” first.`
+                        : undefined
+                    }
+                  >
+                    Start Generation
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={demo || busyId === idea.id}
+                    onClick={() => void onDeleteIdea(idea)}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
@@ -172,8 +202,8 @@ export default function AccountReviewPage() {
         <ReviewList
           items={items}
           onDecide={onDecide}
-          onSetRights={onSetRights}
-          emptyHint="Finished uploads and ingested sources for this account queue here for approval before publish."
+          onDelete={onDeleteContent}
+          emptyHint="Ingested sources and pre-pipeline content for this account queue here. Scheduled packages for publish approval appear on Review Queue."
         />
       </section>
 

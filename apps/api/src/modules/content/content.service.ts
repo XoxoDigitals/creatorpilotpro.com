@@ -17,6 +17,88 @@ import {
 } from './content.view';
 import type { CreateContentDto } from './dto/content.dto';
 
+const pipelineItemInclude = {
+  assets: {
+    where: { kind: { in: ['FINAL', 'ORIGINAL', 'THUMBNAIL'] } },
+    select: { kind: true, localPath: true, driveFileId: true },
+  },
+  publishTargets: {
+    select: { accountId: true, account: { select: { platform: true } } },
+  },
+  idea: { select: { accountId: true, account: { select: { platform: true } } } },
+  sourceVideo: {
+    select: {
+      watchedSource: {
+        select: {
+          targetAccountId: true,
+          targetAccount: { select: { platform: true } },
+        },
+      },
+    },
+  },
+} as const satisfies Prisma.ContentItemInclude;
+
+/** Stored narration option on `currentStep.scriptVariants` (worker + API). */
+type ScriptVariantRow = Record<string, unknown> & {
+  id?: unknown;
+  script?: unknown;
+  englishSummary?: string;
+};
+
+function variantRows(raw: unknown): ScriptVariantRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (r): r is ScriptVariantRow => !!r && typeof r === 'object' && !Array.isArray(r),
+  );
+}
+
+/** Keep `script` in sync with the selected narration option (and optional edit). */
+function applySelectedScript(
+  step: Record<string, unknown>,
+  opts: { selectedScriptId?: string; script?: string; englishSummary?: string | null },
+): void {
+  const variants = variantRows(step.scriptVariants);
+  let selectedId =
+    opts.selectedScriptId?.trim() ||
+    (typeof step.selectedScriptId === 'string' ? step.selectedScriptId : '') ||
+    '';
+  if (opts.selectedScriptId?.trim() && variants.length > 0) {
+    const found = variants.find((v) => v.id === opts.selectedScriptId);
+    if (!found) throw new BadRequestException('Unknown narration option.');
+    selectedId = opts.selectedScriptId.trim();
+  }
+  if (selectedId) step.selectedScriptId = selectedId;
+  if (opts.script != null) {
+    const script = opts.script.trim();
+    step.script = script;
+    const englishSummary =
+      opts.englishSummary === undefined
+        ? undefined
+        : (opts.englishSummary ?? '').trim();
+    if (englishSummary !== undefined) {
+      step.englishSummary = englishSummary;
+    }
+    if (variants.length > 0 && selectedId) {
+      step.scriptVariants = variants.map((v) => {
+        if (v.id !== selectedId) return v;
+        const next: ScriptVariantRow = { ...v, script };
+        if (englishSummary !== undefined) {
+          if (englishSummary) next.englishSummary = englishSummary;
+          else delete next.englishSummary;
+        }
+        return next;
+      });
+    }
+  } else if (selectedId && variants.length > 0) {
+    const found = variants.find((v) => v.id === selectedId);
+    const script = typeof found?.script === 'string' ? found.script.trim() : '';
+    if (script) step.script = script;
+    const summary =
+      typeof found?.englishSummary === 'string' ? found.englishSummary.trim() : '';
+    step.englishSummary = summary;
+  }
+}
+
 @Injectable()
 export class ContentService {
   constructor(
@@ -52,7 +134,10 @@ export class ContentService {
     return toContentItemView(item);
   }
 
-  async listReview(accountId?: string): Promise<ReviewItemView[]> {
+  async listReview(
+    accountId?: string,
+    opts?: { excludeScheduled?: boolean },
+  ): Promise<ReviewItemView[]> {
     const where: Prisma.ContentItemWhereInput = {
       deletedAt: null,
       status: 'REVIEW_PENDING',
@@ -66,6 +151,15 @@ export class ContentService {
               { idea: { accountId } },
               { sourceVideo: { watchedSource: { targetAccountId: accountId } } },
             ],
+          }
+        : {}),
+      // Schedule-approval packages (held publish slot) belong on the global Review
+      // Queue only — account Review is for pre-pipeline rights/content gates.
+      ...(opts?.excludeScheduled
+        ? {
+            NOT: {
+              publishTargets: { some: { scheduledAt: { not: null } } },
+            },
           }
         : {}),
     };
@@ -292,6 +386,77 @@ export class ContentService {
   }
 
   /**
+   * Re-run narration from existing analysis (cache-busted). Keeps the video
+   * analysis; clears the previous script so TTS/render will follow the new copy.
+   */
+  async regenerateScript(id: string): Promise<ContentItemView> {
+    const item = await this.prisma.client.contentItem.findFirst({
+      where: { id, deletedAt: null },
+      select: { status: true, currentStep: true },
+    });
+    if (!item) throw new NotFoundException('Content item not found.');
+    const step = { ...((item.currentStep ?? {}) as Record<string, unknown>) };
+    if (step.analysis == null) {
+      throw new BadRequestException(
+        'No video analysis yet — approve the item so Analyze can run before regenerating the script.',
+      );
+    }
+    assertTransition(item.status, 'ANALYZING');
+    delete step.script;
+    delete step.narration;
+    delete step.scriptVariants;
+    delete step.selectedScriptId;
+    step.scriptNonce = Date.now();
+    const updated = await this.prisma.client.contentItem.update({
+      where: { id },
+      data: {
+        status: 'ANALYZING',
+        statusReason: null,
+        currentStep: step as Prisma.InputJsonValue,
+      },
+      include: { assets: true },
+    });
+    await this.queue.enqueueAi(id, 'narration');
+    return toContentItemView(updated);
+  }
+
+  /**
+   * Re-synthesize voiceover from the current script, then re-render.
+   */
+  async regenerateVoiceover(id: string): Promise<ContentItemView> {
+    const item = await this.prisma.client.contentItem.findFirst({
+      where: { id, deletedAt: null },
+      select: { status: true, currentStep: true },
+    });
+    if (!item) throw new NotFoundException('Content item not found.');
+    const step = (item.currentStep ?? {}) as Record<string, unknown>;
+    if (step.script == null || (typeof step.script === 'string' && !step.script.trim())) {
+      throw new BadRequestException('No script to synthesize — generate or approve a script first.');
+    }
+    return this.transition(id, 'SCRIPT_APPROVED');
+  }
+
+  async softDelete(id: string): Promise<{ id: string; deleted: true }> {
+    const item = await this.prisma.client.contentItem.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, status: true },
+    });
+    if (!item) throw new NotFoundException('Content item not found.');
+    if (item.status === 'PUBLISHING') {
+      throw new BadRequestException('Cannot delete a video while it is publishing.');
+    }
+    await this.prisma.client.publishTarget.updateMany({
+      where: { contentItemId: id, status: { in: ['PENDING', 'SCHEDULED'] } },
+      data: { status: 'DRAFT' },
+    });
+    await this.prisma.client.contentItem.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+    return { id, deleted: true };
+  }
+
+  /**
    * Persist owner edits to AI publish metadata (title / description / tags)
    * on `currentStep.metadata` while the item is Metadata ready.
    */
@@ -372,6 +537,121 @@ export class ContentService {
   }
 
   /**
+   * Persist an owner/reviewer edit of the narration script on `currentStep.script`,
+   * and/or switch the selected variant. Does not re-run TTS; after SCRIPT_READY
+   * the reviewer still approves, or they click Regenerate voiceover later.
+   */
+  async updateScript(
+    id: string,
+    dto: { script?: string; selectedScriptId?: string },
+  ): Promise<AiPipelineItemView> {
+    const item = await this.findPipelineItem(id);
+    this.assertScriptEditable(item.status);
+    const step = { ...((item.currentStep ?? {}) as Record<string, unknown>) };
+
+    let englishSummary: string | null | undefined = undefined;
+    if (dto.script != null) {
+      const language = await this.resolveAccountLanguage(item);
+      try {
+        englishSummary = await this.ai.summarizeNarrationInEnglish({
+          script: dto.script,
+          language,
+        });
+      } catch {
+        englishSummary = '';
+      }
+    }
+
+    applySelectedScript(step, {
+      selectedScriptId: dto.selectedScriptId,
+      script: dto.script,
+      englishSummary,
+    });
+    if (typeof step.script !== 'string' || !step.script.trim()) {
+      throw new BadRequestException('Narration script cannot be empty.');
+    }
+    const updated = await this.prisma.client.contentItem.update({
+      where: { id },
+      data: { currentStep: step as Prisma.InputJsonValue },
+      include: pipelineItemInclude,
+    });
+    return toAiPipelineItemView(updated);
+  }
+
+  /**
+   * AI rewrite of the current (or provided draft) narration. Returns the new
+   * script without persisting — the UI PATCHes `/script` on accept.
+   */
+  async rewriteScript(
+    id: string,
+    dto: { instruction: string; script?: string },
+  ): Promise<{ script: string }> {
+    const item = await this.findPipelineItem(id);
+    this.assertScriptEditable(item.status);
+    const step = (item.currentStep ?? {}) as Record<string, unknown>;
+    const stored =
+      typeof step.script === 'string'
+        ? step.script
+        : step.script != null
+          ? JSON.stringify(step.script)
+          : '';
+    const current = (dto.script ?? stored).trim();
+    if (!current) {
+      throw new BadRequestException('No narration script to rewrite.');
+    }
+    const analysis =
+      step.analysis == null
+        ? null
+        : typeof step.analysis === 'string'
+          ? step.analysis
+          : JSON.stringify(step.analysis);
+    const language = await this.resolveAccountLanguage(item);
+    const script = await this.ai.rewriteNarrationScript({
+      script: current,
+      instruction: dto.instruction.trim(),
+      analysis,
+      language,
+    });
+    return { script };
+  }
+
+  private assertScriptEditable(status: ContentItemStatus): void {
+    const allowed: ContentItemStatus[] = ['SCRIPT_READY', 'SCRIPT_APPROVED', 'TTS_DONE', 'FAILED'];
+    if (!allowed.includes(status)) {
+      throw new BadRequestException(
+        'The narration script can only be edited while Script ready, after approval, or after a failed later step.',
+      );
+    }
+  }
+
+  private async findPipelineItem(id: string) {
+    const item = await this.prisma.client.contentItem.findFirst({
+      where: { id, deletedAt: null },
+      include: pipelineItemInclude,
+    });
+    if (!item) throw new NotFoundException('Content item not found.');
+    return item;
+  }
+
+  private async resolveAccountLanguage(item: {
+    publishTargets?: { accountId: string }[];
+    idea?: { accountId?: string } | null;
+    sourceVideo?: { watchedSource?: { targetAccountId: string | null } | null } | null;
+  }): Promise<string> {
+    const accountId =
+      item.publishTargets?.[0]?.accountId ??
+      item.sourceVideo?.watchedSource?.targetAccountId ??
+      item.idea?.accountId ??
+      null;
+    if (!accountId) return 'en';
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId },
+      select: { language: true },
+    });
+    return profile?.language?.trim() || 'en';
+  }
+
+  /**
    * Retry TTS after a FAILED voiceover step (Incident center / docs/05 §6).
    * Restores SCRIPT_APPROVED so the TTS worker accepts the job.
    */
@@ -401,10 +681,14 @@ export class ContentService {
 
   /**
    * Look up the streamable video for a content item. Prefers FINAL (trimmed
-   * & normalized) and falls back to ORIGINAL. Returns either a local path to
-   * stream or a Drive embed URL when the asset lives only in Drive.
+   * & normalized) and falls back to ORIGINAL. Pass `prefer` to pin one kind
+   * (AI pipeline original vs rendered previews). Returns either a local path
+   * to stream or a Drive embed URL when the asset lives only in Drive.
    */
-  async getPlayableAsset(id: string): Promise<{
+  async getPlayableAsset(
+    id: string,
+    prefer?: 'FINAL' | 'ORIGINAL',
+  ): Promise<{
     path?: string;
     bytes?: number;
     mimeType: string;
@@ -418,9 +702,13 @@ export class ContentService {
       },
     });
     if (!item) throw new NotFoundException('Content item not found.');
-    const asset =
-      item.assets.find((a) => a.kind === 'FINAL' && (a.localPath || a.driveFileId)) ??
-      item.assets.find((a) => a.kind === 'ORIGINAL' && (a.localPath || a.driveFileId));
+    const order: Array<'FINAL' | 'ORIGINAL'> =
+      prefer === 'ORIGINAL' ? ['ORIGINAL'] : prefer === 'FINAL' ? ['FINAL'] : ['FINAL', 'ORIGINAL'];
+    const asset = order
+      .map((kind) =>
+        item.assets.find((a) => a.kind === kind && (a.localPath || a.driveFileId)),
+      )
+      .find((a): a is NonNullable<typeof a> => !!a);
     if (!asset) return null;
 
     if (asset.localPath) {
@@ -508,6 +796,19 @@ export class ContentService {
   }
 
   async approveScript(id: string): Promise<ContentItemView> {
+    const item = await this.prisma.client.contentItem.findFirst({
+      where: { id, deletedAt: null },
+      select: { currentStep: true },
+    });
+    if (!item) throw new NotFoundException('Content item not found.');
+    const step = { ...((item.currentStep ?? {}) as Record<string, unknown>) };
+    applySelectedScript(step, {});
+    if (typeof step.script === 'string' && step.script.trim()) {
+      await this.prisma.client.contentItem.update({
+        where: { id },
+        data: { currentStep: step as Prisma.InputJsonValue },
+      });
+    }
     return this.transition(id, 'SCRIPT_APPROVED');
   }
 

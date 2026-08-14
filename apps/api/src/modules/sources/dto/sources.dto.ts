@@ -1,9 +1,14 @@
 import { z } from 'zod';
+import { extractFirstVideoUrl, extractVideoUrls } from '@scp/shared';
 
 /** Create a watched source (docs/04 §1). GENERIC_URL is used for bulk-import batches. */
 export const createSourceSchema = z.object({
   type: z.enum(['KUAISHOU_PROFILE', 'GENERIC_URL']),
-  url: z.string().min(1).max(2000),
+  url: z
+    .string()
+    .min(1)
+    .max(2000)
+    .transform((s) => extractFirstVideoUrl(s) ?? s.trim()),
   label: z.string().max(200).optional(),
   checkIntervalMin: z.number().int().min(15).max(10_080).optional(),
   trimStartMs: z.number().int().min(0).max(60_000).optional(),
@@ -30,7 +35,12 @@ export type PatchSourceDto = z.infer<typeof patchSourceSchema>;
  * (a "batch") and a SourceVideo per URL, then enqueues each for download.
  */
 export const bulkImportSchema = z.object({
-  urls: z.array(z.string().min(1).max(2000)).min(1).max(500),
+  urls: z
+    .array(z.string().min(1).max(50_000))
+    .min(1)
+    .max(500)
+    .transform((items) => [...new Set(items.flatMap((s) => extractVideoUrls(s)))])
+    .pipe(z.array(z.string().min(1).max(2000)).min(1).max(500)),
   label: z.string().max(200).optional(),
   targetAccountId: z.string().min(1).optional(),
 });

@@ -9,6 +9,9 @@ describe('content state machine', () => {
     expect(canTransition('APPROVED', 'SCHEDULED')).toBe(true);
     expect(canTransition('METADATA_READY', 'REVIEW_PENDING')).toBe(true);
     expect(canTransition('RENDERED', 'REVIEW_PENDING')).toBe(true);
+    expect(canTransition('SCRIPT_READY', 'ANALYZING')).toBe(true);
+    expect(canTransition('TTS_DONE', 'SCRIPT_APPROVED')).toBe(true);
+    expect(canTransition('METADATA_READY', 'ANALYZING')).toBe(true);
     expect(canTransition('SCHEDULED', 'REVIEW_PENDING')).toBe(true);
     expect(canTransition('SCHEDULED', 'PUBLISHING')).toBe(true);
     expect(canTransition('PUBLISHING', 'PUBLISHED')).toBe(true);

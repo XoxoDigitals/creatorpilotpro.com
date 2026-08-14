@@ -27,11 +27,13 @@ import {
   generateIdeasSchema,
   generatePackageSchema,
   patchIdeaSchema,
+  regeneratePackageSchema,
   rejectIdeaSchema,
   uploadIdeaVideoSchema,
   type GenerateIdeasDto,
   type GeneratePackageDto,
   type PatchIdeaDto,
+  type RegeneratePackageDto,
   type RejectIdeaDto,
   type UploadIdeaVideoDto,
 } from './dto/ideas.dto';
@@ -125,6 +127,16 @@ export class IdeasController {
   @Audit('idea.package.retry', 'Idea')
   retryPackage(@Param('id') id: string): Promise<IdeaView> {
     return this.ideas.retryPackage(id);
+  }
+
+  @Post('ideas/:id/package/regenerate')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('idea.package.regenerate', 'Idea')
+  regeneratePackage(
+    @Param('id') id: string,
+    @Body(new ZodBody(regeneratePackageSchema)) body: RegeneratePackageDto,
+  ): Promise<IdeaView> {
+    return this.ideas.regeneratePackageStage(id, body.stage);
   }
 
   @Get('ideas/:id/package')

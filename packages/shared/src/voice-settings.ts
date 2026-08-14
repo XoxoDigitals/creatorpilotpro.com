@@ -3,6 +3,7 @@
  * Edge Neural (edge-tts) is the product default; other providers remain fallbacks.
  */
 import { z } from 'zod';
+import { resolveContentLanguage } from './content-languages.js';
 
 export const TTS_PROVIDERS = ['edge', 'kokoro', 'gemini', 'openai'] as const;
 export type TtsProviderId = (typeof TTS_PROVIDERS)[number];
@@ -36,26 +37,12 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
 
 /** Locale-aware Edge default when the channel language is known. */
 export function defaultVoiceForLanguage(language?: string | null): VoiceSettings {
-  const lang = (language ?? 'en').toLowerCase().split(/[-_]/)[0] ?? 'en';
-  const map: Record<string, { locale: string; voiceId: string }> = {
-    en: { locale: 'en-US', voiceId: 'en-US-AriaNeural' },
-    es: { locale: 'es-ES', voiceId: 'es-ES-ElviraNeural' },
-    ur: { locale: 'ur-PK', voiceId: 'ur-PK-UzmaNeural' },
-    hi: { locale: 'hi-IN', voiceId: 'hi-IN-SwaraNeural' },
-    fr: { locale: 'fr-FR', voiceId: 'fr-FR-DeniseNeural' },
-    de: { locale: 'de-DE', voiceId: 'de-DE-KatjaNeural' },
-    pt: { locale: 'pt-BR', voiceId: 'pt-BR-FranciscaNeural' },
-    ar: { locale: 'ar-SA', voiceId: 'ar-SA-ZariyahNeural' },
-    zh: { locale: 'zh-CN', voiceId: 'zh-CN-XiaoxiaoNeural' },
-    ja: { locale: 'ja-JP', voiceId: 'ja-JP-NanamiNeural' },
-    ko: { locale: 'ko-KR', voiceId: 'ko-KR-SunHiNeural' },
-  };
-  const hit = map[lang] ?? map.en!;
+  const hit = resolveContentLanguage(language);
   return {
     provider: 'edge',
     voiceId: hit.voiceId,
     locale: hit.locale,
-    language: lang,
+    language: hit.code,
   };
 }
 

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   NotFoundException,
   Param,
@@ -27,9 +28,13 @@ import {
   createContentSchema,
   rejectContentSchema,
   updatePublishMetadataSchema,
+  updateScriptSchema,
+  rewriteScriptSchema,
   type CreateContentDto,
   type RejectContentDto,
   type UpdatePublishMetadataDto,
+  type UpdateScriptDto,
+  type RewriteScriptDto,
 } from './dto/content.dto';
 
 /**
@@ -55,8 +60,13 @@ export class ContentController {
   }
 
   @Get('review')
-  review(@Query('accountId') accountId?: string): Promise<ReviewItemView[]> {
-    return this.content.listReview(accountId);
+  review(
+    @Query('accountId') accountId?: string,
+    @Query('excludeScheduled') excludeScheduled?: string,
+  ): Promise<ReviewItemView[]> {
+    return this.content.listReview(accountId, {
+      excludeScheduled: excludeScheduled === '1' || excludeScheduled === 'true',
+    });
   }
 
   @Get('ai-pipeline')
@@ -104,6 +114,27 @@ export class ContentController {
     return this.content.regenerateMetadata(id);
   }
 
+  @Post(':id/regenerate-script')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.regenerate_script', 'ContentItem')
+  regenerateScript(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.regenerateScript(id);
+  }
+
+  @Post(':id/regenerate-voiceover')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.regenerate_voiceover', 'ContentItem')
+  regenerateVoiceover(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.regenerateVoiceover(id);
+  }
+
+  @Delete(':id')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('content.delete', 'ContentItem')
+  remove(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
+    return this.content.softDelete(id);
+  }
+
   @Patch(':id/publish-metadata')
   @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.update_publish_metadata', 'ContentItem')
@@ -114,6 +145,26 @@ export class ContentController {
     return this.content.updatePublishMetadata(id, body);
   }
 
+  @Patch(':id/script')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.update_script', 'ContentItem')
+  updateScript(
+    @Param('id') id: string,
+    @Body(new ZodBody(updateScriptSchema)) body: UpdateScriptDto,
+  ): Promise<AiPipelineItemView> {
+    return this.content.updateScript(id, body);
+  }
+
+  @Post(':id/rewrite-script')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.rewrite_script', 'ContentItem')
+  rewriteScript(
+    @Param('id') id: string,
+    @Body(new ZodBody(rewriteScriptSchema)) body: RewriteScriptDto,
+  ): Promise<{ script: string }> {
+    return this.content.rewriteScript(id, body);
+  }
+
   @Post(':id/translate-title')
   @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.translate_title', 'ContentItem')
@@ -122,8 +173,9 @@ export class ContentController {
   }
 
   /**
-   * Stream the item's video (FINAL, or ORIGINAL as fallback) for inline playback,
-   * or its stored thumbnail image with `?kind=thumbnail`.
+   * Stream the item's video (FINAL, or ORIGINAL as fallback) for inline playback.
+   * `?kind=thumbnail` streams the stored thumbnail; `?kind=original` / `?kind=final`
+   * pin a specific video asset (AI pipeline original vs rendered previews).
    *
    * When the asset lives only on Google Drive, redirect to the Drive preview
    * embed URL (iframe-friendly) instead of streaming from disk.
@@ -134,10 +186,7 @@ export class ContentController {
     @Res({ passthrough: true }) reply: FastifyReply,
     @Query('kind') kind?: string,
   ): Promise<StreamableFile | void> {
-    const info =
-      kind?.toUpperCase() === 'THUMBNAIL'
-        ? await this.content.getThumbnailAsset(id)
-        : await this.content.getPlayableAsset(id);
+    const info = await this.resolveMedia(id, kind);
     if (!info) throw new NotFoundException('No playable asset for this item.');
     if (!info.path && info.embedUrl) {
       void reply.redirect(info.embedUrl, 302);
@@ -166,15 +215,9 @@ export class ContentController {
     streamUrl: string;
     mimeType: string;
   }> {
-    const info =
-      kind?.toUpperCase() === 'THUMBNAIL'
-        ? await this.content.getThumbnailAsset(id)
-        : await this.content.getPlayableAsset(id);
+    const info = await this.resolveMedia(id, kind);
     if (!info) throw new NotFoundException('No playable asset for this item.');
-    const streamUrl =
-      kind?.toUpperCase() === 'THUMBNAIL'
-        ? `/api/v1/content/${encodeURIComponent(id)}/media?kind=thumbnail`
-        : `/api/v1/content/${encodeURIComponent(id)}/media`;
+    const streamUrl = mediaStreamPath(id, kind);
     if (info.embedUrl && !info.path) {
       return { mode: 'embed', embedUrl: info.embedUrl, streamUrl, mimeType: info.mimeType };
     }
@@ -184,6 +227,13 @@ export class ContentController {
       streamUrl,
       mimeType: info.mimeType,
     };
+  }
+
+  private resolveMedia(id: string, kind?: string) {
+    const k = kind?.toUpperCase();
+    if (k === 'THUMBNAIL') return this.content.getThumbnailAsset(id);
+    if (k === 'ORIGINAL' || k === 'FINAL') return this.content.getPlayableAsset(id, k);
+    return this.content.getPlayableAsset(id);
   }
 
   @Post(':id/reject')
@@ -216,4 +266,11 @@ export class ContentController {
   chooseSuggestion(@Param('suggestionId') suggestionId: string) {
     return this.content.chooseSuggestion(suggestionId);
   }
+}
+
+function mediaStreamPath(id: string, kind?: string): string {
+  const k = kind?.toLowerCase();
+  const qs =
+    k === 'thumbnail' || k === 'original' || k === 'final' ? `?kind=${k}` : '';
+  return `/api/v1/content/${encodeURIComponent(id)}/media${qs}`;
 }

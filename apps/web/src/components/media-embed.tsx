@@ -11,6 +11,7 @@ export function MediaEmbed({
   className,
   title,
   poster,
+  autoPlay = false,
 }: {
   embedUrl?: string | null;
   streamUrl: string;
@@ -18,6 +19,8 @@ export function MediaEmbed({
   className?: string;
   title?: string;
   poster?: string;
+  /** Previews stay paused until the user hits play. */
+  autoPlay?: boolean;
 }) {
   if (embedUrl) {
     return (
@@ -25,7 +28,7 @@ export function MediaEmbed({
         title={title ?? (kind === 'video' ? 'Video preview' : 'Image preview')}
         src={embedUrl}
         className={className ?? 'aspect-video w-full max-w-md rounded-md border border-zinc-200 bg-black'}
-        allow="autoplay; encrypted-media"
+        allow={autoPlay ? 'autoplay; encrypted-media' : 'encrypted-media'}
         allowFullScreen
         referrerPolicy="strict-origin-when-cross-origin"
       />
@@ -41,7 +44,9 @@ export function MediaEmbed({
     <video
       className={className ?? 'w-full max-w-md rounded-md bg-black shadow-sm'}
       controls
-      autoPlay
+      playsInline
+      preload="metadata"
+      autoPlay={autoPlay}
       poster={poster}
       src={streamUrl}
     />

@@ -445,6 +445,106 @@ export class IdeasService {
     return toIdeaView(updated);
   }
 
+  /**
+   * Force re-run of one package stage even when the package is already READY.
+   * Script wipes the brief and regenerates; voiceover/visuals keep prior artifacts
+   * that the later stages do not need to rebuild from scratch.
+   */
+  async regeneratePackageStage(
+    id: string,
+    stage: 'script' | 'voiceover' | 'visuals',
+  ): Promise<IdeaView> {
+    const idea = await this.findIdeaOrThrow(id);
+    if (idea.status === 'REJECTED') {
+      throw new BadRequestException('Rejected ideas cannot be regenerated.');
+    }
+    if (idea.status !== 'APPROVED' && idea.status !== 'IN_PRODUCTION' && idea.status !== 'UPLOADED') {
+      throw new BadRequestException(
+        `Idea is ${idea.status}; approve it before regenerating package stages.`,
+      );
+    }
+    if (idea.packageStatus === 'GENERATING') {
+      throw new BadRequestException('Package generation is already in progress.');
+    }
+
+    const blocker = await this.findBlockingActiveIdea(idea.accountId, id);
+    if (blocker) {
+      throw new BadRequestException(
+        `Finish the current AI idea first — upload final video and thumbnail for "${blocker.title}" before regenerating another package.`,
+      );
+    }
+
+    if (stage === 'script') {
+      const updated = await this.prisma.client.idea.update({
+        where: { id },
+        data: {
+          packageStatus: 'GENERATING',
+          status: idea.status === 'UPLOADED' ? 'UPLOADED' : 'APPROVED',
+        },
+        include: IDEA_LIST_INCLUDE,
+      });
+      await this.prisma.client.productionBrief.deleteMany({ where: { ideaId: id } });
+      await this.queue.enqueueBriefGeneration(id);
+      return toIdeaView(updated);
+    }
+
+    const brief = await this.prisma.client.productionBrief.findUnique({
+      where: { ideaId: id },
+      select: {
+        script: true,
+        voiceoverStatus: true,
+        voiceoverLocalPath: true,
+        timedTranscript: true,
+      },
+    });
+    if (!brief) {
+      throw new BadRequestException('No creative package yet — generate the package first.');
+    }
+
+    if (stage === 'voiceover') {
+      if (!brief.script?.trim()) {
+        throw new BadRequestException('No narration script to synthesize — regenerate the script first.');
+      }
+      await this.prisma.client.idea.update({
+        where: { id },
+        data: {
+          packageStatus: 'GENERATING',
+          status: idea.status === 'UPLOADED' ? 'UPLOADED' : 'APPROVED',
+        },
+      });
+      await this.prisma.client.productionBrief.update({
+        where: { ideaId: id },
+        data: {
+          packageStage: 'VOICE',
+          packageStageError: null,
+          voiceoverStatus: 'GENERATING',
+        },
+      });
+      await this.queue.enqueueIdeaTts(id);
+    } else {
+      const timings = Array.isArray(brief.timedTranscript) ? brief.timedTranscript : [];
+      if (timings.length === 0) {
+        throw new BadRequestException(
+          'No timed transcript yet — wait for voiceover (or regenerate it) before visuals.',
+        );
+      }
+      await this.prisma.client.idea.update({
+        where: { id },
+        data: {
+          packageStatus: 'GENERATING',
+          status: idea.status === 'UPLOADED' ? 'UPLOADED' : 'APPROVED',
+        },
+      });
+      await this.prisma.client.productionBrief.update({
+        where: { ideaId: id },
+        data: { packageStage: 'VISUALS', packageStageError: null },
+      });
+      await this.queue.enqueueIdeaVisuals(id);
+    }
+
+    return toIdeaView(await this.findIdeaOrThrow(id));
+  }
+
   async getPackage(ideaId: string): Promise<ProductionBriefView> {
     const brief = await this.prisma.client.productionBrief.findUnique({
       where: { ideaId },

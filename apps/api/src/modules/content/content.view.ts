@@ -60,6 +60,17 @@ export interface ReviewItemView {
   rightsNote: string | null;
 }
 
+export interface ScriptVariantView {
+  id: string;
+  label: string;
+  style: string;
+  hook: string;
+  script: string;
+  /** Owner-facing English summary when spoken script is non-English. */
+  englishSummary: string;
+  estimatedSpokenSec: number | null;
+}
+
 /**
  * AI-pipeline projection — items that have cleared Review and are moving through
  * the AI/TTS/render chain. Exposes `currentStep.analysis` / `currentStep.script`
@@ -77,6 +88,14 @@ export interface AiPipelineItemView {
   updatedAt: string;
   analysis: string | null;
   script: string | null;
+  /** Three narration options (explainer / hooky / documentary); empty if legacy single script. */
+  scriptVariants: ScriptVariantView[];
+  selectedScriptId: string | null;
+  /**
+   * English summary for the selected (or sole) narration script when the channel
+   * output language is not English. Empty string when English or unavailable.
+   */
+  englishSummary: string;
   /** Raw JSON string of currentStep.metadata (legacy / debugging). */
   metadata: string | null;
   /** Parsed publish title from AI metadata (null until METADATA_READY). */
@@ -85,9 +104,60 @@ export interface AiPipelineItemView {
   publishTags: string[];
   /** True when a FINAL (or ORIGINAL fallback) video asset exists for preview. */
   hasFinalVideo: boolean;
+  /** True when the source/hot-tier ORIGINAL asset exists (pre-render preview). */
+  hasOriginalVideo: boolean;
   hasThumbnail: boolean;
   videoEmbedUrl: string | null;
+  /** Drive preview for the ORIGINAL source asset, when archived. */
+  originalVideoEmbedUrl: string | null;
   thumbnailEmbedUrl: string | null;
+}
+
+function parseScriptVariants(step: Record<string, unknown>): {
+  variants: ScriptVariantView[];
+  selectedScriptId: string | null;
+} {
+  const labels: Record<string, string> = {
+    explainer: 'Explainer',
+    styleB: 'Hooky / hype',
+    styleC: 'Documentary',
+  };
+  const raw = step.scriptVariants;
+  const variants: ScriptVariantView[] = [];
+  if (Array.isArray(raw)) {
+    for (const row of raw) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      const o = row as Record<string, unknown>;
+      const script = typeof o.script === 'string' ? o.script.trim() : '';
+      if (!script) continue;
+      const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : `option-${variants.length + 1}`;
+      const style = typeof o.style === 'string' ? o.style.trim() : '';
+      const label =
+        typeof o.label === 'string' && o.label.trim()
+          ? o.label.trim()
+          : labels[id] || style || id;
+      variants.push({
+        id,
+        label,
+        style: style || id,
+        hook: typeof o.hook === 'string' ? o.hook : '',
+        script,
+        englishSummary:
+          typeof o.englishSummary === 'string' ? o.englishSummary.trim() : '',
+        estimatedSpokenSec:
+          typeof o.estimatedSpokenSec === 'number' && Number.isFinite(o.estimatedSpokenSec)
+            ? o.estimatedSpokenSec
+            : null,
+      });
+    }
+  }
+  const selectedRaw = typeof step.selectedScriptId === 'string' ? step.selectedScriptId : null;
+  const selectedScriptId =
+    (selectedRaw && variants.some((v) => v.id === selectedRaw) ? selectedRaw : null) ??
+    variants.find((v) => v.id === 'explainer')?.id ??
+    variants[0]?.id ??
+    null;
+  return { variants, selectedScriptId };
 }
 
 function parsePublishMetadata(raw: unknown): {
@@ -162,6 +232,13 @@ export function toAiPipelineItemView(
     c.idea?.account?.platform ??
     null;
   const assets = c.assets ?? [];
+  const variants = parseScriptVariants(step);
+  const selectedVariant =
+    variants.variants.find((v) => v.id === variants.selectedScriptId) ??
+    variants.variants[0] ??
+    null;
+  const stepSummary =
+    typeof step.englishSummary === 'string' ? step.englishSummary.trim() : '';
   return {
     id: c.id,
     accountId,
@@ -172,6 +249,9 @@ export function toAiPipelineItemView(
     updatedAt: c.updatedAt.toISOString(),
     analysis: asText(step.analysis),
     script: asText(step.script),
+    scriptVariants: variants.variants,
+    selectedScriptId: variants.selectedScriptId,
+    englishSummary: selectedVariant?.englishSummary?.trim() || stepSummary || '',
     metadata: asText(step.metadata),
     publishTitle: publish.title,
     publishDescription: publish.description,
@@ -179,8 +259,10 @@ export function toAiPipelineItemView(
     hasFinalVideo: assets.some(
       (a) => (a.kind === 'FINAL' || a.kind === 'ORIGINAL') && assetHasMedia(a),
     ),
+    hasOriginalVideo: assets.some((a) => a.kind === 'ORIGINAL' && assetHasMedia(a)),
     hasThumbnail: assets.some((a) => a.kind === 'THUMBNAIL' && assetHasMedia(a)),
     videoEmbedUrl: pickEmbedUrl(assets, ['FINAL', 'ORIGINAL']),
+    originalVideoEmbedUrl: pickEmbedUrl(assets, ['ORIGINAL']),
     thumbnailEmbedUrl: pickEmbedUrl(assets, ['THUMBNAIL']),
   };
 }

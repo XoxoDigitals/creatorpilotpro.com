@@ -478,6 +478,7 @@ export const ideas: Idea[] = [
       storySummary: 'A simple three-step ritual for resetting focus.',
       script: 'Step 1: Ground. Step 2: Breathe. Step 3: Set intention.',
       narrationScript: 'Step 1: Ground. Step 2: Breathe. Step 3: Set intention.',
+      englishSummary: '',
       presentationMode: 'voiceover',
       sceneBreakdown: [],
       characterPrompts: [],
@@ -897,8 +898,16 @@ export function getPosts(accountId?: string): Post[] {
   return accountId ? posts.filter((p) => p.accountId === accountId) : posts;
 }
 
-export function getReviewItems(accountId?: string): ReviewItem[] {
-  return accountId ? reviewItems.filter((r) => r.accountId === accountId) : reviewItems;
+export function getReviewItems(
+  accountId?: string,
+  opts?: { excludeScheduled?: boolean },
+): ReviewItem[] {
+  let items = accountId ? reviewItems.filter((r) => r.accountId === accountId) : reviewItems;
+  // Mirror API excludeScheduled: schedule-approval rows stay on global Review Queue.
+  if (opts?.excludeScheduled) {
+    items = items.filter((r) => !r.scheduledAt);
+  }
+  return items;
 }
 
 export function getIdeas(accountId?: string): Idea[] {

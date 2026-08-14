@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { copyFile } from 'node:fs/promises';
 import { resolveFfmpegBinary } from '@scp/shared/bin';
 
 /**
@@ -19,6 +20,31 @@ export interface RunResult {
 }
 
 export type CommandRunner = (cmd: string, args: string[]) => Promise<RunResult>;
+
+/** Windows often reports negative ffmpeg codes as unsigned (e.g. -34 → 4294967262). */
+export function signedExitCode(code: number): number {
+  return code | 0;
+}
+
+/**
+ * Prefer ffmpeg `Error` / filter-parse lines over the version banner that
+ * otherwise fills the first 300 chars of stderr.
+ */
+export function summarizeFfmpegStderr(stderr: string, maxLen = 400): string {
+  const lines = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const banner = /^(ffmpeg version|built with |configuration:|lib[a-z]+\s+\d)/i;
+  const interesting = lines.filter(
+    (l) => !banner.test(l) && /error|invalid|failed|no such|out of range|cannot|not found|unknown filter/i.test(l),
+  );
+  const fallback = lines.filter((l) => !banner.test(l)).slice(-6);
+  const picked = (interesting.length > 0 ? interesting : fallback).join(' | ');
+  const text = picked || stderr.trim();
+  return text.length <= maxLen ? text : `${text.slice(0, maxLen)}…`;
+}
+
+function ffmpegFailureMessage(prefix: string, code: number, stderr: string): string {
+  return `${prefix} (${signedExitCode(code)}): ${summarizeFfmpegStderr(stderr)}`;
+}
 
 /** Default runner: spawn the process and buffer stdio. Rejects on ENOENT. */
 export const spawnRunner: CommandRunner = (cmd, args) =>
@@ -50,6 +76,202 @@ export interface TrimNormalizeOptions {
 export const DHASH_FRAME_WIDTH = 9;
 export const DHASH_FRAME_HEIGHT = 8;
 
+/**
+ * Broadcast-style VO polish (high-pass rumble, mild presence EQ, light
+ * compression). Applied after Edge TTS and again at the render mix so a
+ * raw VO asset never hits the bed unprocessed. Mix loudnorm runs after.
+ */
+export const VOICEOVER_MIX_ENHANCE_AF =
+  'highpass=f=70,equalizer=f=250:t=q:w=1:g=-1.5,equalizer=f=3200:t=q:w=1:g=1.5,acompressor=threshold=-18dB:ratio=2.5:attack=15:release=100';
+
+/** Full TTS/render enhance chain: mix polish + EBU-ish loudnorm. */
+export const VOICEOVER_ENHANCE_AF = `${VOICEOVER_MIX_ENHANCE_AF},loudnorm=I=-16:TP=-1:LRA=7`;
+
+/** VO ~-1.4 dB vs unity — clearly dominant over a quiet bed. */
+export const VO_MIX_VOICE_GAIN = 0.85;
+/**
+ * Natural / no-dialogue ambience bed after limiter — audible in pauses only.
+ * 0.16 ≈ -16 dB; previous 0.5 still competed with VO on loud source audio.
+ */
+export const VO_MIX_BED_GAIN = 0.16;
+/**
+ * Dialogue / stripped no-vocals bed — keep only faint ambience/music.
+ * Priority is zero audible original speech, not a loud bed.
+ */
+export const VO_MIX_DIALOGUE_BED_GAIN = 0.08;
+/** @deprecated Prefer VO_MIX_DIALOGUE_BED_GAIN — kept as alias for older call sites. */
+export const VO_MIX_DEMUCS_BED_GAIN = VO_MIX_DIALOGUE_BED_GAIN;
+/**
+ * Cap loud beds before duck. Leading loudnorm targets a quiet bed LUFS so
+ * quiet vs screaming source beds land at a similar level (adaptive blend).
+ */
+export const VO_MIX_BED_LOUDNORM = 'loudnorm=I=-28:TP=-2:LRA=12';
+export const VO_MIX_BED_CONTROL =
+  `${VO_MIX_BED_LOUDNORM},acompressor=threshold=-18dB:ratio=4.5:attack=8:release=160:makeup=1,alimiter=limit=0.38:attack=5:release=50`;
+/**
+ * Sidechain duck under speech (~15 dB), fast enough that VO stays on top,
+ * slow enough that the bed returns in pauses (not a mute).
+ * `knee` must be in [1, 8] — ffmpeg rejects 10 as "Result too large" (exit -34).
+ */
+export const VO_MIX_SIDECHAIN =
+  'sidechaincompress=threshold=0.05:ratio=6:attack=12:release=180:makeup=1:knee=6';
+/**
+ * Harder duck for dialogue beds: residual speech in Demucs/karaoke stems must
+ * collapse under VO (~20 dB) rather than competing in gaps.
+ */
+export const VO_MIX_DIALOGUE_SIDECHAIN =
+  'sidechaincompress=threshold=0.04:ratio=12:attack=5:release=140:makeup=1:knee=6';
+
+/**
+ * Hard-mute bed after the voiceover ends so a short VO on a long video does
+ * not leave original ambience playing alone for the remaining minutes.
+ */
+export function muteAfterVoAf(voEndSec: number | null | undefined): string | null {
+  if (voEndSec == null || !Number.isFinite(voEndSec) || voEndSec < 0.2) return null;
+  const t = Number(voEndSec.toFixed(3));
+  return `volume=0:enable='gte(t\\,${t})'`;
+}
+
+/**
+ * Aggressive vocal / dialogue strip (ffmpeg fallback when Demucs is absent):
+ * strong mid kill + speech-band cuts + high-ratio gate. Stereo karaoke alone
+ * is too weak for dialogue that is not perfectly center-panned.
+ */
+export const VOCAL_STRIP_AF = [
+  'aformat=channel_layouts=stereo',
+  'stereotools=mlev=0.02',
+  'equalizer=f=800:t=q:w=1.2:g=-20',
+  'equalizer=f=1800:t=q:w=1.4:g=-22',
+  'equalizer=f=3000:t=q:w=1.2:g=-18',
+  'agate=threshold=0.015:ratio=12:attack=5:release=90:makeup=1',
+  'highpass=f=40',
+].join(',');
+
+/**
+ * Residual speech killer applied to Demucs `no_vocals` (and karaoke beds).
+ * Demucs often leaves intelligible dialogue in the instrumental stem.
+ */
+export const DIALOGUE_BED_CLEANUP_AF = [
+  'aformat=channel_layouts=stereo',
+  'equalizer=f=700:t=q:w=1.1:g=-14',
+  'equalizer=f=1600:t=q:w=1.3:g=-18',
+  'equalizer=f=2800:t=q:w=1.2:g=-14',
+  'agate=threshold=0.012:ratio=10:attack=5:release=100:makeup=1',
+  'highpass=f=50',
+  'volume=0.7',
+].join(',');
+
+function bedPrepChain(
+  bedInput: '0:a' | '2:a',
+  bedGain: number,
+  extras: string[],
+): string {
+  const parts = [...extras, VO_MIX_BED_CONTROL, `volume=${bedGain}`].filter(Boolean);
+  return `[${bedInput}]${parts.join(',')}[bg]`;
+}
+
+/**
+ * Filter graph after `enhanceVoiceover`: split VO for sidechain, cap+duck bed
+ * under speech, amix without ffmpeg's default 1/n attenuation (`normalize=0`).
+ * `bedInput` is `0:a` (original video) or `2:a` (Demucs / karaoke no-vocals).
+ * When `voEndSec` is set, the bed is hard-muted after the VO ends.
+ */
+export function voiceoverBedMixFilter(
+  bedInput: '0:a' | '2:a',
+  bedGain: number,
+  sidechain: string = VO_MIX_SIDECHAIN,
+  voEndSec?: number | null,
+): string {
+  const afterVo = muteAfterVoAf(voEndSec);
+  return [
+    `[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`,
+    bedPrepChain(bedInput, bedGain, afterVo ? [afterVo] : []),
+    `[bg][vo_sc]${sidechain}[ducked]`,
+    `[ducked][vo]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]`,
+  ].join(';');
+}
+
+/** Mix VO over a dialogue-stripped bed (very quiet + hard duck). */
+export function voiceoverDialogueBedMixFilter(
+  bedInput: '2:a' = '2:a',
+  voEndSec?: number | null,
+): string {
+  return voiceoverBedMixFilter(
+    bedInput,
+    VO_MIX_DIALOGUE_BED_GAIN,
+    VO_MIX_DIALOGUE_SIDECHAIN,
+    voEndSec,
+  );
+}
+
+/**
+ * ffmpeg volume enable expression that hard-mutes during dialogue windows.
+ * Returns null when ranges is empty (caller keeps full-bed aggressive path).
+ */
+export function muteDialogueRangesAf(
+  ranges: { startSec: number; endSec: number }[],
+): string | null {
+  const parts: string[] = [];
+  for (const r of ranges) {
+    if (!(Number.isFinite(r.startSec) && Number.isFinite(r.endSec))) continue;
+    if (!(r.endSec > r.startSec + 0.05)) continue;
+    const s = Number(Math.max(0, r.startSec).toFixed(3));
+    const e = Number(r.endSec.toFixed(3));
+    parts.push(`between(t\\,${s}\\,${e})`);
+  }
+  if (parts.length === 0) return null;
+  // `+` is OR in ffmpeg enable expressions.
+  return `volume=0:enable='${parts.join('+')}'`;
+}
+
+/**
+ * Mix filter that also hard-mutes the bed during AI dialogue ranges, then
+ * applies the usual quiet dialogue bed + hard duck.
+ */
+export function voiceoverDialogueBedMixFilterWithRanges(
+  ranges: { startSec: number; endSec: number }[],
+  bedInput: '2:a' = '2:a',
+  voEndSec?: number | null,
+): string {
+  const mute = muteDialogueRangesAf(ranges);
+  if (!mute) return voiceoverDialogueBedMixFilter(bedInput, voEndSec);
+  const afterVo = muteAfterVoAf(voEndSec);
+  const extras = [mute, ...(afterVo ? [afterVo] : [])];
+  return [
+    `[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`,
+    bedPrepChain(bedInput, VO_MIX_DIALOGUE_BED_GAIN, extras),
+    `[bg][vo_sc]${VO_MIX_DIALOGUE_SIDECHAIN}[ducked]`,
+    `[ducked][vo]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]`,
+  ].join(';');
+}
+
+/**
+ * Pad a mix graph (output label `[mixed]`) so mapped audio never ends before
+ * picture. Pair with `muxStopAtPictureArgs`: encoding stops at the video
+ * stream instead of truncating video to the (language-dependent) voiceover.
+ */
+export function padMixToVideoDuration(mixFilter: string): string {
+  return `${mixFilter};[mixed]apad[aud]`;
+}
+
+/** VO-only overlay: pad input 1 so mux duration is limited by video, not VO. */
+export const VO_ONLY_PAD_TO_VIDEO_FILTER = '[1:a]apad[aud]';
+
+export const PADDED_MIX_AUDIO_MAP = '[aud]';
+
+/**
+ * Stop mux at picture length. Audio must be `apad`ed first: bare `-shortest`
+ * cuts the video down to the voiceover. When `pictureSec` is known, also pass
+ * `-t` so stream-copy cannot overrun if VO is still longer than the video.
+ */
+export function muxStopAtPictureArgs(pictureSec?: number | null): string[] {
+  const args = ['-shortest'];
+  if (pictureSec != null && Number.isFinite(pictureSec) && pictureSec > 0.2) {
+    args.push('-t', pictureSec.toFixed(3));
+  }
+  return args;
+}
+
 export class Ffmpeg {
   constructor(
     private readonly binary: string = resolveFfmpegBinary(),
@@ -59,9 +281,10 @@ export class Ffmpeg {
   /** Run an arbitrary ffmpeg command with the configured binary. */
   async exec(args: string[]): Promise<RunResult> {
     await this.ensureAvailable();
-    const res = await this.runner(this.binary, args);
+    const argv = args[0] === '-hide_banner' ? args : ['-hide_banner', ...args];
+    const res = await this.runner(this.binary, argv);
     if (res.code !== 0) {
-      throw new Error(`ffmpeg failed (${res.code}): ${res.stderr.slice(0, 300)}`);
+      throw new Error(ffmpegFailureMessage('ffmpeg failed', res.code, res.stderr));
     }
     return res;
   }
@@ -110,9 +333,7 @@ export class Ffmpeg {
     ];
     const res = await this.runner(this.binary, args);
     if (res.code !== 0) {
-      throw new Error(
-        `ffmpeg trim/normalize failed (${res.code}) for ${srcPath}: ${res.stderr.slice(0, 300)}`,
-      );
+      throw new Error(ffmpegFailureMessage(`ffmpeg trim/normalize failed for ${srcPath}`, res.code, res.stderr));
     }
   }
 
@@ -147,9 +368,7 @@ export class Ffmpeg {
     ];
     const res = await this.runner(this.binary, args);
     if (res.code !== 0) {
-      throw new Error(
-        `ffmpeg frame extract failed (${res.code}) for ${srcPath}: ${res.stderr.slice(0, 300)}`,
-      );
+      throw new Error(ffmpegFailureMessage(`ffmpeg frame extract failed for ${srcPath}`, res.code, res.stderr));
     }
   }
 
@@ -178,8 +397,68 @@ export class Ffmpeg {
     const res = await this.runner(this.binary, args);
     if (res.code !== 0) {
       throw new Error(
-        `ffmpeg jpeg extract failed (${res.code}) at ${t}s for ${srcPath}: ${res.stderr.slice(0, 300)}`,
+        ffmpegFailureMessage(`ffmpeg jpeg extract failed at ${t}s for ${srcPath}`, res.code, res.stderr),
       );
+    }
+  }
+
+  /**
+   * Enhance a raw TTS file (mp3/wav) into a 44.1 kHz mono WAV using
+   * `VOICEOVER_ENHANCE_AF`. Throws `FfmpegNotAvailableError` when ffmpeg is
+   * missing — callers should not silently skip this step.
+   */
+  async enhanceVoiceover(srcPath: string, destPath: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-af',
+      VOICEOVER_ENHANCE_AF,
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg voiceover enhance failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /**
+   * True when the file has an audio stream whose mean volume is above silence
+   * (used to keep original ambience under a voiceover).
+   */
+  async probeHasAudibleAudio(srcPath: string, silenceMeanDb = -50): Promise<boolean> {
+    try {
+      const res = await this.runner(this.binary, [
+        '-hide_banner',
+        '-i',
+        srcPath,
+        '-af',
+        'volumedetect',
+        '-f',
+        'null',
+        '-',
+      ]);
+      const blob = `${res.stderr}\n${res.stdout}`;
+      if (!/Audio:\s/i.test(blob) && !/Stream #.+: Audio/i.test(blob)) return false;
+      const mean = /mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i.exec(blob);
+      if (!mean) {
+        // An audio stream exists but volumedetect didn't print — treat as audible.
+        return /Stream #.+: Audio/i.test(blob) || /Audio:\s/i.test(blob);
+      }
+      const db = Number(mean[1]);
+      return Number.isFinite(db) && db > silenceMeanDb;
+    } catch {
+      return false;
     }
   }
 
@@ -196,6 +475,241 @@ export class Ffmpeg {
       return h * 3600 + min * 60 + sec;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Extract stereo PCM for Demucs (video containers often fail as Demucs input).
+   */
+  async extractAudioWav(srcPath: string, destPath: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-vn',
+      '-acodec',
+      'pcm_s16le',
+      '-ar',
+      '44100',
+      '-ac',
+      '2',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg audio extract failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /**
+   * Aggressive vocal / dialogue strip to a WAV bed (ambience + music).
+   * Used when Demucs is not installed. Stronger than plain karaoke mid-cut.
+   */
+  async stripVocalsToWav(srcPath: string, destPath: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-vn',
+      '-af',
+      VOCAL_STRIP_AF,
+      '-ar',
+      '44100',
+      '-ac',
+      '2',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg vocal strip failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /**
+   * Attenuate residual speech left in a Demucs/karaoke no-vocals bed.
+   * Prefer silence/ambience over letting original dialogue through.
+   */
+  async cleanupDialogueBed(srcPath: string, destPath: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-vn',
+      '-af',
+      DIALOGUE_BED_CLEANUP_AF,
+      '-ar',
+      '44100',
+      '-ac',
+      '2',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg dialogue bed cleanup failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /**
+   * Hard-mute audio during AI dialogue time windows (volume=0 enable expr).
+   * Used after Demucs/strip so leftover speech in those intervals is killed.
+   */
+  async muteDialogueRanges(
+    srcPath: string,
+    destPath: string,
+    ranges: { startSec: number; endSec: number }[],
+  ): Promise<void> {
+    const muteAf = muteDialogueRangesAf(ranges);
+    if (!muteAf) {
+      if (srcPath !== destPath) {
+        await copyFile(srcPath, destPath);
+      }
+      return;
+    }
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-af',
+      muteAf,
+      '-ar',
+      '44100',
+      '-ac',
+      '2',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg dialogue range mute failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /** Mono silence WAV at 44.1 kHz (timeline padding for scene-aligned TTS). */
+  async generateSilenceWav(destPath: string, durationSec: number): Promise<void> {
+    await this.ensureAvailable();
+    const t = Math.max(0.04, durationSec);
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'anullsrc=channel_layout=mono:sample_rate=44100',
+      '-t',
+      t.toFixed(3),
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(ffmpegFailureMessage('ffmpeg silence generate failed', res.code, res.stderr));
+    }
+  }
+
+  /** Speed a WAV with atempo (chain already validated). No-op if filter is empty. */
+  async atempoWav(srcPath: string, destPath: string, filter: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-af',
+      filter,
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg atempo failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /** Hard-trim audio to `durationSec` (last-resort cap when VO still overruns). */
+  async trimAudioTo(srcPath: string, destPath: string, durationSec: number): Promise<void> {
+    await this.ensureAvailable();
+    const t = Math.max(0.2, durationSec);
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-t',
+      t.toFixed(3),
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg audio trim failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /** Concat WAV/audio files via concat demuxer (no loudnorm). */
+  async concatAudio(listPath: string, destPath: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      listPath,
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(ffmpegFailureMessage('ffmpeg audio concat failed', res.code, res.stderr));
     }
   }
 }

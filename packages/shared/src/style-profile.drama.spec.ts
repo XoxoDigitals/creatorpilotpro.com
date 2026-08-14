@@ -8,11 +8,13 @@ import {
   expandCharacterReferencesInText,
   formatCharacterReference,
   formatSceneVisualPromptRules,
+  formatChannelStyleBlock,
+  formatOurChannelAboutBlock,
   isDramaOrDialoguePackage,
   isNarrationVoiceoverPackage,
-  languageDisplayName,
   NEGATIVE_PROMPT_INLINE_PREFIX,
 } from './style-profile.js';
+import { languageDisplayName } from './content-languages.js';
 
 describe('drama/dialogue style helpers', () => {
   it('detects drama format or dialogue presentation', () => {
@@ -61,6 +63,24 @@ describe('drama/dialogue style helpers', () => {
     expect(languageDisplayName('ur')).toBe('Urdu');
     expect(languageDisplayName('hi')).toBe('Hindi');
     expect(languageDisplayName('en')).toBe('English');
+  });
+
+  it('keeps ideas in English while sending spoken/publish copy to the channel language', () => {
+    const about = formatOurChannelAboutBlock(
+      {
+        language: 'hi',
+        styleProfile: { version: 1, answers: { niche: 'history shorts' } },
+      },
+      'Our Channel',
+    );
+    expect(about).toContain('Idea language: English');
+    expect(about).toContain('Hindi');
+
+    const block = formatChannelStyleBlock({ language: 'ur' });
+    expect(block).toContain('LANGUAGE POLICY');
+    expect(block).toContain('Urdu');
+    expect(block).toContain('Ideas');
+    expect(block).toContain('imagePrompt');
   });
 
   it('builds expanded character references', () => {
