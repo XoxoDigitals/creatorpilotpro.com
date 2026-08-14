@@ -1441,8 +1441,8 @@ export default function AccountAiPipelinePage() {
             disabled={busyId === rerenderItem?.id}
           />
           <p className="text-[11px] text-zinc-500">
-            1% = almost silent · 100% = full bed. Saved on this video only (channel Settings
-            default is unchanged). TTS will not run again.
+            1% = almost silent · 100% = same level as the voiceover. Saved on this video
+            only (channel Settings default is unchanged). TTS will not run again.
           </p>
         </div>
       </Modal>

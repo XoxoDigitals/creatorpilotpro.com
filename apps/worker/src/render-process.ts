@@ -303,11 +303,9 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
 
     const hasNaturalSound = !hasDialogue && originalHasAudio;
 
-    // Step 2: Same Edge TTS enhance chain (highpass → EQ → compressor →
-    // loudnorm), then mix. VO stays clearly hearable; loud beds are limited
-    // and ducked under speech so ambience remains without burying narration.
-    // Dialogue beds use hard duck + very low gain so residual speech stays inaudible.
-    // When AI ranges exist, mix filter also hard-mutes those windows again.
+    // Step 2: Enhance VO, then mix bed at the same loudness target as VO.
+    // backgroundBedPercent (1–100) is the only bed-level control — 100% ≈ VO.
+    // Light sidechain duck keeps speech clear without crushing the bed.
     const enhancedVoPath = join(renderDir, 'voiceover-enhanced.wav');
     await ffmpeg.enhanceVoiceover(voPath, enhancedVoPath);
     const mergedPath = join(renderDir, 'merged.mp4');

@@ -117,47 +117,45 @@ export const VOICEOVER_MIX_ENHANCE_AF =
 /** Full TTS/render enhance chain: mix polish + EBU-ish loudnorm. */
 export const VOICEOVER_ENHANCE_AF = `${VOICEOVER_MIX_ENHANCE_AF},loudnorm=I=-16:TP=-1:LRA=7`;
 
-/** VO ~-1.4 dB vs unity — clearly dominant over a quiet bed. */
+/** VO reference level (post-enhance). Bed at 100% matches this. */
 export const VO_MIX_VOICE_GAIN = 0.85;
 /**
- * Natural / no-dialogue ambience bed after limiter — audible in pauses only.
- * 0.2496 = prior 0.192 + 30% (≈ -12 dB at 100% setting).
+ * Background bed at 100% setting — same gain as voiceover so the slider is the
+ * only control for how loud music/ambience is relative to VO.
  */
-export const VO_MIX_BED_GAIN = 0.2496;
+export const VO_MIX_BED_GAIN = VO_MIX_VOICE_GAIN;
 /**
- * Dialogue / stripped no-vocals bed — keep only faint ambience/music.
- * Priority is zero audible original speech, not a loud bed.
- * 0.1248 = prior 0.096 + 30%.
+ * Dialogue / stripped bed at 100% — same as natural bed; speech is already
+ * stripped/muted. Percent setting scales both the same way.
  */
-export const VO_MIX_DIALOGUE_BED_GAIN = 0.1248;
+export const VO_MIX_DIALOGUE_BED_GAIN = VO_MIX_VOICE_GAIN;
 /** @deprecated Prefer VO_MIX_DIALOGUE_BED_GAIN — kept as alias for older call sites. */
 export const VO_MIX_DEMUCS_BED_GAIN = VO_MIX_DIALOGUE_BED_GAIN;
 
-/** Scale a 100%-reference bed gain by channel `backgroundBedPercent` (1–100). */
+/** Scale a 100%-reference bed gain by channel/video `backgroundBedPercent` (1–100). */
 export function bedGainForPercent(baseAt100: number, percent: number): number {
   const p = Math.max(1, Math.min(100, Math.round(percent)));
   return baseAt100 * (p / 100);
 }
 /**
- * Cap loud beds before duck. Leading loudnorm targets a quiet bed LUFS so
- * quiet vs screaming source beds land at a similar level (adaptive blend).
+ * Normalize bed to the same loudness target as VO enhance (−16 LUFS), then light
+ * limiting — do not crush the bed; the percent slider owns level.
  */
-export const VO_MIX_BED_LOUDNORM = 'loudnorm=I=-28:TP=-2:LRA=12';
+export const VO_MIX_BED_LOUDNORM = 'loudnorm=I=-16:TP=-1.5:LRA=11';
 export const VO_MIX_BED_CONTROL =
-  `${VO_MIX_BED_LOUDNORM},acompressor=threshold=-18dB:ratio=4.5:attack=8:release=160:makeup=1,alimiter=limit=0.38:attack=5:release=50`;
+  `${VO_MIX_BED_LOUDNORM},acompressor=threshold=-18dB:ratio=2:attack=10:release=120:makeup=1,alimiter=limit=0.95:attack=5:release=50`;
 /**
- * Sidechain duck under speech (~15 dB), fast enough that VO stays on top,
- * slow enough that the bed returns in pauses (not a mute).
- * `knee` must be in [1, 8] — ffmpeg rejects 10 as "Result too large" (exit -34).
+ * Light sidechain duck under speech so VO stays clear without muting the bed
+ * the user set with the percent control.
  */
 export const VO_MIX_SIDECHAIN =
-  'sidechaincompress=threshold=0.05:ratio=6:attack=12:release=180:makeup=1:knee=6';
+  'sidechaincompress=threshold=0.08:ratio=2.5:attack=15:release=220:makeup=1:knee=4';
 /**
- * Harder duck for dialogue beds: residual speech in Demucs/karaoke stems must
- * collapse under VO (~20 dB) rather than competing in gaps.
+ * Slightly stronger duck on stripped dialogue beds (residual speech), still
+ * leaving room for the percent slider to be audible.
  */
 export const VO_MIX_DIALOGUE_SIDECHAIN =
-  'sidechaincompress=threshold=0.04:ratio=12:attack=5:release=140:makeup=1:knee=6';
+  'sidechaincompress=threshold=0.06:ratio=4:attack=10:release=180:makeup=1:knee=5';
 
 /**
  * Hard-mute bed after the voiceover ends so a short VO on a long video does

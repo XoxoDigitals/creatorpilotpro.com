@@ -162,21 +162,21 @@ describe('voiceoverBedMixFilter', () => {
 
   it('scales bed gain by channel percent (1–100)', async () => {
     const { bedGainForPercent } = await import('./ffmpeg.js');
-    expect(bedGainForPercent(0.25, 100)).toBe(0.25);
-    expect(bedGainForPercent(0.25, 50)).toBe(0.125);
-    expect(bedGainForPercent(0.25, 1)).toBeCloseTo(0.0025);
+    expect(bedGainForPercent(0.85, 100)).toBe(0.85);
+    expect(bedGainForPercent(0.85, 50)).toBe(0.425);
+    expect(bedGainForPercent(0.85, 1)).toBeCloseTo(0.0085);
   });
 
-  it('keeps VO clearly above a capped, ducked bed', () => {
+  it('matches VO and bed at 100% so the percent slider owns bed level', () => {
     expect(VO_MIX_VOICE_GAIN).toBe(0.85);
-    expect(VO_MIX_BED_GAIN).toBe(0.2496);
-    expect(VO_MIX_VOICE_GAIN).toBeGreaterThan(VO_MIX_BED_GAIN);
-    expect(VO_MIX_BED_CONTROL).toContain('loudnorm=I=-28');
-    expect(VO_MIX_BED_CONTROL).toContain('alimiter=limit=0.38');
+    expect(VO_MIX_BED_GAIN).toBe(VO_MIX_VOICE_GAIN);
+    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(VO_MIX_VOICE_GAIN);
+    expect(VO_MIX_BED_CONTROL).toContain('loudnorm=I=-16');
+    expect(VO_MIX_BED_CONTROL).toContain('alimiter=limit=0.95');
     expect(VO_MIX_BED_CONTROL).toContain('acompressor=');
-    expect(VO_MIX_SIDECHAIN).toContain('threshold=0.05');
-    expect(VO_MIX_SIDECHAIN).toContain('ratio=6');
-    expect(VO_MIX_SIDECHAIN).toContain('knee=6');
+    expect(VO_MIX_SIDECHAIN).toContain('threshold=0.08');
+    expect(VO_MIX_SIDECHAIN).toContain('ratio=2.5');
+    expect(VO_MIX_SIDECHAIN).toContain('knee=4');
     expect(VO_MIX_SIDECHAIN).not.toContain('knee=10');
     const graph = voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN);
     expect(graph).toContain(`[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`);
@@ -193,12 +193,11 @@ describe('voiceoverBedMixFilter', () => {
     expect(graph).toContain(VO_MIX_BED_CONTROL);
   });
 
-  it('uses a very quiet dialogue bed with hard duck', () => {
-    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(0.1248);
+  it('uses equal dialogue bed gain with mild duck (slider owns level)', () => {
+    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(VO_MIX_BED_GAIN);
     expect(VO_MIX_DEMUCS_BED_GAIN).toBe(VO_MIX_DIALOGUE_BED_GAIN);
-    expect(VO_MIX_DIALOGUE_BED_GAIN).toBeLessThan(VO_MIX_BED_GAIN);
-    expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('ratio=12');
-    expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('threshold=0.04');
+    expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('ratio=4');
+    expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('threshold=0.06');
     const graph = voiceoverDialogueBedMixFilter('2:a');
     expect(graph).toContain(`[2:a]${VO_MIX_BED_CONTROL},volume=${VO_MIX_DIALOGUE_BED_GAIN}[bg]`);
     expect(graph).toContain(VO_MIX_DIALOGUE_SIDECHAIN);

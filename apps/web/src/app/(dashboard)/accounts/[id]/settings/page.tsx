@@ -731,8 +731,8 @@ export default function AccountSettingsPage() {
               aria-label="Background music and ambience level"
             />
             <p className="text-[11px] text-zinc-500">
-              1% = almost silent bed · 100% = default mix level. Apply with Re-render on existing
-              videos (does not re-run TTS).
+              1% = almost silent bed · 100% = same level as the voiceover. Apply with
+              Re-render on existing videos (does not re-run TTS).
             </p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">

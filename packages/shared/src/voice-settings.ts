@@ -27,7 +27,7 @@ export const voiceSettingsSchema = z.object({
   language: z.string().optional(),
   /**
    * Background bed / ambience level for VO mix (1–100%).
-   * 100 = product default bed gain; lower quietens music/ambience under VO.
+   * 100 = same loudness as voiceover; lower quietens music/ambience under VO.
    */
   backgroundBedPercent: z.number().int().min(1).max(100).optional(),
 });
