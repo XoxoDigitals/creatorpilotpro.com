@@ -545,6 +545,11 @@ export async function regenerateVoiceover(id: string): Promise<void> {
   await api.post(`/content/${id}/regenerate-voiceover`);
 }
 
+/** Re-mix FINAL from existing voiceover (no TTS). */
+export async function regenerateRender(id: string): Promise<void> {
+  await api.post(`/content/${id}/rerender`);
+}
+
 export async function deleteContent(id: string): Promise<void> {
   await api.del(`/content/${encodeURIComponent(id)}`);
 }

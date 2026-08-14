@@ -19,8 +19,24 @@ export const ALLOWED_TRANSITIONS: Record<ContentItemStatus, ContentItemStatus[]>
   // RENDERED / METADATA_READY → REVIEW_PENDING: schedule-to-publish always
   // re-enters the human Review queue before any target may go live.
   // → ANALYZING / SCRIPT_APPROVED: owner regenerate of script / voiceover.
-  RENDERED: ['METADATA_READY', 'FAILED', 'REVIEW_PENDING', 'ANALYZING', 'SCRIPT_APPROVED'],
-  METADATA_READY: ['SCHEDULED', 'FAILED', 'RENDERED', 'REVIEW_PENDING', 'ANALYZING', 'SCRIPT_APPROVED'],
+  // → TTS_DONE: re-render with the existing voiceover (mix settings / bed only).
+  RENDERED: [
+    'METADATA_READY',
+    'FAILED',
+    'REVIEW_PENDING',
+    'ANALYZING',
+    'SCRIPT_APPROVED',
+    'TTS_DONE',
+  ],
+  METADATA_READY: [
+    'SCHEDULED',
+    'FAILED',
+    'RENDERED',
+    'REVIEW_PENDING',
+    'ANALYZING',
+    'SCRIPT_APPROVED',
+    'TTS_DONE',
+  ],
   // SCHEDULED → REVIEW_PENDING: reclaim targets that never had a publish Review.
   SCHEDULED: ['PUBLISHING', 'DRAFT', 'REJECTED', 'REVIEW_PENDING'],
   PUBLISHING: ['PUBLISHED', 'DRAFT', 'FAILED'],
@@ -31,6 +47,7 @@ export const ALLOWED_TRANSITIONS: Record<ContentItemStatus, ContentItemStatus[]>
   //   failed while preserving `currentStep` so cached outputs re-hit and don't
   //   burn credits (see ContentService.retryAiPipeline).
   // FAILED → SCRIPT_APPROVED: retry TTS after a voiceover failure (Incident center).
+  // FAILED → TTS_DONE: retry render when VOICEOVER already exists.
   // FAILED → REVIEW_PENDING: hard reset back to the human gate (clears state);
   //   only use when you want the whole pipeline to run from scratch.
   FAILED: [
@@ -41,6 +58,7 @@ export const ALLOWED_TRANSITIONS: Record<ContentItemStatus, ContentItemStatus[]>
     'ANALYZING',
     'RENDERED',
     'SCRIPT_APPROVED',
+    'TTS_DONE',
   ],
 };
 

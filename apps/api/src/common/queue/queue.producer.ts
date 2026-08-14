@@ -124,6 +124,25 @@ export class QueueProducer implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** Re-mix FINAL from existing VOICEOVER (no TTS). */
+  async enqueueRender(contentItemId: string): Promise<void> {
+    if (!this.boss) {
+      throw new ServiceUnavailableException(
+        'The job queue is not available. Please try again shortly.',
+      );
+    }
+    const jobId = await this.boss.send(
+      QUEUE.STORAGE,
+      { kind: 'render', contentItemId },
+      { singletonKey: `render-${contentItemId}` },
+    );
+    if (!jobId) {
+      throw new ServiceUnavailableException(
+        'A render job for this item is already queued or active.',
+      );
+    }
+  }
+
   /** Enqueue a competitor channel poll (Phase 4, reuses WATCHER queue). */
   async enqueueCompetitorPoll(competitorChannelId: string): Promise<void> {
     if (!this.boss) {

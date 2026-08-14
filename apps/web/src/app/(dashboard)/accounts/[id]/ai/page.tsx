@@ -29,6 +29,7 @@ import {
   deleteContent,
   getAiPipeline,
   regenerateMetadata,
+  regenerateRender,
   regenerateScript,
   regenerateVoiceover,
   resetToReview,
@@ -975,6 +976,26 @@ export default function AccountAiPipelinePage() {
     }
   }
 
+  async function onRegenerateRender(itemId: string) {
+    if (
+      !confirm(
+        'Re-render the video with the existing voiceover? Use this after mix/bed changes — TTS will not run again.',
+      )
+    ) {
+      return;
+    }
+    setBusyId(itemId);
+    try {
+      await regenerateRender(itemId);
+      toast('Re-rendering video…', 'info');
+      await refresh();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to re-render', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function onDeleteItem(item: AiPipelineItem) {
     if (!confirm(`Delete “${item.title}” from the AI pipeline?`)) return;
     setBusyId(item.id);
@@ -1174,6 +1195,18 @@ export default function AccountAiPipelinePage() {
                             disabled={busyId === it.id}
                           >
                             Regenerate voiceover
+                          </Button>
+                        )}
+                        {(it.status === 'TTS_DONE' ||
+                          it.status === 'RENDERED' ||
+                          it.status === 'METADATA_READY') && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => void onRegenerateRender(it.id)}
+                            disabled={busyId === it.id}
+                          >
+                            Re-render
                           </Button>
                         )}
                       </>

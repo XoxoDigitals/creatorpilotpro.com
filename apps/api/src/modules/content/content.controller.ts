@@ -128,6 +128,13 @@ export class ContentController {
     return this.content.regenerateVoiceover(id);
   }
 
+  @Post(':id/rerender')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('content.rerender', 'ContentItem')
+  regenerateRender(@Param('id') id: string): Promise<ContentItemView> {
+    return this.content.regenerateRender(id);
+  }
+
   @Delete(':id')
   @Roles('OWNER', 'ADMIN')
   @Audit('content.delete', 'ContentItem')

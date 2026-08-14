@@ -436,6 +436,43 @@ export class ContentService {
     return this.transition(id, 'SCRIPT_APPROVED');
   }
 
+  /**
+   * Re-mix the FINAL video from the existing VOICEOVER (skip TTS).
+   * Use after mix/bed settings change.
+   */
+  async regenerateRender(id: string): Promise<ContentItemView> {
+    const item = await this.prisma.client.contentItem.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        status: true,
+        assets: {
+          where: { kind: 'VOICEOVER' },
+          select: { id: true, localPath: true },
+          take: 1,
+        },
+      },
+    });
+    if (!item) throw new NotFoundException('Content item not found.');
+    const vo = item.assets[0];
+    if (!vo?.localPath) {
+      throw new BadRequestException(
+        'No voiceover asset to re-render — regenerate voiceover first.',
+      );
+    }
+    const allowed: ContentItemStatus[] = [
+      'TTS_DONE',
+      'RENDERED',
+      'METADATA_READY',
+      'FAILED',
+    ];
+    if (!allowed.includes(item.status)) {
+      throw new BadRequestException(
+        `Cannot re-render from status ${item.status}. Wait until voiceover is ready.`,
+      );
+    }
+    return this.transition(id, 'TTS_DONE');
+  }
+
   async softDelete(id: string): Promise<{ id: string; deleted: true }> {
     const item = await this.prisma.client.contentItem.findFirst({
       where: { id, deletedAt: null },
@@ -840,11 +877,13 @@ export class ContentService {
       include: { assets: true },
     });
 
-    // Auto-enqueue AI/TTS pipelines on state transitions
+    // Auto-enqueue AI/TTS/render pipelines on state transitions
     if (to === 'APPROVED') {
       await this.queue.enqueueAi(id, 'analyze');
     } else if (to === 'SCRIPT_APPROVED') {
       await this.queue.enqueueTts(id);
+    } else if (to === 'TTS_DONE') {
+      await this.queue.enqueueRender(id);
     }
 
     return toContentItemView(updated);
