@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { copyFile } from 'node:fs/promises';
-import { resolveFfmpegBinary } from '@scp/shared/bin';
+import { delimiter } from 'node:path';
+import { isResolvedBinaryPath, resolveFfmpegBinary } from '@scp/shared/bin';
 
 /**
  * ffmpeg wrapper (docs/04 §2 media pipeline). Kept framework-free and shells out
@@ -46,10 +48,34 @@ function ffmpegFailureMessage(prefix: string, code: number, stderr: string): str
   return `${prefix} (${signedExitCode(code)}): ${summarizeFfmpegStderr(stderr)}`;
 }
 
+/** PM2 often has a thin PATH; keep standard Unix dirs so bare `ffmpeg` still resolves. */
+function spawnEnv(): NodeJS.ProcessEnv {
+  const extra =
+    process.platform === 'win32'
+      ? ''
+      : ['/usr/local/bin', '/usr/bin', '/bin'].join(delimiter);
+  const current = process.env.PATH ?? process.env.Path ?? '';
+  const PATH = extra ? (current ? `${extra}${delimiter}${current}` : extra) : current;
+  return { ...process.env, PATH };
+}
+
+/**
+ * Prefer an absolute ffmpeg path. Bare `ffmpeg` fails under PM2 when PATH is empty
+ * even if `/usr/bin/ffmpeg` exists on disk.
+ */
+export function resolveFfmpegBinaryPath(): string {
+  const resolved = resolveFfmpegBinary();
+  if (isResolvedBinaryPath(resolved)) return resolved;
+  for (const candidate of ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return resolved;
+}
+
 /** Default runner: spawn the process and buffer stdio. Rejects on ENOENT. */
 export const spawnRunner: CommandRunner = (cmd, args) =>
   new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { windowsHide: true });
+    const child = spawn(cmd, args, { windowsHide: true, env: spawnEnv() });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
@@ -59,9 +85,13 @@ export const spawnRunner: CommandRunner = (cmd, args) =>
   });
 
 export class FfmpegNotAvailableError extends Error {
-  constructor(binary: string) {
+  constructor(binary: string, cause?: unknown) {
+    const detail =
+      cause instanceof Error && cause.message
+        ? ` (${cause.message})`
+        : '';
     super(
-      `ffmpeg binary "${binary}" is not available. Install ffmpeg on the worker host, or set FFMPEG_PATH.`,
+      `ffmpeg binary "${binary}" is not available${detail}. Install ffmpeg on the worker host, or set FFMPEG_PATH.`,
     );
     this.name = 'FfmpegNotAvailableError';
   }
@@ -91,14 +121,15 @@ export const VOICEOVER_ENHANCE_AF = `${VOICEOVER_MIX_ENHANCE_AF},loudnorm=I=-16:
 export const VO_MIX_VOICE_GAIN = 0.85;
 /**
  * Natural / no-dialogue ambience bed after limiter — audible in pauses only.
- * 0.16 ≈ -16 dB; previous 0.5 still competed with VO on loud source audio.
+ * 0.192 ≈ -14.3 dB (+20% vs prior 0.16); previous 0.5 still competed with VO.
  */
-export const VO_MIX_BED_GAIN = 0.16;
+export const VO_MIX_BED_GAIN = 0.192;
 /**
  * Dialogue / stripped no-vocals bed — keep only faint ambience/music.
  * Priority is zero audible original speech, not a loud bed.
+ * 0.096 = prior 0.08 + 20%.
  */
-export const VO_MIX_DIALOGUE_BED_GAIN = 0.08;
+export const VO_MIX_DIALOGUE_BED_GAIN = 0.096;
 /** @deprecated Prefer VO_MIX_DIALOGUE_BED_GAIN — kept as alias for older call sites. */
 export const VO_MIX_DEMUCS_BED_GAIN = VO_MIX_DIALOGUE_BED_GAIN;
 /**
@@ -274,9 +305,14 @@ export function muxStopAtPictureArgs(pictureSec?: number | null): string[] {
 
 export class Ffmpeg {
   constructor(
-    private readonly binary: string = resolveFfmpegBinary(),
+    private readonly binary: string = resolveFfmpegBinaryPath(),
     private readonly runner: CommandRunner = spawnRunner,
   ) {}
+
+  /** Resolved binary path (absolute when found). */
+  get path(): string {
+    return this.binary;
+  }
 
   /** Run an arbitrary ffmpeg command with the configured binary. */
   async exec(args: string[]): Promise<RunResult> {
@@ -300,7 +336,14 @@ export class Ffmpeg {
   }
 
   private async ensureAvailable(): Promise<void> {
-    if (!(await this.available())) throw new FfmpegNotAvailableError(this.binary);
+    try {
+      const res = await this.runner(this.binary, ['-version']);
+      if (res.code === 0) return;
+      throw new FfmpegNotAvailableError(this.binary, new Error(`exit ${res.code}`));
+    } catch (err) {
+      if (err instanceof FfmpegNotAvailableError) throw err;
+      throw new FfmpegNotAvailableError(this.binary, err);
+    }
   }
 
   /**

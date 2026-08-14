@@ -508,7 +508,7 @@ async function concatNormalize(
   // Enhancement (EQ + compressor + loudnorm) requires ffmpeg. Fail clearly
   // rather than storing unprocessed TTS — ffmpeg is an operational dependency.
   if (!ffmpegAvail) {
-    throw new FfmpegNotAvailableError('ffmpeg');
+    throw new FfmpegNotAvailableError(ffmpeg.path);
   }
 
   const wavOut = ['-ar', '44100', '-ac', '1'] as const;
@@ -570,7 +570,7 @@ async function synthesizeSceneAligned(opts: {
   await mkdir(voDir, { recursive: true });
   const ffmpeg = new Ffmpeg();
   if (!(await ffmpeg.available())) {
-    throw new FfmpegNotAvailableError('ffmpeg');
+    throw new FfmpegNotAvailableError(ffmpeg.path);
   }
 
   const clipPaths: string[] = [];

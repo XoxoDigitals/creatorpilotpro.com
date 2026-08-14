@@ -162,7 +162,7 @@ describe('voiceoverBedMixFilter', () => {
 
   it('keeps VO clearly above a capped, ducked bed', () => {
     expect(VO_MIX_VOICE_GAIN).toBe(0.85);
-    expect(VO_MIX_BED_GAIN).toBe(0.16);
+    expect(VO_MIX_BED_GAIN).toBe(0.192);
     expect(VO_MIX_VOICE_GAIN).toBeGreaterThan(VO_MIX_BED_GAIN);
     expect(VO_MIX_BED_CONTROL).toContain('loudnorm=I=-28');
     expect(VO_MIX_BED_CONTROL).toContain('alimiter=limit=0.38');
@@ -187,7 +187,7 @@ describe('voiceoverBedMixFilter', () => {
   });
 
   it('uses a very quiet dialogue bed with hard duck', () => {
-    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(0.08);
+    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(0.096);
     expect(VO_MIX_DEMUCS_BED_GAIN).toBe(VO_MIX_DIALOGUE_BED_GAIN);
     expect(VO_MIX_DIALOGUE_BED_GAIN).toBeLessThan(VO_MIX_BED_GAIN);
     expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('ratio=12');
