@@ -7,6 +7,8 @@ import {
   defaultVoiceForLanguage,
   contentLanguageSelectOptions,
   contentLanguageOptionLabel,
+  DEFAULT_BACKGROUND_BED_PERCENT,
+  clampBackgroundBedPercent,
   type StyleProfileAnswers,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -108,6 +110,7 @@ export default function AccountSettingsPage() {
   const [voiceRate, setVoiceRate] = useState('+0%');
   const [voicePitch, setVoicePitch] = useState('+0Hz');
   const [voiceVolume, setVoiceVolume] = useState('+0%');
+  const [backgroundBedPercent, setBackgroundBedPercent] = useState(DEFAULT_BACKGROUND_BED_PERCENT);
   const [voices, setVoices] = useState<EdgeVoice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [ttsStatus, setTtsStatus] = useState<string | null>(null);
@@ -205,6 +208,7 @@ export default function AccountSettingsPage() {
           rate?: string;
           pitch?: string;
           volume?: string;
+          backgroundBedPercent?: number;
         } | null;
         const defaults = defaultVoiceForLanguage(p.language);
         setTtsProvider(voiceCfg?.provider || defaults.provider);
@@ -213,6 +217,11 @@ export default function AccountSettingsPage() {
         if (voiceCfg?.rate) setVoiceRate(voiceCfg.rate);
         if (voiceCfg?.pitch) setVoicePitch(voiceCfg.pitch);
         if (voiceCfg?.volume) setVoiceVolume(voiceCfg.volume);
+        setBackgroundBedPercent(
+          clampBackgroundBedPercent(
+            voiceCfg?.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
+          ),
+        );
         const approval = p.approvalPolicy as { scriptGate?: boolean } | null;
         if (typeof approval?.scriptGate === 'boolean') setScriptGate(approval.scriptGate);
         const sched = p.schedulingPrefs as {
@@ -417,6 +426,7 @@ export default function AccountSettingsPage() {
           pitch: voicePitch,
           volume: voiceVolume,
           language,
+          backgroundBedPercent: clampBackgroundBedPercent(backgroundBedPercent),
         },
         titleTemplate,
         descriptionTemplate,
@@ -699,6 +709,32 @@ export default function AccountSettingsPage() {
               {ttsStatus}
             </p>
           )}
+          <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-medium text-zinc-700">
+                Background music / ambience
+              </span>
+              <span className="text-xs font-semibold tabular-nums text-zinc-800">
+                {backgroundBedPercent}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={100}
+              step={1}
+              value={backgroundBedPercent}
+              onChange={(e) =>
+                setBackgroundBedPercent(clampBackgroundBedPercent(e.target.value))
+              }
+              className="w-full accent-indigo-600"
+              aria-label="Background music and ambience level"
+            />
+            <p className="text-[11px] text-zinc-500">
+              1% = almost silent bed · 100% = default mix level. Apply with Re-render on existing
+              videos (does not re-run TTS).
+            </p>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="TTS provider">
               <Select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)}>

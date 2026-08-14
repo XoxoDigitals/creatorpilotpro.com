@@ -18,7 +18,7 @@
 import { join } from 'node:path';
 import { stat, mkdir, unlink } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
-import { QUEUE } from '@scp/shared';
+import { QUEUE, parseVoiceSettings } from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
 import {
   Ffmpeg,
@@ -31,7 +31,9 @@ import {
   VO_ONLY_PAD_TO_VIDEO_FILTER,
   PADDED_MIX_AUDIO_MAP,
   VO_MIX_BED_GAIN,
+  VO_MIX_DIALOGUE_BED_GAIN,
   VO_MIX_SIDECHAIN,
+  bedGainForPercent,
 } from './media/ffmpeg.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
 import type { AiJob } from './ai-jobs.js';
@@ -42,6 +44,29 @@ const STORAGE_ROOT = process.env.STORAGE_ROOT ?? '';
 
 function demucsBin(): string {
   return resolveDemucsBinary();
+}
+
+async function resolveBackgroundBedPercent(contentItemId: string): Promise<number> {
+  const prisma = getPrisma();
+  const item = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    select: {
+      idea: { select: { accountId: true } },
+      sourceVideo: {
+        select: { watchedSource: { select: { targetAccountId: true } } },
+      },
+    },
+  });
+  const accountId =
+    item?.idea?.accountId ?? item?.sourceVideo?.watchedSource?.targetAccountId ?? null;
+  if (!accountId) return parseVoiceSettings(null).backgroundBedPercent ?? 100;
+  const profile = await prisma.channelProfile.findUnique({
+    where: { accountId },
+    select: { voiceSettings: true, language: true },
+  });
+  return (
+    parseVoiceSettings(profile?.voiceSettings, profile?.language).backgroundBedPercent ?? 100
+  );
 }
 
 // ── Demucs check ────────────────────────────────────────────────────────────
@@ -294,11 +319,19 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     const stopAtPicture = muxStopAtPictureArgs(pictureSec);
 
     try {
+      const bedPercent = await resolveBackgroundBedPercent(contentItemId);
+      const naturalBedGain = bedGainForPercent(VO_MIX_BED_GAIN, bedPercent);
+      const dialogueBedGain = bedGainForPercent(VO_MIX_DIALOGUE_BED_GAIN, bedPercent);
       if (bgAudioPath) {
         const mixFilter = padMixToVideoDuration(
           dialogueRanges.length > 0
-            ? voiceoverDialogueBedMixFilterWithRanges(dialogueRanges, '2:a', voEndSec)
-            : voiceoverDialogueBedMixFilter('2:a', voEndSec),
+            ? voiceoverDialogueBedMixFilterWithRanges(
+                dialogueRanges,
+                '2:a',
+                voEndSec,
+                dialogueBedGain,
+              )
+            : voiceoverDialogueBedMixFilter('2:a', voEndSec, dialogueBedGain),
         );
         await ffmpeg.exec([
           '-i', videoPath,
@@ -316,6 +349,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         ]);
         console.log(
           `[worker:render] mixed enhanced VO over cleaned ${bedSource ?? 'stripped'} bed for ${contentItemId}` +
+            ` (bed ${bedPercent}%)` +
             (dialogueRanges.length > 0 ? ` (muted ${dialogueRanges.length} dialogue window(s))` : '') +
             (voEndSec != null ? ` (bed mute after ${voEndSec.toFixed(2)}s)` : ''),
         );
@@ -324,7 +358,9 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           '-i', videoPath,
           '-i', enhancedVoPath,
           '-filter_complex',
-          padMixToVideoDuration(voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN, VO_MIX_SIDECHAIN, voEndSec)),
+          padMixToVideoDuration(
+            voiceoverBedMixFilter('0:a', naturalBedGain, VO_MIX_SIDECHAIN, voEndSec),
+          ),
           '-map', '0:v',
           '-map', PADDED_MIX_AUDIO_MAP,
           '-c:v', 'copy',
@@ -335,6 +371,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         ]);
         console.log(
           `[worker:render] mixed enhanced VO over original ambience (no dialogue) for ${contentItemId}` +
+            ` (bed ${bedPercent}%)` +
             (voEndSec != null ? ` (bed mute after ${voEndSec.toFixed(2)}s)` : ''),
         );
       } else {

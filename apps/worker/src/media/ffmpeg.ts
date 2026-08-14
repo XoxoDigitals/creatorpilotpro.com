@@ -121,17 +121,23 @@ export const VOICEOVER_ENHANCE_AF = `${VOICEOVER_MIX_ENHANCE_AF},loudnorm=I=-16:
 export const VO_MIX_VOICE_GAIN = 0.85;
 /**
  * Natural / no-dialogue ambience bed after limiter — audible in pauses only.
- * 0.192 ≈ -14.3 dB (+20% vs prior 0.16); previous 0.5 still competed with VO.
+ * 0.2496 = prior 0.192 + 30% (≈ -12 dB at 100% setting).
  */
-export const VO_MIX_BED_GAIN = 0.192;
+export const VO_MIX_BED_GAIN = 0.2496;
 /**
  * Dialogue / stripped no-vocals bed — keep only faint ambience/music.
  * Priority is zero audible original speech, not a loud bed.
- * 0.096 = prior 0.08 + 20%.
+ * 0.1248 = prior 0.096 + 30%.
  */
-export const VO_MIX_DIALOGUE_BED_GAIN = 0.096;
+export const VO_MIX_DIALOGUE_BED_GAIN = 0.1248;
 /** @deprecated Prefer VO_MIX_DIALOGUE_BED_GAIN — kept as alias for older call sites. */
 export const VO_MIX_DEMUCS_BED_GAIN = VO_MIX_DIALOGUE_BED_GAIN;
+
+/** Scale a 100%-reference bed gain by channel `backgroundBedPercent` (1–100). */
+export function bedGainForPercent(baseAt100: number, percent: number): number {
+  const p = Math.max(1, Math.min(100, Math.round(percent)));
+  return baseAt100 * (p / 100);
+}
 /**
  * Cap loud beds before duck. Leading loudnorm targets a quiet bed LUFS so
  * quiet vs screaming source beds land at a similar level (adaptive blend).
@@ -226,10 +232,11 @@ export function voiceoverBedMixFilter(
 export function voiceoverDialogueBedMixFilter(
   bedInput: '2:a' = '2:a',
   voEndSec?: number | null,
+  bedGain: number = VO_MIX_DIALOGUE_BED_GAIN,
 ): string {
   return voiceoverBedMixFilter(
     bedInput,
-    VO_MIX_DIALOGUE_BED_GAIN,
+    bedGain,
     VO_MIX_DIALOGUE_SIDECHAIN,
     voEndSec,
   );
@@ -263,14 +270,15 @@ export function voiceoverDialogueBedMixFilterWithRanges(
   ranges: { startSec: number; endSec: number }[],
   bedInput: '2:a' = '2:a',
   voEndSec?: number | null,
+  bedGain: number = VO_MIX_DIALOGUE_BED_GAIN,
 ): string {
   const mute = muteDialogueRangesAf(ranges);
-  if (!mute) return voiceoverDialogueBedMixFilter(bedInput, voEndSec);
+  if (!mute) return voiceoverDialogueBedMixFilter(bedInput, voEndSec, bedGain);
   const afterVo = muteAfterVoAf(voEndSec);
   const extras = [mute, ...(afterVo ? [afterVo] : [])];
   return [
     `[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`,
-    bedPrepChain(bedInput, VO_MIX_DIALOGUE_BED_GAIN, extras),
+    bedPrepChain(bedInput, bedGain, extras),
     `[bg][vo_sc]${VO_MIX_DIALOGUE_SIDECHAIN}[ducked]`,
     `[ducked][vo]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]`,
   ].join(';');

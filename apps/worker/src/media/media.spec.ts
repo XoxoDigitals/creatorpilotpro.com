@@ -160,9 +160,16 @@ describe('voiceoverBedMixFilter', () => {
     expect(VOICEOVER_MIX_ENHANCE_AF).toContain('acompressor=');
   });
 
+  it('scales bed gain by channel percent (1–100)', async () => {
+    const { bedGainForPercent } = await import('./ffmpeg.js');
+    expect(bedGainForPercent(0.25, 100)).toBe(0.25);
+    expect(bedGainForPercent(0.25, 50)).toBe(0.125);
+    expect(bedGainForPercent(0.25, 1)).toBeCloseTo(0.0025);
+  });
+
   it('keeps VO clearly above a capped, ducked bed', () => {
     expect(VO_MIX_VOICE_GAIN).toBe(0.85);
-    expect(VO_MIX_BED_GAIN).toBe(0.192);
+    expect(VO_MIX_BED_GAIN).toBe(0.2496);
     expect(VO_MIX_VOICE_GAIN).toBeGreaterThan(VO_MIX_BED_GAIN);
     expect(VO_MIX_BED_CONTROL).toContain('loudnorm=I=-28');
     expect(VO_MIX_BED_CONTROL).toContain('alimiter=limit=0.38');
@@ -187,7 +194,7 @@ describe('voiceoverBedMixFilter', () => {
   });
 
   it('uses a very quiet dialogue bed with hard duck', () => {
-    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(0.096);
+    expect(VO_MIX_DIALOGUE_BED_GAIN).toBe(0.1248);
     expect(VO_MIX_DEMUCS_BED_GAIN).toBe(VO_MIX_DIALOGUE_BED_GAIN);
     expect(VO_MIX_DIALOGUE_BED_GAIN).toBeLessThan(VO_MIX_BED_GAIN);
     expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('ratio=12');

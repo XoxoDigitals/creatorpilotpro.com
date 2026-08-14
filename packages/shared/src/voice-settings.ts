@@ -25,14 +25,34 @@ export const voiceSettingsSchema = z.object({
   /** Numeric speed for Kokoro / Gemini (1.0 = normal). */
   speed: z.number().positive().optional(),
   language: z.string().optional(),
+  /**
+   * Background bed / ambience level for VO mix (1–100%).
+   * 100 = product default bed gain; lower quietens music/ambience under VO.
+   */
+  backgroundBedPercent: z.number().int().min(1).max(100).optional(),
 });
 
 export type VoiceSettings = z.infer<typeof voiceSettingsSchema>;
+
+/** Default bed level in channel settings (maps to full VO_MIX_*_BED_GAIN). */
+export const DEFAULT_BACKGROUND_BED_PERCENT = 100;
+
+export function clampBackgroundBedPercent(raw: unknown): number {
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim()
+        ? Number(raw)
+        : NaN;
+  if (!Number.isFinite(n)) return DEFAULT_BACKGROUND_BED_PERCENT;
+  return Math.max(1, Math.min(100, Math.round(n)));
+}
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   provider: 'edge',
   voiceId: EDGE_DEFAULT_VOICE,
   locale: EDGE_DEFAULT_LOCALE,
+  backgroundBedPercent: DEFAULT_BACKGROUND_BED_PERCENT,
 };
 
 /** Locale-aware Edge default when the channel language is known. */
@@ -43,6 +63,7 @@ export function defaultVoiceForLanguage(language?: string | null): VoiceSettings
     voiceId: hit.voiceId,
     locale: hit.locale,
     language: hit.code,
+    backgroundBedPercent: DEFAULT_BACKGROUND_BED_PERCENT,
   };
 }
 
@@ -74,6 +95,9 @@ export function parseVoiceSettings(
     ...(typeof row.pitch === 'string' && row.pitch ? { pitch: row.pitch } : {}),
     ...(typeof row.volume === 'string' && row.volume ? { volume: row.volume } : {}),
     ...(typeof row.speed === 'number' && row.speed > 0 ? { speed: row.speed } : {}),
+    backgroundBedPercent: clampBackgroundBedPercent(
+      row.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
+    ),
     ...(typeof row.language === 'string' && row.language
       ? { language: row.language }
       : base.language
