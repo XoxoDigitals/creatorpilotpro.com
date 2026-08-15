@@ -3,6 +3,7 @@ import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RolesGuard } from './roles.guard';
 import { ROLES_KEY } from '../decorators/roles.decorator';
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import type { SessionUser } from '../session/session.types';
 
 /** Build a minimal ExecutionContext carrying a request user. */
@@ -24,6 +25,18 @@ describe('RolesGuard', () => {
     expect(guard.canActivate(ctxFor(reviewer))).toBe(true);
   });
 
+  it('skips RBAC on @Public routes even with class-level @Roles', () => {
+    const reflector = {
+      getAllAndOverride: (key: string) => {
+        if (key === IS_PUBLIC_KEY) return true;
+        if (key === ROLES_KEY) return ['OWNER', 'ADMIN', 'REVIEWER'];
+        return undefined;
+      },
+    } as unknown as Reflector;
+    const guard = new RolesGuard(reflector);
+    expect(guard.canActivate(ctxFor(undefined))).toBe(true);
+  });
+
   it('allows a user whose role is in the required set', () => {
     const reflector = {
       getAllAndOverride: (key: string) => (key === ROLES_KEY ? ['OWNER', 'ADMIN'] : undefined),
@@ -34,7 +47,7 @@ describe('RolesGuard', () => {
 
   it('rejects a user whose role is not in the required set', () => {
     const reflector = {
-      getAllAndOverride: () => ['OWNER', 'ADMIN'],
+      getAllAndOverride: (key: string) => (key === ROLES_KEY ? ['OWNER', 'ADMIN'] : undefined),
     } as unknown as Reflector;
     const guard = new RolesGuard(reflector);
     expect(() => guard.canActivate(ctxFor(reviewer))).toThrow(ForbiddenException);
@@ -42,7 +55,7 @@ describe('RolesGuard', () => {
 
   it('rejects when there is no authenticated user', () => {
     const reflector = {
-      getAllAndOverride: () => ['OWNER'],
+      getAllAndOverride: (key: string) => (key === ROLES_KEY ? ['OWNER'] : undefined),
     } as unknown as Reflector;
     const guard = new RolesGuard(reflector);
     expect(() => guard.canActivate(ctxFor(undefined))).toThrow(ForbiddenException);
