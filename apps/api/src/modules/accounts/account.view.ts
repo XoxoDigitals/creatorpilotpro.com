@@ -40,6 +40,12 @@ export interface AccountView {
   timezone: string;
   tokenExpiresAt: string | null;
   createdAt: string;
+  /** Latest synced follower/fan count (0 until analytics sync or connect populates it). */
+  followers: number;
+  /** Sum of daily views snapshots over the last 30 days. */
+  views30d: number;
+  /** Count of publish targets currently SCHEDULED. */
+  scheduledCount: number;
   profile: ChannelProfileView | null;
 }
 
@@ -64,6 +70,7 @@ export function toProfileView(p: ChannelProfile): ChannelProfileView {
 
 export function toAccountView(
   account: SocialAccount & { profile?: ChannelProfile | null },
+  metrics: { followers?: number; views30d?: number; scheduledCount?: number } = {},
 ): AccountView {
   return {
     id: account.id,
@@ -82,6 +89,9 @@ export function toAccountView(
     timezone: account.timezone,
     tokenExpiresAt: account.tokenExpiresAt ? account.tokenExpiresAt.toISOString() : null,
     createdAt: account.createdAt.toISOString(),
+    followers: metrics.followers ?? 0,
+    views30d: metrics.views30d ?? 0,
+    scheduledCount: metrics.scheduledCount ?? 0,
     profile: account.profile ? toProfileView(account.profile) : null,
   };
 }

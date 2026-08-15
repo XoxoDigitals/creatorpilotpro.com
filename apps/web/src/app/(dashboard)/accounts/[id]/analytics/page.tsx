@@ -87,7 +87,10 @@ export default function AccountAnalyticsPage() {
     setSyncing(true);
     try {
       await triggerAccountSync(id);
-      setTimeout(() => void loadMetrics(), 3000);
+      setTimeout(() => {
+        void loadMetrics();
+        void loadAccount();
+      }, 3000);
     } catch { /* ignore */ }
     finally { setSyncing(false); }
   }
@@ -142,7 +145,7 @@ export default function AccountAnalyticsPage() {
         <StatCard label="Unique viewers" value={compactNumber(totals.uniqueViewers)} hint="deduped" />
         <StatCard label="Impressions" value={compactNumber(totals.impressions)} hint="range total" />
         <StatCard label="Watch time" value={`${compactNumber(totals.watchTimeMin)} min`} hint="range total" />
-        <StatCard label="Followers" value={compactNumber(account.followers)}
+        <StatCard label="Followers" value={compactNumber(latest?.followers ?? account.followers)}
           delta={totals.followersDelta !== 0 ? `${totals.followersDelta > 0 ? '+' : ''}${totals.followersDelta}` : undefined}
         />
       </div>

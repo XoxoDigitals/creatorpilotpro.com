@@ -78,14 +78,25 @@ export type ManualConnectDto = z.infer<typeof manualConnectSchema>;
 
 /**
  * POST /accounts/connect/meta — finish the page-picker step. Only the session
- * and the chosen page travel here; the wizard choices (content type, dramas,
- * schedule) were carried through the OAuth state into the pending session and
- * are applied server-side.
+ * and chosen page id(s) travel here; wizard choices were carried through OAuth
+ * into the pending session. Prefer `pageIds` (multi-select); `pageId` is kept
+ * for older clients.
  */
-export const metaConnectSchema = z.object({
-  session: z.string().min(1),
-  pageId: z.string().min(1),
-});
+export const metaConnectSchema = z
+  .object({
+    session: z.string().min(1),
+    pageId: z.string().min(1).optional(),
+    pageIds: z.array(z.string().min(1)).min(1).max(50).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (!val.pageIds?.length && !val.pageId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Select at least one Facebook Page.',
+        path: ['pageIds'],
+      });
+    }
+  });
 export type MetaConnectDto = z.infer<typeof metaConnectSchema>;
 
 /**

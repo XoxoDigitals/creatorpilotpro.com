@@ -20,6 +20,8 @@ export interface MetaPage {
   name: string;
   avatarUrl: string | null;
   accessToken: string;
+  /** Page likes / fans from Graph `fan_count` (0 when Meta omits it). */
+  fanCount: number;
 }
 
 /** A pending page-picker session: candidate Pages + the wizard choices + actor. */
@@ -107,7 +109,7 @@ export class MetaOAuthService {
     const res = await this.fetchImpl(
       `${GRAPH}/me/accounts?` +
         new URLSearchParams({
-          fields: 'id,name,access_token,picture{url}',
+          fields: 'id,name,access_token,fan_count,picture{url}',
           access_token: userToken,
         }).toString(),
     );
@@ -119,6 +121,7 @@ export class MetaOAuthService {
         id: string;
         name: string;
         access_token: string;
+        fan_count?: number;
         picture?: { data?: { url?: string } };
       }>;
     };
@@ -127,6 +130,7 @@ export class MetaOAuthService {
       name: p.name,
       avatarUrl: p.picture?.data?.url ?? null,
       accessToken: p.access_token,
+      fanCount: typeof p.fan_count === 'number' ? p.fan_count : 0,
     }));
   }
 
@@ -139,24 +143,54 @@ export class MetaOAuthService {
   }
 
   /** Page list for the picker UI — tokens stripped. */
-  getPendingPages(sessionId: string): Array<{ id: string; name: string; avatarUrl: string | null }> {
+  getPendingPages(
+    sessionId: string,
+  ): Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }> {
     const s = this.pending.get(sessionId);
     if (!s || s.expiresAt < Date.now()) return [];
-    return s.pages.map((p) => ({ id: p.id, name: p.name, avatarUrl: p.avatarUrl }));
+    return s.pages.map((p) => ({
+      id: p.id,
+      name: p.name,
+      avatarUrl: p.avatarUrl,
+      fanCount: p.fanCount,
+    }));
   }
 
-  /** Resolve the chosen page (with its token + wizard choices); consumes the session. */
-  consumePage(
+  /**
+   * Resolve one or more chosen pages (with tokens + wizard choices) and consume
+   * the session. All `pageIds` must exist in the pending list.
+   */
+  consumePages(
     sessionId: string,
     userId: string,
-    pageId: string,
-  ): { page: MetaPage; wizard: WizardChoices } | null {
+    pageIds: string[],
+  ): { pages: MetaPage[]; wizard: WizardChoices } | null {
     const s = this.pending.get(sessionId);
     if (!s || s.expiresAt < Date.now() || s.userId !== userId) return null;
-    const page = s.pages.find((p) => p.id === pageId);
-    if (!page) return null;
+    if (pageIds.length === 0) return null;
+    const pages: MetaPage[] = [];
+    for (const id of pageIds) {
+      const page = s.pages.find((p) => p.id === id);
+      if (!page) return null;
+      pages.push(page);
+    }
     this.pending.delete(sessionId);
-    return { page, wizard: s.wizard };
+    return { pages, wizard: s.wizard };
+  }
+
+  /** Page likes / fans for a single Page (null on API failure). */
+  async fetchFanCount(pageId: string, pageAccessToken: string): Promise<number | null> {
+    try {
+      const res = await this.fetchImpl(
+        `${GRAPH}/${encodeURIComponent(pageId)}?` +
+          new URLSearchParams({ fields: 'fan_count', access_token: pageAccessToken }).toString(),
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as { fan_count?: number };
+      return typeof data.fan_count === 'number' ? data.fan_count : null;
+    } catch {
+      return null;
+    }
   }
 
   private sweep(): void {

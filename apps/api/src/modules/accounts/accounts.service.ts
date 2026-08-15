@@ -9,9 +9,10 @@ import type { AccountKind, Platform, Prisma, SocialAccount } from '@scp/db';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CryptoService } from '../../common/crypto/crypto.service';
 import { AccountAccessService } from '../../common/account-access/account-access.service';
+import { QueueProducer } from '../../common/queue/queue.producer';
 import type { SessionUser } from '../../common/session/session.types';
 import { GoogleOAuthService, type GoogleTokenBundle } from './oauth/google.service';
-import { MetaOAuthService, type MetaPage } from './oauth/meta.service';
+import { MetaOAuthService } from './oauth/meta.service';
 import { TikTokOAuthService, type TikTokTokenBundle } from './oauth/tiktok.service';
 import { signState, verifyState } from './oauth/oauth-state.util';
 import {
@@ -19,6 +20,7 @@ import {
   toAccountView,
 } from './account.view';
 import type {
+  MetaConnectDto,
   PatchAccountDto,
   PatchProfileDto,
   SchedulingPrefs,
@@ -70,6 +72,7 @@ export class AccountsService {
     private readonly tiktok: TikTokOAuthService,
     private readonly config: ConfigService,
     private readonly accountAccess: AccountAccessService,
+    private readonly queue: QueueProducer,
   ) {}
 
   // --- CRUD -----------------------------------------------------------------
@@ -84,13 +87,15 @@ export class AccountsService {
       include: { profile: true },
       orderBy: { createdAt: 'asc' },
     });
-    return rows.map(toAccountView);
+    const metrics = await this.listCardMetrics(rows);
+    return rows.map((r) => toAccountView(r, metrics.get(r.id)));
   }
 
   async get(id: string, actor: SessionUser): Promise<AccountView> {
     await this.accountAccess.assertCanAccess(actor, id);
     const row = await this.loadActive(id);
-    return toAccountView(row);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
   }
 
   async patch(id: string, dto: PatchAccountDto): Promise<AccountView> {
@@ -106,7 +111,8 @@ export class AccountsService {
       },
       include: { profile: true },
     });
-    return toAccountView(row);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
   }
 
   async patchProfile(id: string, dto: PatchProfileDto): Promise<AccountView> {
@@ -161,7 +167,8 @@ export class AccountsService {
     };
     await this.prisma.client.channelProfile.update({ where: { accountId: id }, data });
     const row = await this.loadActive(id);
-    return toAccountView(row);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
   }
 
   async softDelete(id: string): Promise<{ id: string; deleted: true }> {
@@ -275,36 +282,48 @@ export class AccountsService {
 
   getMetaPendingPages(
     sessionId: string,
-  ): Array<{ id: string; name: string; avatarUrl: string | null }> {
+  ): Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }> {
     return this.meta.getPendingPages(sessionId);
   }
 
   async connectMeta(
-    dto: { session: string; pageId: string },
+    dto: MetaConnectDto,
     userId: string,
-  ): Promise<AccountView> {
-    const resolved = this.meta.consumePage(dto.session, userId, dto.pageId);
+  ): Promise<{ accounts: AccountView[] }> {
+    const pageIds = dto.pageIds?.length
+      ? [...new Set(dto.pageIds)]
+      : dto.pageId
+        ? [dto.pageId]
+        : [];
+    const resolved = this.meta.consumePages(dto.session, userId, pageIds);
     if (!resolved) {
       throw new BadRequestException('That page-picker session has expired. Reconnect the account.');
     }
-    const page: MetaPage = resolved.page;
-    // The wizard choices travelled through the OAuth state into the pending
-    // session (like googleCallback's `payload.wizard`) — apply them here.
-    return this.createAccountWithProfile({
-      platform: 'FACEBOOK',
-      kind: 'FB_PAGE',
-      externalId: page.id,
-      name: page.name,
-      handle: null,
-      avatarUrl: page.avatarUrl,
-      connectionMethod: 'OWN_APP',
-      authPayload: { provider: 'meta', pageId: page.id, pageAccessToken: page.accessToken },
-      tokenExpiresAt: null, // Page tokens from a long-lived user token don't expire
-      contentType: resolved.wizard.contentType,
-      dramasEnabled: resolved.wizard.dramasEnabled,
-      schedulingPrefs: resolved.wizard.schedulingPrefs,
-      addedById: userId,
-    });
+
+    const accounts: AccountView[] = [];
+    for (const page of resolved.pages) {
+      const view = await this.createAccountWithProfile({
+        platform: 'FACEBOOK',
+        kind: 'FB_PAGE',
+        externalId: page.id,
+        name: page.name,
+        handle: null,
+        avatarUrl: page.avatarUrl,
+        connectionMethod: 'OWN_APP',
+        authPayload: { provider: 'meta', pageId: page.id, pageAccessToken: page.accessToken },
+        tokenExpiresAt: null, // Page tokens from a long-lived user token don't expire
+        contentType: resolved.wizard.contentType,
+        dramasEnabled: resolved.wizard.dramasEnabled,
+        schedulingPrefs: resolved.wizard.schedulingPrefs,
+        addedById: userId,
+      });
+      if (page.fanCount > 0) {
+        await this.upsertFollowersSnapshot(view.id, page.fanCount);
+      }
+      void this.queue.enqueueAccountSync(view.id);
+      accounts.push({ ...view, followers: page.fanCount });
+    }
+    return { accounts };
   }
 
   // --- Manual connection (Phase 10) -----------------------------------------
@@ -465,6 +484,110 @@ export class AccountsService {
       return toAccountView(await this.loadActive(row.id));
     }
     return toAccountView(row);
+  }
+
+  /** Latest metric_snapshot_account.followers per account (by date desc). */
+  private async latestFollowersMap(accountIds: string[]): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    if (accountIds.length === 0) return map;
+    const snaps = await this.prisma.client.metricSnapshotAccount.findMany({
+      where: { accountId: { in: accountIds } },
+      orderBy: { date: 'desc' },
+      distinct: ['accountId'],
+      select: { accountId: true, followers: true },
+    });
+    for (const s of snaps) map.set(s.accountId, s.followers);
+    return map;
+  }
+
+  /**
+   * Card metrics for the Accounts list: followers (refresh FB fan_count when still
+   * zero), views summed over the last 30 days, and scheduled publish count.
+   */
+  private async listCardMetrics(
+    rows: SocialAccount[],
+  ): Promise<Map<string, { followers: number; views30d: number; scheduledCount: number }>> {
+    const out = new Map<string, { followers: number; views30d: number; scheduledCount: number }>();
+    if (rows.length === 0) return out;
+
+    const ids = rows.map((r) => r.id);
+    const followers = await this.latestFollowersMap(ids);
+
+    // Backfill Facebook fan_count for connected pages that still show 0.
+    await Promise.all(
+      rows.map(async (row) => {
+        if (row.platform !== 'FACEBOOK') return;
+        const current = followers.get(row.id) ?? 0;
+        if (current > 0 || !row.authPayload) return;
+        const fan = await this.refreshFacebookFanCount(row);
+        if (fan !== null) followers.set(row.id, fan);
+      }),
+    );
+
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - 30);
+    since.setUTCHours(0, 0, 0, 0);
+
+    const [viewGroups, scheduledGroups] = await Promise.all([
+      this.prisma.client.metricSnapshotAccount.groupBy({
+        by: ['accountId'],
+        where: { accountId: { in: ids }, date: { gte: since } },
+        _sum: { views: true },
+      }),
+      this.prisma.client.publishTarget.groupBy({
+        by: ['accountId'],
+        where: { accountId: { in: ids }, status: 'SCHEDULED' },
+        _count: { id: true },
+      }),
+    ]);
+
+    const viewsMap = new Map(viewGroups.map((g) => [g.accountId, g._sum.views ?? 0]));
+    const scheduledMap = new Map(scheduledGroups.map((g) => [g.accountId, g._count.id]));
+
+    for (const id of ids) {
+      out.set(id, {
+        followers: followers.get(id) ?? 0,
+        views30d: viewsMap.get(id) ?? 0,
+        scheduledCount: scheduledMap.get(id) ?? 0,
+      });
+    }
+    return out;
+  }
+
+  private async refreshFacebookFanCount(row: SocialAccount): Promise<number | null> {
+    try {
+      const auth = JSON.parse(this.crypto.decrypt(row.authPayload!)) as {
+        pageId?: string;
+        pageAccessToken?: string;
+      };
+      const pageId = typeof auth.pageId === 'string' ? auth.pageId : row.externalId;
+      const token = typeof auth.pageAccessToken === 'string' ? auth.pageAccessToken : null;
+      if (!pageId || !token) return null;
+      const fan = await this.meta.fetchFanCount(pageId, token);
+      if (fan === null) return null;
+      await this.upsertFollowersSnapshot(row.id, fan);
+      return fan;
+    } catch {
+      return null;
+    }
+  }
+
+  private async upsertFollowersSnapshot(accountId: string, followers: number): Promise<void> {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    await this.prisma.client.metricSnapshotAccount.upsert({
+      where: { accountId_date: { accountId, date: today } },
+      create: {
+        accountId,
+        date: today,
+        followers,
+        syncedAt: new Date(),
+      },
+      update: {
+        followers,
+        syncedAt: new Date(),
+      },
+    });
   }
 
   private redirectUri(provider: 'google' | 'meta' | 'tiktok'): string {

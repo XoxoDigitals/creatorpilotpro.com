@@ -148,7 +148,7 @@ export default function AccountsPage() {
                       <Link href={`/accounts/${a.id}` as Route} className="block">
                         <div className="flex items-start justify-between">
                           <div className="flex items-center gap-3">
-                            <Avatar name={a.name} size="lg" />
+                            <Avatar name={a.name} src={a.avatarUrl} size="lg" />
                             <div>
                               <p className="text-sm font-semibold text-zinc-900">{a.name}</p>
                               <p className="text-xs text-zinc-500">{a.handle}</p>

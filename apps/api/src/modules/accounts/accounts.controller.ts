@@ -133,7 +133,7 @@ export class AccountsController {
   connectMeta(
     @CurrentUser() actor: SessionUser,
     @Body(new ZodBody(metaConnectSchema)) body: MetaConnectDto,
-  ): Promise<AccountView> {
+  ): Promise<{ accounts: AccountView[] }> {
     return this.accounts.connectMeta(body, actor.id);
   }
 

@@ -104,6 +104,9 @@ export interface ApiAccount {
   timezone: string;
   tokenExpiresAt: string | null;
   createdAt: string;
+  followers?: number;
+  views30d?: number;
+  scheduledCount?: number;
   profile: ApiChannelProfile | null;
 }
 
@@ -132,9 +135,9 @@ export function mapAccount(a: ApiAccount): Account {
     health: HEALTH[a.connectionStatus],
     connection: CONNECTION[a.connectionStatus],
     tokenExpiresAt: a.tokenExpiresAt,
-    followers: 0,
-    views30d: 0,
-    scheduledCount: 0,
+    followers: a.followers ?? 0,
+    views30d: a.views30d ?? 0,
+    scheduledCount: a.scheduledCount ?? 0,
     openIncidents: 0,
     monetized: a.monetized,
     paused: a.paused,

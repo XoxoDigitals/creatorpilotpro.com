@@ -4,7 +4,31 @@
  * credentials are absent — log + skip, never crash.
  */
 import type PgBoss from 'pg-boss';
-import { getPrisma, raiseIncident } from './publish-support.js';
+import { decryptAccountAuth, getMasterKey, getPrisma, raiseIncident } from './publish-support.js';
+
+const GRAPH = 'https://graph.facebook.com/v21.0';
+
+/** Fetch Facebook Page fan_count; null when auth/API fails (caller must not overwrite). */
+async function fetchFacebookFanCount(
+  pageId: string,
+  pageAccessToken: string,
+): Promise<number | null> {
+  try {
+    const url =
+      `${GRAPH}/${encodeURIComponent(pageId)}?` +
+      new URLSearchParams({ fields: 'fan_count', access_token: pageAccessToken }).toString();
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn(`[analytics:account-sync] Meta fan_count HTTP ${res.status} for page ${pageId}`);
+      return null;
+    }
+    const data = (await res.json()) as { fan_count?: number };
+    return typeof data.fan_count === 'number' ? data.fan_count : null;
+  } catch (err) {
+    console.warn(`[analytics:account-sync] Meta fan_count error for page ${pageId}:`, err);
+    return null;
+  }
+}
 
 // ── 1. Account metrics sync ────────────────────────────────────────────────
 
@@ -18,18 +42,35 @@ export async function runAccountSync(accountId: string, _boss: PgBoss): Promise<
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
-  // Platform API calls require credentials we may not have yet.
-  // Graceful degradation: log and return, don't crash.
   if (!account.authPayload) {
     console.log(`[analytics:account-sync] account ${accountId} has no auth — skipping`);
     return;
   }
 
-  // TODO: Call platform-specific analytics APIs (YouTube Analytics, TikTok, Facebook Insights).
-  // For now, upsert a zero-value snapshot so the pipeline is wired end-to-end.
-  // Real API calls will be added when platform adapters gain analytics methods.
+  // Views / Insights still stubbed for all platforms. Facebook followers come
+  // from Graph fan_count so dashboards stop showing permanent zeros.
+  let followers: number | null = null;
+  if (account.platform === 'FACEBOOK') {
+    const masterKey = getMasterKey();
+    if (masterKey) {
+      const auth = decryptAccountAuth(account.authPayload, masterKey);
+      const pageId =
+        typeof auth.pageId === 'string'
+          ? auth.pageId
+          : account.externalId;
+      const token =
+        typeof auth.pageAccessToken === 'string' ? auth.pageAccessToken : null;
+      if (pageId && token) {
+        followers = await fetchFacebookFanCount(pageId, token);
+      } else {
+        console.log(`[analytics:account-sync] Facebook account ${accountId} missing page token`);
+      }
+    } else {
+      console.log(`[analytics:account-sync] MASTER_KEY missing — cannot decrypt Facebook auth`);
+    }
+  }
+
   const metrics = {
-    followers: 0,
     views: 0,
     watchTimeMin: 0,
     impressions: 0,
@@ -45,15 +86,20 @@ export async function runAccountSync(accountId: string, _boss: PgBoss): Promise<
       create: {
         accountId,
         date: today,
+        followers: followers ?? 0,
         ...metrics,
         syncedAt: new Date(),
       },
       update: {
         ...metrics,
+        ...(followers !== null ? { followers } : {}),
         syncedAt: new Date(),
       },
     });
-    console.log(`[analytics:account-sync] synced account ${accountId} for ${today.toISOString().slice(0, 10)}`);
+    console.log(
+      `[analytics:account-sync] synced account ${accountId} for ${today.toISOString().slice(0, 10)}` +
+        (followers !== null ? ` (followers=${followers})` : ''),
+    );
   } catch (err) {
     console.error(`[analytics:account-sync] failed for account ${accountId}:`, err);
     await raiseIncident(prisma, {
