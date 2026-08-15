@@ -353,8 +353,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         console.log(
           `[worker:render] mixed enhanced VO over cleaned ${bedSource ?? 'stripped'} bed for ${contentItemId}` +
             ` (bed ${bedPercent}%)` +
-            (dialogueRanges.length > 0 ? ` (muted ${dialogueRanges.length} dialogue window(s))` : '') +
-            (voEndSec != null ? ` (bed mute after ${voEndSec.toFixed(2)}s)` : ''),
+            (dialogueRanges.length > 0 ? ` (muted ${dialogueRanges.length} dialogue window(s))` : ''),
         );
       } else if (hasNaturalSound) {
         await ffmpeg.exec([
@@ -374,8 +373,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         ]);
         console.log(
           `[worker:render] mixed enhanced VO over original ambience (no dialogue) for ${contentItemId}` +
-            ` (bed ${bedPercent}%)` +
-            (voEndSec != null ? ` (bed mute after ${voEndSec.toFixed(2)}s)` : ''),
+            ` (bed ${bedPercent}%)`,
         );
       } else {
         // Dialogue present but strip failed, or silent original: mute original, VO only

@@ -158,13 +158,11 @@ export const VO_MIX_DIALOGUE_SIDECHAIN =
   'sidechaincompress=threshold=0.06:ratio=4:attack=10:release=180:makeup=1:knee=5';
 
 /**
- * Hard-mute bed after the voiceover ends so a short VO on a long video does
- * not leave original ambience playing alone for the remaining minutes.
+ * @deprecated No longer applied — background bed must keep playing after VO ends.
+ * Kept so older tests/imports do not break; always returns null.
  */
-export function muteAfterVoAf(voEndSec: number | null | undefined): string | null {
-  if (voEndSec == null || !Number.isFinite(voEndSec) || voEndSec < 0.2) return null;
-  const t = Number(voEndSec.toFixed(3));
-  return `volume=0:enable='gte(t\\,${t})'`;
+export function muteAfterVoAf(_voEndSec?: number | null): string | null {
+  return null;
 }
 
 /**
@@ -206,21 +204,21 @@ function bedPrepChain(
 }
 
 /**
- * Filter graph after `enhanceVoiceover`: split VO for sidechain, cap+duck bed
- * under speech, amix without ffmpeg's default 1/n attenuation (`normalize=0`).
+ * Filter graph after `enhanceVoiceover`: split VO for sidechain, normalize bed,
+ * light duck under speech, amix without ffmpeg's default 1/n attenuation
+ * (`normalize=0`). Bed keeps playing for the full picture (no mute-after-VO).
  * `bedInput` is `0:a` (original video) or `2:a` (Demucs / karaoke no-vocals).
- * When `voEndSec` is set, the bed is hard-muted after the VO ends.
+ * `voEndSec` is accepted for API compatibility but ignored.
  */
 export function voiceoverBedMixFilter(
   bedInput: '0:a' | '2:a',
   bedGain: number,
   sidechain: string = VO_MIX_SIDECHAIN,
-  voEndSec?: number | null,
+  _voEndSec?: number | null,
 ): string {
-  const afterVo = muteAfterVoAf(voEndSec);
   return [
     `[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`,
-    bedPrepChain(bedInput, bedGain, afterVo ? [afterVo] : []),
+    bedPrepChain(bedInput, bedGain, []),
     `[bg][vo_sc]${sidechain}[ducked]`,
     `[ducked][vo]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]`,
   ].join(';');
@@ -262,7 +260,7 @@ export function muteDialogueRangesAf(
 
 /**
  * Mix filter that also hard-mutes the bed during AI dialogue ranges, then
- * applies the usual quiet dialogue bed + hard duck.
+ * applies the usual bed + light duck. Bed continues after VO ends.
  */
 export function voiceoverDialogueBedMixFilterWithRanges(
   ranges: { startSec: number; endSec: number }[],
@@ -272,11 +270,9 @@ export function voiceoverDialogueBedMixFilterWithRanges(
 ): string {
   const mute = muteDialogueRangesAf(ranges);
   if (!mute) return voiceoverDialogueBedMixFilter(bedInput, voEndSec, bedGain);
-  const afterVo = muteAfterVoAf(voEndSec);
-  const extras = [mute, ...(afterVo ? [afterVo] : [])];
   return [
     `[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`,
-    bedPrepChain(bedInput, bedGain, extras),
+    bedPrepChain(bedInput, bedGain, [mute]),
     `[bg][vo_sc]${VO_MIX_DIALOGUE_SIDECHAIN}[ducked]`,
     `[ducked][vo]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]`,
   ].join(';');

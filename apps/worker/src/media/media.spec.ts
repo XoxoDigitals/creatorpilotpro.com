@@ -185,11 +185,11 @@ describe('voiceoverBedMixFilter', () => {
     expect(graph).toContain('amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]');
   });
 
-  it('mutes the bed after the voiceover ends', () => {
+  it('keeps background playing after the voiceover ends (no mute-after-VO)', () => {
     expect(muteAfterVoAf(null)).toBeNull();
-    expect(muteAfterVoAf(12.5)).toContain("volume=0:enable='gte(t\\,12.5)'");
+    expect(muteAfterVoAf(12.5)).toBeNull();
     const graph = voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN, VO_MIX_SIDECHAIN, 45);
-    expect(graph).toContain("volume=0:enable='gte(t\\,45)'");
+    expect(graph).not.toContain("volume=0:enable='gte(t\\,45)'");
     expect(graph).toContain(VO_MIX_BED_CONTROL);
   });
 

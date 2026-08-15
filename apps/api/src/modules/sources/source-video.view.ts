@@ -20,9 +20,24 @@ export interface SourceVideoView {
   rightsConfirmedById: string | null;
   nearDuplicateOfId: string | null;
   createdAt: string;
+  /** 1-based place in account PENDING queue (oldest first); null if not PENDING. */
+  downloadQueuePosition: number | null;
+  /** Estimated ISO time when PENDING download may start. */
+  nextDownloadAt: string | null;
+  /** Short UI label for drip ETA. */
+  nextDownloadLabel: string | null;
+  /** Account-level drip buffer summary (same on every row in a list response). */
+  downloadDripSummary?: string | null;
 }
 
-export function toSourceVideoView(v: SourceVideo): SourceVideoView {
+export function toSourceVideoView(
+  v: SourceVideo,
+  drip?: {
+    position: number;
+    nextDownloadAt: Date;
+    label: string;
+  } | null,
+): SourceVideoView {
   return {
     id: v.id,
     watchedSourceId: v.watchedSourceId,
@@ -42,5 +57,9 @@ export function toSourceVideoView(v: SourceVideo): SourceVideoView {
     rightsConfirmedById: v.rightsConfirmedById,
     nearDuplicateOfId: v.nearDuplicateOfId,
     createdAt: v.createdAt.toISOString(),
+    downloadQueuePosition: drip?.position ?? null,
+    nextDownloadAt: drip?.nextDownloadAt.toISOString() ?? null,
+    nextDownloadLabel: drip?.label ?? null,
+    downloadDripSummary: null,
   };
 }

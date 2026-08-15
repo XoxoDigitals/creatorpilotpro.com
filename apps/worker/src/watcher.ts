@@ -3,9 +3,9 @@
  * per-minute interval in index.ts, mirroring the publish dispatcher) enqueues a
  * watch job for each ACTIVE source whose check interval has elapsed. The processor
  * lists new videos via the source adapter, upserts source_videos by
- * (watchedSourceId, sourcePlatformId), and enqueues DOWNLOAD for genuinely new
- * ones. Repeated listing failures auto-pause the source to ERROR + raise an
- * incident (docs/04 §5).
+ * (watchedSourceId, sourcePlatformId) as PENDING. The download drip dispatcher
+ * enqueues DOWNLOAD when the account's ready buffer has room. Repeated listing
+ * failures auto-pause the source to ERROR + raise an incident (docs/04 §5).
  */
 import type PgBoss from 'pg-boss';
 import { QUEUE } from '@scp/shared';
@@ -16,7 +16,7 @@ import {
   toAdapterSource,
   type WatchedSourceRow,
 } from './ingestion-support.js';
-import type { CompetitorPollJob, DownloadJob, WatchJob } from './ingestion-jobs.js';
+import type { CompetitorPollJob, WatchJob } from './ingestion-jobs.js';
 
 /** Consecutive listing failures before a source auto-pauses to ERROR (docs/04 §5). */
 export const WATCHER_FAILURE_THRESHOLD = 3;
@@ -46,8 +46,8 @@ export async function dispatchDueSources(boss: PgBoss): Promise<number> {
   return dispatched;
 }
 
-/** List new videos for one source, upsert them, and enqueue DOWNLOAD for new ones. */
-export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<void> {
+/** List new videos for one source and leave them PENDING for the download drip. */
+export async function runWatch(watchedSourceId: string, _boss: PgBoss): Promise<void> {
   const prisma = getPrisma();
   const source = await prisma.watchedSource.findFirst({
     where: { id: watchedSourceId, deletedAt: null },
@@ -90,8 +90,9 @@ export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<v
     return;
   }
 
-  // Upsert each discovered ref; enqueue DOWNLOAD only for newly-created rows.
-  let enqueued = 0;
+  // Upsert each discovered ref; leave new rows PENDING for the download drip
+  // dispatcher (posts/day buffer) — do not enqueue all DOWNLOAD jobs at once.
+  let discovered = 0;
   for (const ref of refs) {
     const existing = await prisma.sourceVideo.findUnique({
       where: {
@@ -104,7 +105,7 @@ export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<v
     });
     if (existing) continue;
 
-    const created = await prisma.sourceVideo.create({
+    await prisma.sourceVideo.create({
       data: {
         watchedSourceId: source.id,
         sourceUrl: ref.sourceUrl,
@@ -117,9 +118,7 @@ export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<v
       },
       select: { id: true },
     });
-    const job: DownloadJob = { kind: 'download', sourceVideoId: created.id };
-    await boss.send(QUEUE.DOWNLOAD, job, { singletonKey: created.id });
-    enqueued += 1;
+    discovered += 1;
   }
 
   await prisma.watchedSource.update({
@@ -127,8 +126,10 @@ export async function runWatch(watchedSourceId: string, boss: PgBoss): Promise<v
     data: { consecutiveFailures: 0, errorNote: null, lastCheckedAt: new Date() },
   });
 
-  if (enqueued > 0) {
-    console.log(`[worker:watcher] source ${source.id} — enqueued ${enqueued} new download(s)`);
+  if (discovered > 0) {
+    console.log(
+      `[worker:watcher] source ${source.id} — discovered ${discovered} new video(s) (PENDING; download drip will enqueue)`,
+    );
   }
 }
 

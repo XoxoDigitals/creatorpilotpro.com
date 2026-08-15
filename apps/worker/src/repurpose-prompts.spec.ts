@@ -76,7 +76,7 @@ describe('metadata prompt language', () => {
 describe('narration prompt', () => {
   it('asks for three timed variants in the channel language', () => {
     const prompt = defaultNarrationRewritePrompt('hi');
-    expect(prompt).toContain('THREE different VOICEOVER SCRIPTS');
+    expect(prompt).toContain('THREE distinct voiceover scripts');
     expect(prompt).toContain('explainer');
     expect(prompt).toContain('styleB');
     expect(prompt).toContain('styleC');
@@ -84,21 +84,23 @@ describe('narration prompt', () => {
     expect(prompt).toContain('Hindi');
   });
 
-  it('requires Explainer to narrate character dialogue in third person', () => {
+  it('uses story arc, dialogue summary, and forbids generic hooks', () => {
     const prompt = defaultNarrationRewritePrompt('en');
-    expect(prompt).toContain('CRITICAL — character dialogue');
-    expect(prompt).toContain('She asks');
-    expect(prompt).toContain('He replies');
-    expect(prompt).toContain('third-person');
-    expect(prompt).toContain('NATURAL pace');
+    expect(prompt).toContain('HOOK → CONTEXT → PROBLEM/CHANGE → PROGRESSION → REACTION → PAYOFF');
+    expect(prompt).toContain('Narrate the story, not the obvious pixels');
+    expect(prompt).toContain('You won\'t believe this');
+    expect(prompt).toContain('third person');
+    expect(prompt).toContain('hasDialogue');
+    expect(prompt).toContain('natural TTS');
     expect(prompt).toContain('maxWords');
   });
 });
 
 describe('video analysis prompt', () => {
-  it('asks for dialogueRanges when spoken dialogue is present', () => {
+  it('asks for dialogueRanges and story-focused analysis', () => {
     expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('dialogueRanges');
-    expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('precise time windows');
+    expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('ACTION + CHANGE + CONSEQUENCE');
+    expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('spoken-word windows');
   });
 });
 

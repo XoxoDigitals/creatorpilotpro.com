@@ -1,10 +1,15 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@scp/db';
+import {
+  extractVideoUrls,
+  estimatePendingDownloadEtas,
+  formatDownloadDripSummary,
+  resolvePostsPerDay,
+} from '@scp/shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
 import { toWatchedSourceView, type WatchedSourceView } from './watched-source.view';
 import { toSourceVideoView, type SourceVideoView } from './source-video.view';
-import { extractVideoUrls } from '@scp/shared';
 import type { BulkImportDto, CreateSourceDto, PatchSourceDto } from './dto/sources.dto';
 
 const SOURCE_WITH_COUNT = { _count: { select: { videos: true } } } as const;
@@ -137,7 +142,8 @@ export class SourcesService {
 
   /**
    * Bulk URL import (docs/04 §1): one PAUSED GENERIC_URL "batch" source + a
-   * SourceVideo per unique URL, each enqueued for download. Returns the batch.
+   * SourceVideo per unique URL as PENDING. Downloads are paced by the worker
+   * download dispatcher (≈1 day of posts at a time vs channel posts/day).
    */
   async bulkImport(dto: BulkImportDto): Promise<WatchedSourceView> {
     if (dto.targetAccountId) await this.assertAccount(dto.targetAccountId);
@@ -163,17 +169,97 @@ export class SourcesService {
       include: { ...SOURCE_WITH_COUNT, videos: { select: { id: true } } },
     });
 
-    for (const v of batch.videos) await this.queue.enqueueDownload(v.id);
+    // Do not enqueue all DOWNLOAD jobs here — worker download-dispatch drips
+    // ~1 day of content when the ready buffer (≈2 days) has room.
     return toWatchedSourceView(batch);
   }
 
   async listVideos(params: { sourceId?: string }): Promise<SourceVideoView[]> {
     const videos = await this.prisma.client.sourceVideo.findMany({
       where: { ...(params.sourceId ? { watchedSourceId: params.sourceId } : {}) },
+      include: {
+        watchedSource: { select: { targetAccountId: true } },
+      },
       orderBy: { createdAt: 'desc' },
       take: 500,
     });
-    return videos.map(toSourceVideoView);
+    if (videos.length === 0) return [];
+
+    const accountId =
+      videos.find((v) => v.watchedSource?.targetAccountId)?.watchedSource?.targetAccountId ?? null;
+
+    let etaById = new Map<
+      string,
+      { position: number; nextDownloadAt: Date; label: string }
+    >();
+    let dripSummary: string | null = null;
+
+    if (accountId) {
+      const profile = await this.prisma.client.channelProfile.findUnique({
+        where: { accountId },
+        select: { schedulingPrefs: true },
+      });
+      const postsPerDay = resolvePostsPerDay(profile?.schedulingPrefs);
+      const inventory = await this.countAccountDownloadInventory(accountId);
+      const pendingOldest = await this.prisma.client.sourceVideo.findMany({
+        where: {
+          downloadStatus: 'PENDING',
+          watchedSource: { targetAccountId: accountId, deletedAt: null },
+        },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+        take: 500,
+      });
+      etaById = estimatePendingDownloadEtas({
+        pendingIdsOldestFirst: pendingOldest.map((p) => p.id),
+        postsPerDay,
+        ready: inventory.ready,
+        inFlight: inventory.inFlight,
+      });
+      dripSummary = formatDownloadDripSummary({
+        postsPerDay,
+        ready: inventory.ready,
+        inFlight: inventory.inFlight,
+        pendingCount: pendingOldest.length,
+      });
+    }
+
+    return videos.map((v) => {
+      const view = toSourceVideoView(v, etaById.get(v.id) ?? null);
+      // Attach account drip summary on every row so the UI can show one banner.
+      return dripSummary
+        ? { ...view, downloadDripSummary: dripSummary }
+        : view;
+    });
+  }
+
+  private async countAccountDownloadInventory(accountId: string): Promise<{
+    ready: number;
+    inFlight: number;
+  }> {
+    const sourceScope = {
+      watchedSource: { targetAccountId: accountId, deletedAt: null },
+    } as const;
+    const [inFlight, doneWaiting, inPipeline] = await Promise.all([
+      this.prisma.client.sourceVideo.count({
+        where: { downloadStatus: 'DOWNLOADING', ...sourceScope },
+      }),
+      this.prisma.client.sourceVideo.count({
+        where: {
+          downloadStatus: 'DONE',
+          ...sourceScope,
+          contentItems: { none: { deletedAt: null } },
+        },
+      }),
+      this.prisma.client.contentItem.count({
+        where: {
+          deletedAt: null,
+          status: { notIn: ['PUBLISHED', 'REJECTED'] },
+          sourceVideo: sourceScope,
+        },
+      }),
+    ]);
+    return { ready: doneWaiting + inPipeline, inFlight };
   }
 
   /**

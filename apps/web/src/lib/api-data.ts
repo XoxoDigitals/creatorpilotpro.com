@@ -789,6 +789,10 @@ export interface SourceVideoView {
   rightsNote: string | null;
   nearDuplicateOfId: string | null;
   createdAt: string;
+  downloadQueuePosition?: number | null;
+  nextDownloadAt?: string | null;
+  nextDownloadLabel?: string | null;
+  downloadDripSummary?: string | null;
 }
 
 /** List every SourceVideo for one watched source (bulk batch or profile). */

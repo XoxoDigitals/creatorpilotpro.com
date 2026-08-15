@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { TaskType, formatOutputLanguagePolicy, languageDisplayName } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 8;
+export const REPURPOSE_PROMPT_REV = 9;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -208,62 +208,70 @@ export const metadataOutputSchema = z.object({
 
 export type MetadataOutput = z.infer<typeof metadataOutputSchema>;
 
-export const DEFAULT_VIDEO_ANALYSIS_PROMPT = `You are a sharp video analyst for a social-content repurposing pipeline.
+export const DEFAULT_VIDEO_ANALYSIS_PROMPT = `You are a video analyst for a social-content repurposing pipeline.
 
-Watch / study the ENTIRE video from start to finish (or every frame/sample provided). Your job is to report WHAT IS HAPPENING — clear beat-by-beat / segment understanding across the full timeline — not a vague one-line blurb.
+Analyze the ENTIRE video from start to finish and report what actually happens across the full timeline. Focus on story-relevant actions, changes, reactions, dialogue, problems, attempts, reveals, and outcomes. Avoid vague descriptions and do not invent unsupported facts.
 
-Return ONLY JSON matching this shape:
+Return ONLY valid JSON:
 {
-  "summary": string,                 // 2-4 sentence overview of the whole clip
-  "overallWhatHappens": string,      // plain-language arc: beginning → middle → end
-  "durationSec": number | null,      // best estimate of total length in seconds
-  "setting": string,                 // where / when / vibe
-  "characters": string[],            // people, animals, or key subjects (short labels)
-  "segments": [                      // REQUIRED: cover the FULL timeline with contiguous beats
+  "summary": string,
+  "overallWhatHappens": string,
+  "durationSec": number | null,
+  "setting": string,
+  "characters": string[],
+  "segments": [
     {
       "startSec": number,
       "endSec": number,
-      "whatHappens": string,         // concrete action/events in this beat (who does what)
-      "visuals": string,             // framing, text on screen, cuts, notable props
-      "speechOrAudio": string,       // quote or paraphrase audible dialogue (who said what / replies), VO, SFX, music
-      "mood": string                 // energy / emotion of this beat
+      "whatHappens": string,
+      "visuals": string,
+      "speechOrAudio": string,
+      "mood": string
     }
   ],
-  "hookMoments": string[],           // timestamps/moments that would grab a scroll-stopping viewer
-  "pacingNotes": string,             // how the clip moves; denseness; dead air
-  "hasDialogue": boolean,            // true if people are talking / there is spoken dialogue or on-screen VO
-  "hasNaturalSound": boolean,        // true if ambience/SFX/music is audible even without dialogue
-  "dialogueRanges": [                // REQUIRED when hasDialogue: precise time windows of spoken dialogue
+  "hookMoments": string[],
+  "pacingNotes": string,
+  "hasDialogue": boolean,
+  "hasNaturalSound": boolean,
+  "dialogueRanges": [
     { "startSec": number, "endSec": number }
   ],
-  "people": [                        // notable on-screen people/subjects (empty if none)
+  "people": [
     {
-      "label": string,               // who (name if known, else short descriptor)
-      "originOrContext": string,     // place, role, or scene context (e.g. "China", "street magician")
-      "whyNotable": string           // why a narrator would hook on them
+      "label": string,
+      "originOrContext": string,
+      "whyNotable": string
     }
   ]
 }
 
 Rules:
-- Segments must span the full video with little/no gap. Prefer ~2–6s beats for short clips; longer clips may use ~4–10s beats. Never collapse the whole video into one segment unless it is under ~3 seconds.
-- Describe observable action and events — not marketing copy.
-- Set hasDialogue true only when spoken words/talking are actually audible. Background crowd murmur without intelligible speech is NOT dialogue.
-- When people speak, put the substance of what was said (and any reply) into that beat's speechOrAudio — approximate quotes are fine — so the Explainer narrator can describe the conversation later.
-- When hasDialogue is true, fill dialogueRanges with every contiguous window where spoken words are audible (tight start/end, merge gaps under ~0.3s). These ranges drive precise mute of original speech in render — prefer accuracy over covering the whole clip. If hasDialogue is false, return dialogueRanges: [].
-- Set hasNaturalSound true when there is audible ambience, SFX, or music (even if hasDialogue is false).
-- If a person (or a few key people) is clearly the subject, fill people[] with the best label + origin/context + why they stand out. Do not invent celebrity identities you cannot support.
-- If only frames/samples are attached (not the full video file), infer the timeline from their timestamps and still produce contiguous segments covering 0 → durationSec.
-- If no media is attached, say so in summary and produce best-effort segments from metadata only.
-- Do not invent brands, products, or plot that are not supported by the media/metadata.`;
+- Understand the full beginning → middle → ending before writing.
+- overallWhatHappens must explain the full story, including the outcome/payoff.
+- Segments must cover approximately 0 → durationSec with little/no gap.
+- Prefer 2–6s beats for short clips and 4–10s for longer clips, but split mainly when the action, speaker, reaction, problem, attempt, reveal, or result changes.
+- whatHappens should explain meaningful ACTION + CHANGE + CONSEQUENCE, not just visible poses.
+- visuals should contain useful visible details without repeating whatHappens.
+- If intelligible speech exists, speechOrAudio must summarize what each person said and any reply. Do not just say "they talk."
+- hasDialogue is true only for intelligible spoken words.
+- dialogueRanges must tightly cover spoken-word windows; merge gaps under ~0.3s. Otherwise return []. These ranges drive precise mute of original speech in render — prefer accuracy over covering the whole clip.
+- hasNaturalSound is true for music, ambience, SFX, reactions, engines, impacts, etc.
+- hookMoments should identify the strongest curiosity, surprise, failure, reaction, transformation, danger, or payoff moments with approximate timestamps.
+- pacingNotes should identify slow setup, acceleration, repetitive sections, dialogue-heavy areas, and payoff timing.
+- Compress repetitive/unimportant actions, but still cover the whole timeline.
+- Do not guess identities, brands, relationships, locations, motives, or dialogue.
+- If only frames/samples are provided, infer conservatively from timestamps and still produce contiguous segments covering 0 → durationSec.
+- If no media is attached, state that in summary and do not fabricate events.
+
+Return ONLY the JSON object.`;
 
 export function defaultNarrationRewritePrompt(language?: string | null): string {
   const lang = languageDisplayName(language);
-  return `You are an elite short-form storytelling narrator for social video.
+  return `You are an elite short-form storytelling narrator.
 
-Given a structured beat-by-beat video analysis PLUS a duration budget, write THREE different VOICEOVER SCRIPTS. The reviewer will pick one. TTS speaks only the approved script.
+Given a beat-by-beat video analysis, duration budget, optional channel style, and language ${lang}, write THREE distinct voiceover scripts.
 
-Return ONLY JSON:
+Return ONLY valid JSON:
 {
   "variants": [
     {
@@ -293,28 +301,54 @@ Return ONLY JSON:
   ]
 }
 
-Three distinct tones (required — do not duplicate copy):
-1. explainer — clear how-to / what's-happening narration. Guide the viewer through the clip plainly.
-   CRITICAL — character dialogue: when analysis hasDialogue is true OR any beat's speechOrAudio contains spoken lines / conversation, the Explainer MUST narrate what was said and replied in third-person explainer style (e.g. "She asks…", "He replies…", "The vendor explains…"). Cover the conversation so viewers understand the spoken content without hearing original audio. Do not ignore dialogue beats or leave them as silent visuals-only lines when speech was present.
-2. styleB — hooky / hype / curiosity. Energetic, scroll-stopping, still accurate to the analysis. May paraphrase dialogue more loosely than Explainer.
-3. styleC — calm storytelling / documentary. Measured, vivid, present-tense when it fits. May summarize spoken moments without beat-by-beat quotes.
+Core rule: Narrate the story, not the obvious pixels.
 
-Timing (critical — VO must sync to the picture at natural pace):
+Build each script around:
+HOOK → CONTEXT → PROBLEM/CHANGE → PROGRESSION → REACTION → PAYOFF.
+
+Rules:
+- Start with a specific curiosity hook in the first 1–2 seconds.
+- Avoid generic hooks like "You won't believe this," "Watch till the end," or "In this video."
+- Explain WHY actions matter, what changed, what went wrong, what was said, and what the result means.
+- Connect events with cause/effect instead of listing actions mechanically.
+- Skip or compress obvious/repetitive visual actions when they add no story value.
+- Do not reveal every payoff immediately unless a result-first hook is strongest.
+- Preserve the ending/result; never spend the whole word budget on setup.
+
+Variant requirements:
+- explainer: clearest and most complete version. Conversational and engaging. If hasDialogue is true or any beat contains spoken conversation, summarize the important question/reply/explanation in third person.
+- styleB: fastest, punchiest, curiosity-driven version with short sentences and stronger open loops.
+- styleC: calm, cinematic, documentary-style storytelling with controlled suspense and smooth progression.
+- The three variants must be genuinely different, not paraphrases.
+
+Timing:
 - The user JSON includes durationSec, maxSpokenSec, maxWords, and beats[] (startSec/endSec/durationSec/maxWords/whatHappens).
-- Each variant MUST include lines[] aligned to those beats: one line per beat covering the FULL video timeline (merge tiny beats if needed). Do not stop narrating halfway — every major beat gets a line so speech is spread across the whole clip.
-- Prefer short lines that fit each beat's maxWords (≈2.2 words/sec). TTS plays at NATURAL pace and will NOT speed up; if a line is a bit long it may spill into the next gap — that is OK. Never write a dense paragraph for a 2s beat.
-- script is the full TTS string: concatenate lines[] in order as plain prose (spaces, no timestamps).
-- estimatedSpokenSec should be near the video length (spread across beats with natural gaps), not a single early block that ends at ~half the video.
-- If a beat is visual-only, a short line is fine; do not pad with filler that overruns the next scene.
+- Assume natural TTS speed of about 2.2–2.5 words/sec. TTS will NOT speed up.
+- Every line must realistically fit inside endSec - startSec (prefer each beat's maxWords ≈ 2.2 words/sec).
+- Lines must be chronological, non-overlapping, and within video duration.
+- Prefer one line per beat covering the FULL video timeline (merge tiny beats if needed). Do not stop narrating halfway.
+- Narration does NOT need to fill every second; allow important visuals, reactions, natural sound, or reveals to breathe.
+- Align narration with the relevant visual beat. Early teasing is allowed only when intentional.
+- script must exactly equal all lines[].text concatenated in order as plain prose (spaces, no timestamps).
+- estimatedSpokenSec must reflect actual spoken wording, not video duration.
 - When dialogue exists, still narrate what was said/replied — but keep those lines within the beat maxWords (summarize the exchange if needed).
 
-Storytelling:
-- Open with a HOOK in the first 1–2 seconds of speech — curiosity, stakes, or a bold invitation. Do not start with dry scene-setting.
-- If the analysis identifies a person (people[] / characters), write a compelling narrator hook ABOUT THEM in that opening using only facts the analysis supports.
-- Follow the channel writing / narration style block when provided. Write the spoken scripts in ${lang}.
-- Keep this instruction prompt in English. The spoken voiceover scripts themselves must be ${lang}.
+Accuracy:
+- Use only information supported by the analysis.
+- Do not invent identities, brands, motives, relationships, locations, stakes, dialogue, or outcomes.
+- Follow the supplied channel style when provided.
+- Write all spoken text in ${lang}. Keep this instruction prompt in English.
 - No stage directions, speaker labels, brackets, or markdown inside script or lines[].text — ONLY words meant to be spoken aloud.
-- Do not invent facts contradicted by the analysis. You may heighten energy and framing, not the plot.`;
+
+Before returning, ensure each script has:
+1. a real hook,
+2. clear context,
+3. story progression,
+4. dialogue explanation when required,
+5. a clear payoff,
+6. realistic timing.
+
+Return ONLY the JSON object.`;
 }
 
 /** Platform keys match Prisma `Platform` (YOUTUBE / TIKTOK / FACEBOOK). */

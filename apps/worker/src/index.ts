@@ -12,6 +12,7 @@ import { processors, setBoss } from './processors.js';
 import { PUBLISH_RETRY_LIMIT } from './publish.js';
 import { dispatchDueTargets } from './dispatcher.js';
 import { dispatchDueSources, dispatchDueCompetitors } from './watcher.js';
+import { dispatchPendingDownloads } from './download-dispatch.js';
 import { dispatchHotSync } from './analytics-dispatch.js';
 import { startHealthServer } from './health.js';
 
@@ -120,6 +121,33 @@ async function main(): Promise<void> {
   }, WATCHER_DISPATCH_INTERVAL_MS);
   console.log(`[worker:watcher] source dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`);
 
+  // Download drip: pace PENDING SourceVideos by channel posts/day (~2-day ready
+  // buffer, release ~1 day when under). Runs every minute like other dispatchers.
+  let drippingDownloads = false;
+  const downloadDripTimer = setInterval(() => {
+    if (drippingDownloads) return;
+    drippingDownloads = true;
+    void dispatchPendingDownloads(boss)
+      .then((n) => {
+        if (n > 0) {
+          console.log(`[worker:download-drip] enqueued ${n} download(s)`);
+        }
+      })
+      .catch((err) => {
+        console.error('[worker:download-drip] failed:', err);
+      })
+      .finally(() => {
+        drippingDownloads = false;
+      });
+  }, WATCHER_DISPATCH_INTERVAL_MS);
+  console.log(
+    `[worker:download-drip] dispatcher started (every ${WATCHER_DISPATCH_INTERVAL_MS / 1000}s)`,
+  );
+  // Kick once at boot so bulk imports do not wait a full minute.
+  void dispatchPendingDownloads(boss).catch((err) => {
+    console.error('[worker:download-drip] initial pass failed:', err);
+  });
+
   // Competitor dispatcher (Phase 4, FR-D1): every minute, enqueue a poll for each
   // ACTIVE competitor channel whose check interval has elapsed.
   let pollingCompetitors = false;
@@ -196,6 +224,7 @@ async function main(): Promise<void> {
     console.log(`[worker] ${signal} received — shutting down gracefully...`);
     clearInterval(dispatchTimer);
     clearInterval(watcherTimer);
+    clearInterval(downloadDripTimer);
     clearInterval(competitorTimer);
     clearInterval(hotSyncTimer);
     healthServer.close();

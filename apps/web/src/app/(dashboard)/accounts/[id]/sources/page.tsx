@@ -425,8 +425,14 @@ function SourceVideosPanel({
   if (videos.length === 0) {
     return <p className="p-3 text-xs text-zinc-500">No videos for this source yet.</p>;
   }
+  const dripSummary = videos.find((v) => v.downloadDripSummary)?.downloadDripSummary;
   return (
     <div className="p-3">
+      {dripSummary && (
+        <p className="mb-2 rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-[11px] text-zinc-600">
+          {dripSummary}
+        </p>
+      )}
       <table className="w-full text-xs">
         <thead className="text-[10px] uppercase tracking-wide text-zinc-500">
           <tr>
@@ -434,6 +440,7 @@ function SourceVideosPanel({
             <th className="px-2 py-1 text-left">Title</th>
             <th className="px-2 py-1 text-left">Status</th>
             <th className="px-2 py-1 text-left">Progress</th>
+            <th className="px-2 py-1 text-left">Next download</th>
             <th className="px-2 py-1 text-left">Added</th>
             <th className="px-2 py-1 text-left"> </th>
           </tr>
@@ -459,6 +466,16 @@ function SourceVideosPanel({
               </td>
               <td className="px-2 py-1">
                 <ProgressCell v={v} onRetry={() => onRetry(v.id)} />
+              </td>
+              <td
+                className="px-2 py-1 text-zinc-600"
+                title={v.nextDownloadAt ? absoluteTime(v.nextDownloadAt) : undefined}
+              >
+                {v.downloadStatus === 'PENDING'
+                  ? (v.nextDownloadLabel ?? 'Queued')
+                  : v.downloadStatus === 'DOWNLOADING'
+                    ? 'In progress'
+                    : '—'}
               </td>
               <td className="px-2 py-1 text-zinc-500" title={absoluteTime(v.createdAt)}>
                 {relativeTime(v.createdAt)}
@@ -521,12 +538,14 @@ function ProgressCell({ v, onRetry }: { v: SourceVideoView; onRetry: () => void 
   const bits: string[] = [`${pct}%`];
   if (v.downloadSpeedBps) bits.push(fmtSpeed(v.downloadSpeedBps));
   if (v.downloadEtaSec != null) bits.push(`ETA ${fmtEta(v.downloadEtaSec)}`);
-  // A PENDING row that has been sitting for more than a couple of minutes almost
-  // always means the worker never picked it up (crash between enqueue and run,
-  // singleton-key collision, restart mid-flight). Surface a Retry so the user
-  // can nudge it without having to delete + re-import the whole source.
-  const stuck =
-    v.downloadStatus === 'PENDING' && Date.now() - new Date(v.createdAt).getTime() > 2 * 60_000;
+  // PENDING rows wait on the download drip — show queue ETA, not a false “stuck” retry.
+  if (v.downloadStatus === 'PENDING') {
+    return (
+      <p className="text-[10px] text-zinc-500">
+        {v.nextDownloadLabel ?? 'Waiting in drip queue…'}
+      </p>
+    );
+  }
   return (
     <div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
@@ -539,17 +558,7 @@ function ProgressCell({ v, onRetry }: { v: SourceVideoView; onRetry: () => void 
         />
       </div>
       <p className="mt-0.5 flex items-center gap-2 text-[10px] text-zinc-500">
-        <span>{v.downloadStatus === 'PENDING' ? 'queued…' : bits.join(' · ')}</span>
-        {stuck && (
-          <button
-            type="button"
-            onClick={() => void onRetry()}
-            className="rounded-md border border-zinc-300 bg-white px-1.5 py-0.5 text-[10px] text-zinc-700 hover:bg-zinc-50"
-            title="Been queued for a while — nudge the worker to pick it up again."
-          >
-            Retry
-          </button>
-        )}
+        <span>{bits.join(' · ')}</span>
       </p>
     </div>
   );
