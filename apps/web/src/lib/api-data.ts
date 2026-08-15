@@ -327,6 +327,7 @@ export interface PublishTargetDetail {
   publishedAt: string | null;
   platformPostId: string | null;
   lastError: unknown;
+  views?: number | null;
   hasVideo: boolean;
   hasThumbnail: boolean;
   createdAt: string;
@@ -358,8 +359,10 @@ function mapTarget(t: ApiPublishTarget): Post {
     status: TARGET_STATUS[t.status],
     scheduledAt: t.scheduledAt,
     publishedAt: t.publishedAt,
-    views: null,
+    views: typeof t.views === 'number' ? t.views : null,
     accent: PLATFORM_ACCENT[t.platform] ?? '#6366f1',
+    platformPostId: t.platformPostId,
+    platform: t.platform,
   };
 }
 

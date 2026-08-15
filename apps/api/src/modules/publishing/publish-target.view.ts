@@ -21,6 +21,8 @@ export interface PublishTargetView {
   publishedAt: string | null;
   platformPostId: string | null;
   lastError: unknown;
+  /** Latest synced view count when available. */
+  views: number | null;
   /** True when a FINAL or ORIGINAL video asset exists (local and/or Drive). */
   hasVideo: boolean;
   /** True when a THUMBNAIL asset exists (local and/or Drive). */
@@ -139,6 +141,7 @@ export function toPublishTargetView(
       currentStep?: unknown;
       assets?: Pick<Asset, 'kind' | 'localPath' | 'driveFileId'>[];
     } | null;
+    metricSnapshots?: Array<{ views: number }>;
   },
 ): PublishTargetView {
   const assets = t.contentItem?.assets ?? [];
@@ -147,6 +150,7 @@ export function toPublishTargetView(
     t.contentItem?.currentStep,
     t.contentItem?.title ?? '',
   );
+  const latestViews = t.metricSnapshots?.[0]?.views;
   return {
     id: t.id,
     contentItemId: t.contentItemId,
@@ -161,6 +165,7 @@ export function toPublishTargetView(
     publishedAt: t.publishedAt ? t.publishedAt.toISOString() : null,
     platformPostId: t.platformPostId,
     lastError: t.lastError ?? null,
+    views: typeof latestViews === 'number' ? latestViews : null,
     hasVideo: assets.some(
       (a) => (a.kind === 'FINAL' || a.kind === 'ORIGINAL') && assetHasMedia(a),
     ),

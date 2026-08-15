@@ -31,7 +31,7 @@ function constraintsFor(platform: Platform): PlatformConstraints {
   }
 }
 
-/** Include shape needed by `toPublishTargetView` (copy + media flags). */
+/** Include shape needed by `toPublishTargetView` (copy + media flags + views). */
 const TARGET_INCLUDE = {
   account: { select: { platform: true } },
   contentItem: {
@@ -40,6 +40,11 @@ const TARGET_INCLUDE = {
       currentStep: true,
       assets: { select: { kind: true, localPath: true, driveFileId: true } },
     },
+  },
+  metricSnapshots: {
+    orderBy: { date: 'desc' as const },
+    take: 1,
+    select: { views: true },
   },
 } as const;
 

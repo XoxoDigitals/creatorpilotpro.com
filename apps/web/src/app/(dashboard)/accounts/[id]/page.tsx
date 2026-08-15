@@ -1,6 +1,6 @@
 'use client';
 
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { useEffect, useState } from 'react';
@@ -19,8 +19,23 @@ import {
 } from '@/lib/api-data';
 import type { Account, Incident, Post } from '@/lib/domain-types';
 
+function platformPostUrl(p: Post): string | null {
+  if (!p.platformPostId) return null;
+  if (p.platform === 'FACEBOOK') {
+    return `https://www.facebook.com/${encodeURIComponent(p.platformPostId)}`;
+  }
+  if (p.platform === 'YOUTUBE') {
+    return `https://www.youtube.com/watch?v=${encodeURIComponent(p.platformPostId)}`;
+  }
+  if (p.platform === 'TIKTOK') {
+    return `https://www.tiktok.com/@/video/${encodeURIComponent(p.platformPostId)}`;
+  }
+  return null;
+}
+
 export default function AccountOverviewPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const toast = useToast();
   const [account, setAccount] = useState<Account | null>(null);
   const [connectionMethod, setConnectionMethod] = useState<string | null>(null);
@@ -58,6 +73,8 @@ export default function AccountOverviewPage() {
     return tb - ta;
   });
   const openIncidents = incidents.filter((i) => i.status === 'OPEN');
+  const publishedViews = recent.reduce((n, p) => n + (p.views ?? 0), 0);
+  const analyticsHref = `/accounts/${id}/analytics` as Route;
 
   return (
     <div className="space-y-6">
@@ -73,13 +90,17 @@ export default function AccountOverviewPage() {
 
       {/* Stat row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Followers" value={compactNumber(account.followers)} delta="+2.4%" hint="30 days" />
-        <StatCard label="Views" value={compactNumber(account.views30d)} delta="+8.1%" hint="30 days" />
+        <StatCard label="Followers" value={compactNumber(account.followers)} hint="latest sync" />
+        <StatCard
+          label="Views"
+          value={compactNumber(publishedViews > 0 ? publishedViews : account.views30d)}
+          hint={publishedViews > 0 ? 'synced videos' : '30 days'}
+        />
         <StatCard label="Scheduled" value={account.scheduledCount} hint="upcoming posts" />
         <StatCard
           label="Open incidents"
-          value={account.openIncidents}
-          hint={account.openIncidents > 0 ? 'needs attention' : 'all clear'}
+          value={openIncidents.length}
+          hint={openIncidents.length > 0 ? 'needs attention' : 'all clear'}
         />
       </div>
 
@@ -134,6 +155,11 @@ export default function AccountOverviewPage() {
           <CardHeader
             title="Recent & upcoming posts"
             description="Latest published and scheduled content for this account"
+            action={
+              <Link href={analyticsHref} className="text-xs font-medium text-indigo-600 hover:underline">
+                Open analytics
+              </Link>
+            }
           />
           {recent.length === 0 ? (
             <div className="p-4">
@@ -153,18 +179,40 @@ export default function AccountOverviewPage() {
                 </TR>
               </THead>
               <TBody>
-                {recent.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="font-medium text-zinc-900">{p.title}</TD>
-                    <TD>
-                      <PostStatusBadge status={p.status} />
-                    </TD>
-                    <TD title={absoluteTime(p.publishedAt ?? p.scheduledAt)}>
-                      {relativeTime(p.publishedAt ?? p.scheduledAt)}
-                    </TD>
-                    <TD numeric>{p.views == null ? '—' : compactNumber(p.views)}</TD>
-                  </TR>
-                ))}
+                {recent.map((p) => {
+                  const external = platformPostUrl(p);
+                  return (
+                    <TR
+                      key={p.id}
+                      onClick={() => router.push(analyticsHref)}
+                      className="cursor-pointer"
+                    >
+                      <TD className="max-w-[18rem]">
+                        <span className="font-medium text-indigo-700 hover:underline">
+                          {p.title}
+                        </span>
+                        {external && (
+                          <a
+                            href={external}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="mt-0.5 block text-[11px] font-medium text-zinc-500 hover:text-zinc-800"
+                          >
+                            Open on platform ↗
+                          </a>
+                        )}
+                      </TD>
+                      <TD>
+                        <PostStatusBadge status={p.status} />
+                      </TD>
+                      <TD title={absoluteTime(p.publishedAt ?? p.scheduledAt)}>
+                        {relativeTime(p.publishedAt ?? p.scheduledAt)}
+                      </TD>
+                      <TD numeric>{p.views == null ? '—' : compactNumber(p.views)}</TD>
+                    </TR>
+                  );
+                })}
               </TBody>
             </Table>
           )}
@@ -196,7 +244,9 @@ export default function AccountOverviewPage() {
               <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Token expires</span>
                 <span title={absoluteTime(account.tokenExpiresAt)}>
-                  {relativeTime(account.tokenExpiresAt)}
+                  {account.tokenExpiresAt
+                    ? relativeTime(account.tokenExpiresAt)
+                    : 'Does not expire'}
                 </span>
               </div>
               <div className="flex items-center justify-between">

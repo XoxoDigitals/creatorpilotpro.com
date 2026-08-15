@@ -57,6 +57,8 @@ export interface Post {
   views: number | null;
   /** Tailwind hue used for the thumbnail placeholder chip. */
   accent: string;
+  platform?: Platform;
+  platformPostId?: string | null;
 }
 
 export type ReviewKind = 'INGESTED_VIDEO' | 'PRODUCED_VIDEO' | 'IDEA' | 'METADATA';
