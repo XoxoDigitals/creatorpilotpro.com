@@ -60,6 +60,8 @@ interface CreateAccountParams {
   dramasEnabled: boolean;
   schedulingPrefs?: SchedulingPrefs;
   addedById: string;
+  /** When true, refresh tokens on an already-connected account instead of 409. */
+  allowReconnect?: boolean;
 }
 
 @Injectable()
@@ -275,14 +277,14 @@ export class AccountsService {
       this.redirectUri('meta'),
     );
     const pages = await this.meta.listPages(userToken);
-    const session = this.meta.createPendingSession(payload.userId, pages, payload.wizard);
+    const session = await this.meta.createPendingSession(payload.userId, pages, payload.wizard);
     const web = this.config.get<string>('webAppUrl');
     return { redirectTo: `${web}/accounts/connect/meta?session=${encodeURIComponent(session)}` };
   }
 
   getMetaPendingPages(
     sessionId: string,
-  ): Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }> {
+  ): Promise<Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }>> {
     return this.meta.getPendingPages(sessionId);
   }
 
@@ -295,34 +297,41 @@ export class AccountsService {
       : dto.pageId
         ? [dto.pageId]
         : [];
-    const resolved = this.meta.consumePages(dto.session, userId, pageIds);
+    const resolved = await this.meta.peekPages(dto.session, userId, pageIds);
     if (!resolved) {
       throw new BadRequestException('That page-picker session has expired. Reconnect the account.');
     }
 
     const accounts: AccountView[] = [];
-    for (const page of resolved.pages) {
-      const view = await this.createAccountWithProfile({
-        platform: 'FACEBOOK',
-        kind: 'FB_PAGE',
-        externalId: page.id,
-        name: page.name,
-        handle: null,
-        avatarUrl: page.avatarUrl,
-        connectionMethod: 'OWN_APP',
-        authPayload: { provider: 'meta', pageId: page.id, pageAccessToken: page.accessToken },
-        tokenExpiresAt: null, // Page tokens from a long-lived user token don't expire
-        contentType: resolved.wizard.contentType,
-        dramasEnabled: resolved.wizard.dramasEnabled,
-        schedulingPrefs: resolved.wizard.schedulingPrefs,
-        addedById: userId,
-      });
-      if (page.fanCount > 0) {
-        await this.upsertFollowersSnapshot(view.id, page.fanCount);
+    try {
+      for (const page of resolved.pages) {
+        const view = await this.createAccountWithProfile({
+          platform: 'FACEBOOK',
+          kind: 'FB_PAGE',
+          externalId: page.id,
+          name: page.name,
+          handle: null,
+          avatarUrl: page.avatarUrl,
+          connectionMethod: 'OWN_APP',
+          authPayload: { provider: 'meta', pageId: page.id, pageAccessToken: page.accessToken },
+          tokenExpiresAt: null, // Page tokens from a long-lived user token don't expire
+          contentType: resolved.wizard.contentType,
+          dramasEnabled: resolved.wizard.dramasEnabled,
+          schedulingPrefs: resolved.wizard.schedulingPrefs,
+          addedById: userId,
+          allowReconnect: true,
+        });
+        if (page.fanCount > 0) {
+          await this.upsertFollowersSnapshot(view.id, page.fanCount);
+        }
+        void this.queue.enqueueAccountSync(view.id);
+        accounts.push({ ...view, followers: page.fanCount });
       }
-      void this.queue.enqueueAccountSync(view.id);
-      accounts.push({ ...view, followers: page.fanCount });
+    } catch (err) {
+      // Keep the pending session so the user can retry without re-OAuth.
+      throw err;
     }
+    await this.meta.deletePendingSession(dto.session);
     return { accounts };
   }
 
@@ -424,7 +433,7 @@ export class AccountsService {
     const existing = await this.prisma.client.socialAccount.findUnique({
       where: { platform_externalId: { platform: params.platform, externalId: params.externalId } },
     });
-    if (existing && existing.deletedAt === null) {
+    if (existing && existing.deletedAt === null && !params.allowReconnect) {
       throw new ConflictException('That account is already connected.');
     }
 
@@ -455,7 +464,7 @@ export class AccountsService {
         },
       },
       update: {
-        // Re-importing a previously disconnected account.
+        // Re-importing a previously disconnected account, or refreshing Meta tokens.
         deletedAt: null,
         paused: false,
         name: params.name,

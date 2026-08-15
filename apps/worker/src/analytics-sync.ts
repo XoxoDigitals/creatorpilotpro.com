@@ -1,12 +1,20 @@
-/**
+﻿/**
  * Analytics sync processors (docs/07, Phase 5). Four functions that pull
  * metrics into snapshot tables. External API calls gracefully degrade when
  * credentials are absent — log + skip, never crash.
  */
 import type PgBoss from 'pg-boss';
+import type { PrismaClient } from '@scp/db';
 import { decryptAccountAuth, getMasterKey, getPrisma, raiseIncident } from './publish-support.js';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
+
+type DayBucket = {
+  views: number;
+  uniqueViewers: number;
+  impressions: number;
+  engagements: number;
+};
 
 /** Fetch Facebook Page fan_count; null when auth/API fails (caller must not overwrite). */
 async function fetchFacebookFanCount(
@@ -23,11 +31,282 @@ async function fetchFacebookFanCount(
       return null;
     }
     const data = (await res.json()) as { fan_count?: number };
-    return typeof data.fan_count === 'number' ? data.fan_count : null;
+    return typeof data.fan_count === 'number' ? data.fan_count : 0;
   } catch (err) {
     console.warn(`[analytics:account-sync] Meta fan_count error for page ${pageId}:`, err);
     return null;
   }
+}
+
+/** Pull daily Page Insights (views / impressions / engagements) for ~30 days. */
+async function fetchFacebookPageInsights(
+  pageId: string,
+  pageAccessToken: string,
+): Promise<Map<string, DayBucket>> {
+  const out = new Map<string, DayBucket>();
+  const since = Math.floor((Date.now() - 30 * 86_400_000) / 1000);
+  const until = Math.floor(Date.now() / 1000);
+  const metric = [
+    'page_impressions',
+    'page_video_views',
+    'page_video_views_unique',
+    'page_post_engagements',
+  ].join(',');
+  const url =
+    `${GRAPH}/${encodeURIComponent(pageId)}/insights?` +
+    new URLSearchParams({
+      metric,
+      period: 'day',
+      since: String(since),
+      until: String(until),
+      access_token: pageAccessToken,
+    }).toString();
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn(
+        `[analytics:account-sync] Meta insights HTTP ${res.status} for page ${pageId}: ${body.slice(0, 200)}`,
+      );
+      return out;
+    }
+    const data = (await res.json()) as {
+      data?: Array<{
+        name: string;
+        values?: Array<{ value: number | Record<string, number>; end_time: string }>;
+      }>;
+    };
+
+    const ensure = (day: string): DayBucket => {
+      let b = out.get(day);
+      if (!b) {
+        b = { views: 0, uniqueViewers: 0, impressions: 0, engagements: 0 };
+        out.set(day, b);
+      }
+      return b;
+    };
+
+    for (const series of data.data ?? []) {
+      for (const point of series.values ?? []) {
+        const day = point.end_time.slice(0, 10);
+        const raw = point.value;
+        const n = typeof raw === 'number' ? raw : 0;
+        const bucket = ensure(day);
+        if (series.name === 'page_impressions') bucket.impressions = n;
+        else if (series.name === 'page_video_views') bucket.views = n;
+        else if (series.name === 'page_video_views_unique') bucket.uniqueViewers = n;
+        else if (series.name === 'page_post_engagements') bucket.engagements = n;
+      }
+    }
+  } catch (err) {
+    console.warn(`[analytics:account-sync] Meta insights error for page ${pageId}:`, err);
+  }
+  return out;
+}
+
+interface FbVideoRow {
+  id: string;
+  title: string;
+  createdTime: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+}
+
+/** List recent Page videos (includes older uploads not published via CreatorPilot). */
+async function listFacebookPageVideos(
+  pageId: string,
+  pageAccessToken: string,
+  limit = 40,
+): Promise<FbVideoRow[]> {
+  const rows: FbVideoRow[] = [];
+  let url: string | null =
+    `${GRAPH}/${encodeURIComponent(pageId)}/videos?` +
+    new URLSearchParams({
+      fields: 'id,title,description,created_time,views,likes.summary(true),comments.summary(true)',
+      limit: '25',
+      access_token: pageAccessToken,
+    }).toString();
+
+  try {
+    while (url && rows.length < limit) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(
+          `[analytics:account-sync] Meta /videos HTTP ${res.status} for page ${pageId}: ${body.slice(0, 200)}`,
+        );
+        break;
+      }
+      const data = (await res.json()) as {
+        data?: Array<{
+          id: string;
+          title?: string;
+          description?: string;
+          created_time?: string;
+          views?: number;
+          likes?: { summary?: { total_count?: number } };
+          comments?: { summary?: { total_count?: number } };
+        }>;
+        paging?: { next?: string };
+      };
+      for (const v of data.data ?? []) {
+        rows.push({
+          id: v.id,
+          title: (v.title || v.description || `Facebook video ${v.id}`).slice(0, 200),
+          createdTime: v.created_time ?? null,
+          views: typeof v.views === 'number' ? v.views : 0,
+          likes: v.likes?.summary?.total_count ?? 0,
+          comments: v.comments?.summary?.total_count ?? 0,
+        });
+        if (rows.length >= limit) break;
+      }
+      url = data.paging?.next ?? null;
+    }
+  } catch (err) {
+    console.warn(`[analytics:account-sync] Meta /videos error for page ${pageId}:`, err);
+  }
+  return rows;
+}
+
+/** Ensure a PublishTarget exists for an external Facebook video (for analytics UI). */
+async function ensureImportedFacebookVideo(
+  prisma: PrismaClient,
+  accountId: string,
+  video: FbVideoRow,
+): Promise<string> {
+  const existing = await prisma.publishTarget.findFirst({
+    where: { accountId, platformPostId: video.id },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+
+  const content = await prisma.contentItem.create({
+    data: {
+      type: 'MANUAL_UPLOAD',
+      title: video.title,
+      status: 'PUBLISHED',
+      statusReason: 'Imported from Facebook for analytics (not created in CreatorPilot)',
+      currentStep: { importedFrom: 'facebook', externalVideoId: video.id },
+      publishTargets: {
+        create: {
+          accountId,
+          status: 'PUBLISHED',
+          platformPostId: video.id,
+          publishedAt: video.createdTime ? new Date(video.createdTime) : new Date(),
+          scheduleMode: 'NOW',
+          metadataOverride: { source: 'facebook_import' },
+        },
+      },
+    },
+    include: { publishTargets: { select: { id: true } } },
+  });
+  return content.publishTargets[0]!.id;
+}
+
+async function upsertPostSnapshot(
+  prisma: PrismaClient,
+  publishTargetId: string,
+  accountId: string,
+  date: Date,
+  metrics: { views: number; likes: number; comments: number },
+): Promise<void> {
+  await prisma.metricSnapshotPost.upsert({
+    where: { publishTargetId_date: { publishTargetId, date } },
+    create: {
+      publishTargetId,
+      accountId,
+      date,
+      views: metrics.views,
+      likes: metrics.likes,
+      comments: metrics.comments,
+      shares: 0,
+      watchTimeMin: 0,
+      impressions: 0,
+      ctr: 0,
+      retentionCurve: [],
+      syncedAt: new Date(),
+    },
+    update: {
+      views: metrics.views,
+      likes: metrics.likes,
+      comments: metrics.comments,
+      syncedAt: new Date(),
+    },
+  });
+}
+
+async function syncFacebookAccount(
+  prisma: PrismaClient,
+  accountId: string,
+  pageId: string,
+  pageAccessToken: string,
+): Promise<void> {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+
+  const [followers, insightDays, videos] = await Promise.all([
+    fetchFacebookFanCount(pageId, pageAccessToken),
+    fetchFacebookPageInsights(pageId, pageAccessToken),
+    listFacebookPageVideos(pageId, pageAccessToken, 40),
+  ]);
+
+  const todayStr = today.toISOString().slice(0, 10);
+  const days = new Set<string>([todayStr, ...insightDays.keys()]);
+  for (const dayStr of days) {
+    const date = new Date(`${dayStr}T00:00:00.000Z`);
+    const bucket = insightDays.get(dayStr) ?? {
+      views: 0,
+      uniqueViewers: 0,
+      impressions: 0,
+      engagements: 0,
+    };
+    const isToday = dayStr === todayStr;
+    await prisma.metricSnapshotAccount.upsert({
+      where: { accountId_date: { accountId, date } },
+      create: {
+        accountId,
+        date,
+        followers: isToday ? (followers ?? 0) : 0,
+        views: bucket.views,
+        uniqueViewers: bucket.uniqueViewers,
+        impressions: bucket.impressions,
+        engagements: bucket.engagements,
+        watchTimeMin: 0,
+        ctr: 0,
+        revenue: 0,
+        rpm: 0,
+        syncedAt: new Date(),
+      },
+      update: {
+        views: bucket.views,
+        uniqueViewers: bucket.uniqueViewers,
+        impressions: bucket.impressions,
+        engagements: bucket.engagements,
+        ...(isToday && followers !== null ? { followers } : {}),
+        syncedAt: new Date(),
+      },
+    });
+  }
+
+  for (const video of videos) {
+    try {
+      const publishTargetId = await ensureImportedFacebookVideo(prisma, accountId, video);
+      await upsertPostSnapshot(prisma, publishTargetId, accountId, today, {
+        views: video.views,
+        likes: video.likes,
+        comments: video.comments,
+      });
+    } catch (err) {
+      console.warn(`[analytics:account-sync] import video ${video.id} failed:`, err);
+    }
+  }
+
+  console.log(
+    `[analytics:account-sync] Facebook ${accountId}: followers=${followers ?? 'n/a'} ` +
+      `insightDays=${insightDays.size} videos=${videos.length}`,
+  );
 }
 
 // ── 1. Account metrics sync ────────────────────────────────────────────────
@@ -47,58 +326,48 @@ export async function runAccountSync(accountId: string, _boss: PgBoss): Promise<
     return;
   }
 
-  // Views / Insights still stubbed for all platforms. Facebook followers come
-  // from Graph fan_count so dashboards stop showing permanent zeros.
-  let followers: number | null = null;
-  if (account.platform === 'FACEBOOK') {
-    const masterKey = getMasterKey();
-    if (masterKey) {
+  try {
+    if (account.platform === 'FACEBOOK') {
+      const masterKey = getMasterKey();
+      if (!masterKey) {
+        console.log(`[analytics:account-sync] MASTER_KEY missing — cannot decrypt Facebook auth`);
+        return;
+      }
       const auth = decryptAccountAuth(account.authPayload, masterKey);
       const pageId =
-        typeof auth.pageId === 'string'
-          ? auth.pageId
-          : account.externalId;
+        typeof auth.pageId === 'string' ? auth.pageId : account.externalId;
       const token =
         typeof auth.pageAccessToken === 'string' ? auth.pageAccessToken : null;
-      if (pageId && token) {
-        followers = await fetchFacebookFanCount(pageId, token);
-      } else {
+      if (!pageId || !token) {
         console.log(`[analytics:account-sync] Facebook account ${accountId} missing page token`);
+        return;
       }
-    } else {
-      console.log(`[analytics:account-sync] MASTER_KEY missing — cannot decrypt Facebook auth`);
+      await syncFacebookAccount(prisma, accountId, pageId, token);
+      return;
     }
-  }
 
-  const metrics = {
-    views: 0,
-    watchTimeMin: 0,
-    impressions: 0,
-    ctr: 0,
-    revenue: 0,
-    rpm: 0,
-    engagements: 0,
-  };
-
-  try {
+    // Other platforms: keep pipeline alive without wiping known followers.
     await prisma.metricSnapshotAccount.upsert({
       where: { accountId_date: { accountId, date: today } },
       create: {
         accountId,
         date: today,
-        followers: followers ?? 0,
-        ...metrics,
+        followers: 0,
+        views: 0,
+        watchTimeMin: 0,
+        impressions: 0,
+        ctr: 0,
+        revenue: 0,
+        rpm: 0,
+        engagements: 0,
         syncedAt: new Date(),
       },
       update: {
-        ...metrics,
-        ...(followers !== null ? { followers } : {}),
         syncedAt: new Date(),
       },
     });
     console.log(
-      `[analytics:account-sync] synced account ${accountId} for ${today.toISOString().slice(0, 10)}` +
-        (followers !== null ? ` (followers=${followers})` : ''),
+      `[analytics:account-sync] synced account ${accountId} for ${today.toISOString().slice(0, 10)} (stub)`,
     );
   } catch (err) {
     console.error(`[analytics:account-sync] failed for account ${accountId}:`, err);
@@ -118,7 +387,18 @@ export async function runPostSync(publishTargetId: string, _boss: PgBoss): Promi
   const prisma = getPrisma();
   const target = await prisma.publishTarget.findUnique({
     where: { id: publishTargetId },
-    include: { account: { select: { id: true, authPayload: true, platform: true, paused: true, deletedAt: true } } },
+    include: {
+      account: {
+        select: {
+          id: true,
+          authPayload: true,
+          platform: true,
+          paused: true,
+          deletedAt: true,
+          externalId: true,
+        },
+      },
+    },
   });
   if (!target || target.status !== 'PUBLISHED') return;
   if (!target.account || target.account.deletedAt || target.account.paused) return;
@@ -131,39 +411,65 @@ export async function runPostSync(publishTargetId: string, _boss: PgBoss): Promi
     return;
   }
 
-  // TODO: Call platform-specific per-video analytics APIs.
-  // Stub upserts zero-value snapshot to wire pipeline end-to-end.
-  const metrics = {
-    views: 0,
-    likes: 0,
-    comments: 0,
-    shares: 0,
-    watchTimeMin: 0,
-    impressions: 0,
-    ctr: 0,
-    retentionCurve: [],
-  };
-
   try {
+    if (target.account.platform === 'FACEBOOK' && target.platformPostId) {
+      const masterKey = getMasterKey();
+      if (!masterKey) return;
+      const auth = decryptAccountAuth(target.account.authPayload, masterKey);
+      const token =
+        typeof auth.pageAccessToken === 'string' ? auth.pageAccessToken : null;
+      if (!token) return;
+
+      const url =
+        `${GRAPH}/${encodeURIComponent(target.platformPostId)}?` +
+        new URLSearchParams({
+          fields: 'views,likes.summary(true),comments.summary(true)',
+          access_token: token,
+        }).toString();
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.warn(`[analytics:post-sync] Meta video HTTP ${res.status} for ${target.platformPostId}`);
+        return;
+      }
+      const data = (await res.json()) as {
+        views?: number;
+        likes?: { summary?: { total_count?: number } };
+        comments?: { summary?: { total_count?: number } };
+      };
+      await upsertPostSnapshot(prisma, publishTargetId, target.accountId, today, {
+        views: typeof data.views === 'number' ? data.views : 0,
+        likes: data.likes?.summary?.total_count ?? 0,
+        comments: data.comments?.summary?.total_count ?? 0,
+      });
+      console.log(`[analytics:post-sync] synced FB target ${publishTargetId}`);
+      return;
+    }
+
+    // Non-Facebook: touch syncedAt without zeroing existing metrics.
     await prisma.metricSnapshotPost.upsert({
       where: { publishTargetId_date: { publishTargetId, date: today } },
       create: {
         publishTargetId,
         accountId: target.accountId,
         date: today,
-        ...metrics,
+        views: 0,
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        watchTimeMin: 0,
+        impressions: 0,
+        ctr: 0,
+        retentionCurve: [],
         syncedAt: new Date(),
       },
-      update: {
-        ...metrics,
-        syncedAt: new Date(),
-      },
+      update: { syncedAt: new Date() },
     });
-    console.log(`[analytics:post-sync] synced target ${publishTargetId} for ${today.toISOString().slice(0, 10)}`);
+    console.log(`[analytics:post-sync] synced target ${publishTargetId} (stub)`);
   } catch (err) {
     console.error(`[analytics:post-sync] failed for target ${publishTargetId}:`, err);
   }
 }
+
 
 // ── 3. Internal AI usage rollup ────────────────────────────────────────────
 

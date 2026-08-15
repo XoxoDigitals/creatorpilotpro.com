@@ -113,7 +113,7 @@ export default function MetaConnectPage() {
     <div className="max-w-xl">
       <PageHeader
         title="Choose Facebook Pages"
-        description="Select one or more Pages to publish Reels to with your Meta app"
+        description="Select one or more Pages to publish Reels to with your Meta app. Already-connected Pages will refresh their tokens."
       />
 
       {loading && (

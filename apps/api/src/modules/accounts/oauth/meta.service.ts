@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { PrismaService } from '../../../prisma/prisma.service';
+import { CryptoService } from '../../../common/crypto/crypto.service';
 import { SettingsService } from '../../system/settings.service';
 import type { WizardChoices } from '../dto/account.dto';
 
@@ -8,6 +10,10 @@ import type { WizardChoices } from '../dto/account.dto';
  * Login for Business. Exchanges the code for a long-lived user token, lists the
  * user's managed Pages, then the owner picks one — the Page access token (kept
  * server-side, never sent to the browser) is stored encrypted on connect.
+ *
+ * Pending page-picker sessions are persisted in `system_settings` (encrypted)
+ * so they survive API restarts / multi-process deploys. An in-memory cache is
+ * only a fast path.
  */
 
 export interface MetaConfig {
@@ -34,11 +40,14 @@ interface PendingSession {
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
 const DIALOG = 'https://www.facebook.com/v21.0/dialog/oauth';
-const SESSION_TTL_MS = 15 * 60 * 1000;
+/** Longer TTL — multi-select + deploy restarts used to wipe 15m memory sessions. */
+const SESSION_TTL_MS = 60 * 60 * 1000;
+const PENDING_KEY_PREFIX = 'meta_oauth_pending:';
 const META_SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
+  'read_insights',
   'business_management',
 ];
 
@@ -46,10 +55,14 @@ const META_SCOPES = [
 export class MetaOAuthService {
   fetchImpl: typeof globalThis.fetch = (...args) => globalThis.fetch(...args);
 
-  /** Transient store keyed by a random session id. Tokens never leave the server. */
+  /** Hot cache; durable copy lives in system_settings. */
   private readonly pending = new Map<string, PendingSession>();
 
-  constructor(private readonly settings: SettingsService) {}
+  constructor(
+    private readonly settings: SettingsService,
+    private readonly prisma: PrismaService,
+    private readonly crypto: CryptoService,
+  ) {}
 
   async getConfig(): Promise<MetaConfig> {
     const cfg = await this.settings.getDecrypted<MetaConfig>('platform_apps.meta');
@@ -134,20 +147,31 @@ export class MetaOAuthService {
     }));
   }
 
-  /** Stash a page-picker session and return its opaque id. */
-  createPendingSession(userId: string, pages: MetaPage[], wizard: WizardChoices): string {
-    this.sweep();
+  /** Stash a page-picker session (DB + memory) and return its opaque id. */
+  async createPendingSession(
+    userId: string,
+    pages: MetaPage[],
+    wizard: WizardChoices,
+  ): Promise<string> {
+    await this.sweepExpired();
     const id = randomBytes(18).toString('base64url');
-    this.pending.set(id, { userId, pages, wizard, expiresAt: Date.now() + SESSION_TTL_MS });
+    const session: PendingSession = {
+      userId,
+      pages,
+      wizard,
+      expiresAt: Date.now() + SESSION_TTL_MS,
+    };
+    this.pending.set(id, session);
+    await this.persistSession(id, session);
     return id;
   }
 
   /** Page list for the picker UI — tokens stripped. */
-  getPendingPages(
+  async getPendingPages(
     sessionId: string,
-  ): Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }> {
-    const s = this.pending.get(sessionId);
-    if (!s || s.expiresAt < Date.now()) return [];
+  ): Promise<Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }>> {
+    const s = await this.loadSession(sessionId);
+    if (!s) return [];
     return s.pages.map((p) => ({
       id: p.id,
       name: p.name,
@@ -157,16 +181,16 @@ export class MetaOAuthService {
   }
 
   /**
-   * Resolve one or more chosen pages (with tokens + wizard choices) and consume
-   * the session. All `pageIds` must exist in the pending list.
+   * Resolve chosen pages without deleting the session (so a mid-batch failure
+   * can retry). Call {@link deletePendingSession} after a successful connect.
    */
-  consumePages(
+  async peekPages(
     sessionId: string,
     userId: string,
     pageIds: string[],
-  ): { pages: MetaPage[]; wizard: WizardChoices } | null {
-    const s = this.pending.get(sessionId);
-    if (!s || s.expiresAt < Date.now() || s.userId !== userId) return null;
+  ): Promise<{ pages: MetaPage[]; wizard: WizardChoices } | null> {
+    const s = await this.loadSession(sessionId);
+    if (!s || s.userId !== userId) return null;
     if (pageIds.length === 0) return null;
     const pages: MetaPage[] = [];
     for (const id of pageIds) {
@@ -174,8 +198,28 @@ export class MetaOAuthService {
       if (!page) return null;
       pages.push(page);
     }
-    this.pending.delete(sessionId);
     return { pages, wizard: s.wizard };
+  }
+
+  async deletePendingSession(sessionId: string): Promise<void> {
+    this.pending.delete(sessionId);
+    await this.prisma.client.systemSetting
+      .delete({ where: { key: `${PENDING_KEY_PREFIX}${sessionId}` } })
+      .catch(() => undefined);
+  }
+
+  /**
+   * @deprecated Prefer peekPages + deletePendingSession so failures don't burn the session.
+   */
+  async consumePages(
+    sessionId: string,
+    userId: string,
+    pageIds: string[],
+  ): Promise<{ pages: MetaPage[]; wizard: WizardChoices } | null> {
+    const resolved = await this.peekPages(sessionId, userId, pageIds);
+    if (!resolved) return null;
+    await this.deletePendingSession(sessionId);
+    return resolved;
   }
 
   /** Page likes / fans for a single Page (null on API failure). */
@@ -193,8 +237,71 @@ export class MetaOAuthService {
     }
   }
 
-  private sweep(): void {
+  private async loadSession(sessionId: string): Promise<PendingSession | null> {
+    if (!sessionId) return null;
+    const mem = this.pending.get(sessionId);
+    if (mem) {
+      if (mem.expiresAt < Date.now()) {
+        await this.deletePendingSession(sessionId);
+        return null;
+      }
+      return mem;
+    }
+
+    const row = await this.prisma.client.systemSetting.findUnique({
+      where: { key: `${PENDING_KEY_PREFIX}${sessionId}` },
+    });
+    if (!row) return null;
+    const raw = row.value as { expiresAt?: number; userId?: string; wizard?: WizardChoices; pagesEnc?: string };
+    if (!raw.expiresAt || raw.expiresAt < Date.now() || !raw.userId || !raw.pagesEnc || !raw.wizard) {
+      await this.deletePendingSession(sessionId);
+      return null;
+    }
+    try {
+      const pages = JSON.parse(this.crypto.decrypt(raw.pagesEnc)) as MetaPage[];
+      const session: PendingSession = {
+        userId: raw.userId,
+        pages,
+        wizard: raw.wizard,
+        expiresAt: raw.expiresAt,
+      };
+      this.pending.set(sessionId, session);
+      return session;
+    } catch {
+      await this.deletePendingSession(sessionId);
+      return null;
+    }
+  }
+
+  private async persistSession(sessionId: string, session: PendingSession): Promise<void> {
+    const pagesEnc = this.crypto.encrypt(JSON.stringify(session.pages));
+    const value = {
+      expiresAt: session.expiresAt,
+      userId: session.userId,
+      wizard: session.wizard,
+      pagesEnc,
+    };
+    await this.prisma.client.systemSetting.upsert({
+      where: { key: `${PENDING_KEY_PREFIX}${sessionId}` },
+      create: { key: `${PENDING_KEY_PREFIX}${sessionId}`, value },
+      update: { value },
+    });
+  }
+
+  private async sweepExpired(): Promise<void> {
     const now = Date.now();
-    for (const [k, v] of this.pending) if (v.expiresAt < now) this.pending.delete(k);
+    for (const [k, v] of this.pending) {
+      if (v.expiresAt < now) this.pending.delete(k);
+    }
+    const rows = await this.prisma.client.systemSetting.findMany({
+      where: { key: { startsWith: PENDING_KEY_PREFIX } },
+      select: { key: true, value: true },
+    });
+    for (const row of rows) {
+      const expiresAt = (row.value as { expiresAt?: number }).expiresAt ?? 0;
+      if (expiresAt < now) {
+        await this.prisma.client.systemSetting.delete({ where: { key: row.key } }).catch(() => undefined);
+      }
+    }
   }
 }
