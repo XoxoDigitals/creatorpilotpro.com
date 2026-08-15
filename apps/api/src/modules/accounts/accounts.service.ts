@@ -282,10 +282,32 @@ export class AccountsService {
     return { redirectTo: `${web}/accounts/connect/meta?session=${encodeURIComponent(session)}` };
   }
 
-  getMetaPendingPages(
+  async getMetaPendingPages(
     sessionId: string,
-  ): Promise<Array<{ id: string; name: string; avatarUrl: string | null; fanCount: number }>> {
-    return this.meta.getPendingPages(sessionId);
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      avatarUrl: string | null;
+      fanCount: number;
+      alreadyConnected: boolean;
+    }>
+  > {
+    const pages = await this.meta.getPendingPages(sessionId);
+    if (pages.length === 0) return [];
+    const connected = await this.prisma.client.socialAccount.findMany({
+      where: {
+        platform: 'FACEBOOK',
+        deletedAt: null,
+        externalId: { in: pages.map((p) => p.id) },
+      },
+      select: { externalId: true },
+    });
+    const connectedIds = new Set(connected.map((c) => c.externalId));
+    return pages.map((p) => ({
+      ...p,
+      alreadyConnected: connectedIds.has(p.id),
+    }));
   }
 
   async connectMeta(
@@ -302,9 +324,26 @@ export class AccountsService {
       throw new BadRequestException('That page-picker session has expired. Reconnect the account.');
     }
 
+    // Ignore Pages that are already connected (UI disables them; don't recreate).
+    const existing = await this.prisma.client.socialAccount.findMany({
+      where: {
+        platform: 'FACEBOOK',
+        deletedAt: null,
+        externalId: { in: resolved.pages.map((p) => p.id) },
+      },
+      select: { externalId: true },
+    });
+    const already = new Set(existing.map((e) => e.externalId));
+    const pagesToConnect = resolved.pages.filter((p) => !already.has(p.id));
+    if (pagesToConnect.length === 0) {
+      throw new BadRequestException(
+        'All selected Pages are already connected. Pick a Page that is not connected yet.',
+      );
+    }
+
     const accounts: AccountView[] = [];
     try {
-      for (const page of resolved.pages) {
+      for (const page of pagesToConnect) {
         const view = await this.createAccountWithProfile({
           platform: 'FACEBOOK',
           kind: 'FB_PAGE',
@@ -319,7 +358,6 @@ export class AccountsService {
           dramasEnabled: resolved.wizard.dramasEnabled,
           schedulingPrefs: resolved.wizard.schedulingPrefs,
           addedById: userId,
-          allowReconnect: true,
         });
         if (page.fanCount > 0) {
           await this.upsertFollowersSnapshot(view.id, page.fanCount);
