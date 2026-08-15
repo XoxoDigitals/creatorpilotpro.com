@@ -72,7 +72,8 @@ export default function AccountAnalyticsPage() {
     try {
       const [m, p] = await Promise.all([
         getAccountMetrics(id, range.from, range.to),
-        getAccountPostMetrics(id, range.from, range.to),
+        // Per-video table is always all-time (not scoped to the KPI date range).
+        getAccountPostMetrics(id),
       ]);
       setMetrics(m);
       setPosts(p);
@@ -228,13 +229,13 @@ export default function AccountAnalyticsPage() {
       <Card>
         <CardHeader
           title="Per-video performance"
-          description="Click any row for the full video breakdown"
+          description="All published videos (all time). Click any row for the full breakdown."
         />
         {posts.length === 0 ? (
           <div className="p-4">
             <EmptyState
-              title="No published videos in this range"
-              hint="Widen the date range, or publish something first."
+              title="No published videos yet"
+              hint="Sync the account or publish something first."
             />
           </div>
         ) : (
@@ -256,7 +257,11 @@ export default function AccountAnalyticsPage() {
             </THead>
             <TBody>
               {posts.map((p) => (
-                <TR key={p.publishTargetId} onClick={() => handlePostClick(p.publishTargetId)}>
+                <TR
+                  key={p.publishTargetId}
+                  onClick={() => handlePostClick(p.publishTargetId)}
+                  className="cursor-pointer"
+                >
                   <TD className="font-medium text-zinc-900">{p.contentTitle}</TD>
                   <TD title={p.publishedAt ? absoluteTime(p.publishedAt) : ''}>
                     {p.publishedAt ? relativeTime(p.publishedAt) : '—'}

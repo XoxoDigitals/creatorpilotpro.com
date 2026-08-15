@@ -198,13 +198,20 @@ export class AnalyticsService {
     fromStr?: string,
     toStr?: string,
   ): Promise<PostTableRowView[]> {
-    const { from, to } = parseDateRange(fromStr, toStr);
+    // No from/to → all-time published videos (Per-video table is not range-scoped).
+    const dateFilter =
+      fromStr || toStr
+        ? (() => {
+            const { from, to } = parseDateRange(fromStr, toStr);
+            return { publishedAt: { gte: from, lte: to } };
+          })()
+        : { publishedAt: { not: null } };
 
     const targets = await this.prisma.client.publishTarget.findMany({
       where: {
         accountId,
         status: 'PUBLISHED',
-        publishedAt: { gte: from, lte: to },
+        ...dateFilter,
       },
       include: {
         contentItem: { select: { title: true } },
@@ -214,7 +221,7 @@ export class AnalyticsService {
         },
       },
       orderBy: { publishedAt: 'desc' },
-      take: 200,
+      take: 500,
     });
 
     return targets.map((t) => {

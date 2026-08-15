@@ -253,7 +253,7 @@ async function syncFacebookAccount(
   const [followers, insightDays, videos] = await Promise.all([
     fetchFacebookFanCount(pageId, pageAccessToken),
     fetchFacebookPageInsights(pageId, pageAccessToken),
-    listFacebookPageVideos(pageId, pageAccessToken, 40),
+    listFacebookPageVideos(pageId, pageAccessToken, 200),
   ]);
 
   const todayStr = today.toISOString().slice(0, 10);
