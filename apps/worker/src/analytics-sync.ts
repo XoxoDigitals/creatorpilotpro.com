@@ -38,69 +38,73 @@ async function fetchFacebookFanCount(
   }
 }
 
-/** Pull daily Page Insights (views / impressions / engagements) for ~30 days. */
+/** Pull daily Page Insights (views / impressions / engagements) for ~90 days. */
 async function fetchFacebookPageInsights(
   pageId: string,
   pageAccessToken: string,
 ): Promise<Map<string, DayBucket>> {
   const out = new Map<string, DayBucket>();
-  const since = Math.floor((Date.now() - 30 * 86_400_000) / 1000);
+  const since = Math.floor((Date.now() - 90 * 86_400_000) / 1000);
   const until = Math.floor(Date.now() / 1000);
-  const metric = [
-    'page_impressions',
-    'page_video_views',
-    'page_video_views_unique',
-    'page_post_engagements',
-  ].join(',');
-  const url =
-    `${GRAPH}/${encodeURIComponent(pageId)}/insights?` +
-    new URLSearchParams({
-      metric,
-      period: 'day',
-      since: String(since),
-      until: String(until),
-      access_token: pageAccessToken,
-    }).toString();
 
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      console.warn(
-        `[analytics:account-sync] Meta insights HTTP ${res.status} for page ${pageId}: ${body.slice(0, 200)}`,
-      );
-      return out;
+  // Prefer a small set of widely available metrics; fall back if the batch fails.
+  const metricSets = [
+    ['page_impressions', 'page_video_views', 'page_post_engagements'],
+    ['page_impressions', 'page_video_views'],
+    ['page_impressions'],
+  ];
+
+  const ensure = (day: string): DayBucket => {
+    let b = out.get(day);
+    if (!b) {
+      b = { views: 0, uniqueViewers: 0, impressions: 0, engagements: 0 };
+      out.set(day, b);
     }
-    const data = (await res.json()) as {
-      data?: Array<{
-        name: string;
-        values?: Array<{ value: number | Record<string, number>; end_time: string }>;
-      }>;
-    };
+    return b;
+  };
 
-    const ensure = (day: string): DayBucket => {
-      let b = out.get(day);
-      if (!b) {
-        b = { views: 0, uniqueViewers: 0, impressions: 0, engagements: 0 };
-        out.set(day, b);
-      }
-      return b;
-    };
+  for (const metrics of metricSets) {
+    const url =
+      `${GRAPH}/${encodeURIComponent(pageId)}/insights?` +
+      new URLSearchParams({
+        metric: metrics.join(','),
+        period: 'day',
+        since: String(since),
+        until: String(until),
+        access_token: pageAccessToken,
+      }).toString();
 
-    for (const series of data.data ?? []) {
-      for (const point of series.values ?? []) {
-        const day = point.end_time.slice(0, 10);
-        const raw = point.value;
-        const n = typeof raw === 'number' ? raw : 0;
-        const bucket = ensure(day);
-        if (series.name === 'page_impressions') bucket.impressions = n;
-        else if (series.name === 'page_video_views') bucket.views = n;
-        else if (series.name === 'page_video_views_unique') bucket.uniqueViewers = n;
-        else if (series.name === 'page_post_engagements') bucket.engagements = n;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(
+          `[analytics:account-sync] Meta insights HTTP ${res.status} (${metrics.join('+')}): ${body.slice(0, 180)}`,
+        );
+        continue;
       }
+      const data = (await res.json()) as {
+        data?: Array<{
+          name: string;
+          values?: Array<{ value: number | Record<string, number>; end_time: string }>;
+        }>;
+      };
+
+      for (const series of data.data ?? []) {
+        for (const point of series.values ?? []) {
+          const day = point.end_time.slice(0, 10);
+          const raw = point.value;
+          const n = typeof raw === 'number' ? raw : 0;
+          const bucket = ensure(day);
+          if (series.name === 'page_impressions') bucket.impressions = n;
+          else if (series.name === 'page_video_views') bucket.views = n;
+          else if (series.name === 'page_post_engagements') bucket.engagements = n;
+        }
+      }
+      if (out.size > 0) break;
+    } catch (err) {
+      console.warn(`[analytics:account-sync] Meta insights error for page ${pageId}:`, err);
     }
-  } catch (err) {
-    console.warn(`[analytics:account-sync] Meta insights error for page ${pageId}:`, err);
   }
   return out;
 }
@@ -303,9 +307,55 @@ async function syncFacebookAccount(
     }
   }
 
+  // If Insights returned nothing useful, seed account daily buckets from video
+  // publish dates so KPI cards + the views chart match the per-video table.
+  const insightViews = [...insightDays.values()].reduce((s, b) => s + b.views + b.impressions, 0);
+  if (insightViews === 0 && videos.length > 0) {
+    const byDay = new Map<string, DayBucket>();
+    for (const video of videos) {
+      const day = (video.createdTime ?? today.toISOString()).slice(0, 10);
+      const b = byDay.get(day) ?? {
+        views: 0,
+        uniqueViewers: 0,
+        impressions: 0,
+        engagements: 0,
+      };
+      b.views += video.views;
+      b.engagements += video.likes + video.comments;
+      byDay.set(day, b);
+    }
+    for (const [dayStr, bucket] of byDay) {
+      const date = new Date(`${dayStr}T00:00:00.000Z`);
+      const isToday = dayStr === todayStr;
+      await prisma.metricSnapshotAccount.upsert({
+        where: { accountId_date: { accountId, date } },
+        create: {
+          accountId,
+          date,
+          followers: isToday ? (followers ?? 0) : 0,
+          views: bucket.views,
+          uniqueViewers: 0,
+          impressions: 0,
+          engagements: bucket.engagements,
+          watchTimeMin: 0,
+          ctr: 0,
+          revenue: 0,
+          rpm: 0,
+          syncedAt: new Date(),
+        },
+        update: {
+          views: bucket.views,
+          engagements: bucket.engagements,
+          ...(isToday && followers !== null ? { followers } : {}),
+          syncedAt: new Date(),
+        },
+      });
+    }
+  }
+
   console.log(
     `[analytics:account-sync] Facebook ${accountId}: followers=${followers ?? 'n/a'} ` +
-      `insightDays=${insightDays.size} videos=${videos.length}`,
+      `insightDays=${insightDays.size} videos=${videos.length} insightViews=${insightViews}`,
   );
 }
 

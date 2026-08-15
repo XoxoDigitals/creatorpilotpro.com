@@ -123,6 +123,52 @@ export class AnalyticsService {
       retentionSum += s.retentionRate;
     }
 
+    // When Page Insights didn't populate account snapshots (common for Meta),
+    // fall back to summing latest per-video metrics for posts in the range.
+    if (views === 0 && engagements === 0) {
+      const targets = await this.prisma.client.publishTarget.findMany({
+        where: {
+          accountId,
+          status: 'PUBLISHED',
+          publishedAt: { gte: from, lte: to },
+        },
+        include: {
+          metricSnapshots: { orderBy: { date: 'desc' }, take: 1 },
+        },
+      });
+      let postViews = 0;
+      let postEng = 0;
+      let postImpressions = 0;
+      let postUnique = 0;
+      let postWatch = 0;
+      let postRetention = 0;
+      let postCtr = 0;
+      let withSnap = 0;
+      for (const t of targets) {
+        const s = t.metricSnapshots[0];
+        if (!s) continue;
+        withSnap += 1;
+        postViews += s.views;
+        postEng += s.likes + s.comments + s.shares;
+        postImpressions += s.impressions;
+        postUnique += s.uniqueViewers;
+        postWatch += s.watchTimeMin;
+        postRetention += s.retentionRate;
+        postCtr += s.ctr;
+      }
+      if (postViews > 0 || postEng > 0) {
+        views = postViews;
+        engagements = postEng;
+        if (impressions === 0) impressions = postImpressions;
+        if (uniqueViewers === 0) uniqueViewers = postUnique;
+        if (watchTimeMin === 0) watchTimeMin = postWatch;
+        if (withSnap > 0) {
+          retentionSum = postRetention;
+          ctrSum = postCtr;
+        }
+      }
+    }
+
     const n = snapshots.length || 1;
     const mapped = snapshots.map(toAccountSnapshot);
     const latest = mapped.length > 0 ? mapped[mapped.length - 1] : undefined;
@@ -139,8 +185,8 @@ export class AnalyticsService {
         followersDelta: lastFollowers - firstFollowers,
         engagements,
         impressions,
-        avgCtr: ctrSum / n,
-        avgRetentionRate: retentionSum / n,
+        avgCtr: ctrSum / Math.max(n, 1),
+        avgRetentionRate: retentionSum / Math.max(n, 1),
       },
       ...(latest ? { latest } : {}),
       snapshots: mapped,
