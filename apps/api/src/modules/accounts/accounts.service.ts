@@ -194,6 +194,7 @@ export class AccountsService {
       mimeType?: string;
       stream: NodeJS.ReadableStream;
       isTruncated: () => boolean;
+      kind?: 'silent' | 'lipSync';
     },
   ): Promise<AccountView> {
     await this.loadActive(id);
@@ -201,10 +202,18 @@ export class AccountsService {
     if (!root) {
       throw new BadRequestException('STORAGE_ROOT is not configured on the API host.');
     }
+    const kind = input.kind === 'lipSync' ? 'lipSync' : 'silent';
     const ext = (() => {
       const fromName = input.filename.includes('.')
         ? input.filename.slice(input.filename.lastIndexOf('.')).toLowerCase()
         : '';
+      if (kind === 'lipSync') {
+        if (/\.(mp4|webm|mov|m4v)$/i.test(fromName)) return fromName;
+        const mt = (input.mimeType ?? '').toLowerCase();
+        if (mt.includes('mp4')) return '.mp4';
+        if (mt.includes('webm')) return '.webm';
+        throw new BadRequestException('Lip-sync upload must be a short MP4/WebM/MOV clip.');
+      }
       if (/\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v)$/i.test(fromName)) return fromName;
       const mt = (input.mimeType ?? '').toLowerCase();
       if (mt.includes('png')) return '.png';
@@ -222,11 +231,12 @@ export class AccountsService {
 
     const dir = join(root, 'accounts', id);
     await mkdir(dir, { recursive: true });
-    // Clear previous reaction-avatar.* files for this account.
+    const filePrefix = kind === 'lipSync' ? 'reaction-avatar-lipsync' : 'reaction-avatar';
     try {
       const existing = await readdir(dir);
+      const re = new RegExp(`^${filePrefix}\\.`, 'i');
       for (const name of existing) {
-        if (/^reaction-avatar\./i.test(name)) {
+        if (re.test(name)) {
           await unlink(join(dir, name)).catch(() => {});
         }
       }
@@ -234,7 +244,7 @@ export class AccountsService {
       /* empty dir */
     }
 
-    const fileName = `reaction-avatar${ext}`;
+    const fileName = `${filePrefix}${ext}`;
     const abs = join(dir, fileName);
     const rel = `accounts/${id}/${fileName}`.replace(/\\/g, '/');
     await pipeline(input.stream, createWriteStream(abs));
@@ -259,17 +269,30 @@ export class AccountsService {
       render.reactionAvatar && typeof render.reactionAvatar === 'object' && !Array.isArray(render.reactionAvatar)
         ? { ...(render.reactionAvatar as Record<string, unknown>) }
         : {};
-    render.reactionAvatar = {
-      ...prevAvatar,
-      enabled: true,
-      assetPath: rel,
-      fileName: input.filename || fileName,
-      mimeType: input.mimeType || undefined,
-      shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
-      corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
-      sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
-      showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
-    };
+    render.reactionAvatar =
+      kind === 'lipSync'
+        ? {
+            ...prevAvatar,
+            enabled: true,
+            lipSyncAssetPath: rel,
+            lipSyncFileName: input.filename || fileName,
+            lipSyncMimeType: input.mimeType || undefined,
+            shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
+            corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
+            sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
+            showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+          }
+        : {
+            ...prevAvatar,
+            enabled: true,
+            assetPath: rel,
+            fileName: input.filename || fileName,
+            mimeType: input.mimeType || undefined,
+            shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
+            corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
+            sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
+            showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+          };
     voice.renderSettings = render;
     await this.prisma.client.channelProfile.update({
       where: { accountId: id },
@@ -280,7 +303,10 @@ export class AccountsService {
     return toAccountView(row, metrics.get(id));
   }
 
-  async clearReactionAvatar(id: string): Promise<AccountView> {
+  async clearReactionAvatar(
+    id: string,
+    opts?: { kind?: 'silent' | 'lipSync' | 'all' },
+  ): Promise<AccountView> {
     await this.loadActive(id);
     const root = process.env.STORAGE_ROOT?.trim();
     const profile = await this.prisma.client.channelProfile.findUnique({
@@ -299,18 +325,46 @@ export class AccountsService {
       render.reactionAvatar && typeof render.reactionAvatar === 'object' && !Array.isArray(render.reactionAvatar)
         ? { ...(render.reactionAvatar as Record<string, unknown>) }
         : {};
-    const assetPath = typeof prevAvatar.assetPath === 'string' ? prevAvatar.assetPath : null;
-    if (root && assetPath) {
-      const { unlink } = await import('node:fs/promises');
-      const { join } = await import('node:path');
+    const kind = opts?.kind ?? 'all';
+    const { unlink } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const clearPath = async (assetPath: unknown) => {
+      if (!root || typeof assetPath !== 'string' || !assetPath) return;
       await unlink(join(root, assetPath.replace(/^[/\\]+/, ''))).catch(() => {});
+    };
+    if (kind === 'silent' || kind === 'all') {
+      await clearPath(prevAvatar.assetPath);
+      delete prevAvatar.assetPath;
+      delete prevAvatar.fileName;
+      delete prevAvatar.mimeType;
     }
+    if (kind === 'lipSync' || kind === 'all') {
+      await clearPath(prevAvatar.lipSyncAssetPath);
+      delete prevAvatar.lipSyncAssetPath;
+      delete prevAvatar.lipSyncFileName;
+      delete prevAvatar.lipSyncMimeType;
+    }
+    const hasAny =
+      (typeof prevAvatar.assetPath === 'string' && prevAvatar.assetPath) ||
+      (typeof prevAvatar.lipSyncAssetPath === 'string' && prevAvatar.lipSyncAssetPath);
     render.reactionAvatar = {
-      enabled: false,
+      enabled: kind === 'all' ? false : !!hasAny && prevAvatar.enabled !== false,
       shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
       corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
       sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
       showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+      ...(typeof prevAvatar.assetPath === 'string' ? { assetPath: prevAvatar.assetPath } : {}),
+      ...(typeof prevAvatar.fileName === 'string' ? { fileName: prevAvatar.fileName } : {}),
+      ...(typeof prevAvatar.mimeType === 'string' ? { mimeType: prevAvatar.mimeType } : {}),
+      ...(typeof prevAvatar.lipSyncAssetPath === 'string'
+        ? { lipSyncAssetPath: prevAvatar.lipSyncAssetPath }
+        : {}),
+      ...(typeof prevAvatar.lipSyncFileName === 'string'
+        ? { lipSyncFileName: prevAvatar.lipSyncFileName }
+        : {}),
+      ...(typeof prevAvatar.lipSyncMimeType === 'string'
+        ? { lipSyncMimeType: prevAvatar.lipSyncMimeType }
+        : {}),
     };
     voice.renderSettings = render;
     await this.prisma.client.channelProfile.update({
@@ -323,7 +377,10 @@ export class AccountsService {
   }
 
   /** Absolute path to the reaction avatar file when present on disk. */
-  async reactionAvatarLocalPath(id: string): Promise<{ path: string; mimeType: string } | null> {
+  async reactionAvatarLocalPath(
+    id: string,
+    kind: 'silent' | 'lipSync' = 'silent',
+  ): Promise<{ path: string; mimeType: string } | null> {
     await this.loadActive(id);
     const root = process.env.STORAGE_ROOT?.trim();
     if (!root) return null;
@@ -334,7 +391,14 @@ export class AccountsService {
     const voice = (profile?.voiceSettings ?? {}) as Record<string, unknown>;
     const render = (voice.renderSettings ?? {}) as Record<string, unknown>;
     const avatar = (render.reactionAvatar ?? {}) as Record<string, unknown>;
-    const assetPath = typeof avatar.assetPath === 'string' ? avatar.assetPath : null;
+    const assetPath =
+      kind === 'lipSync'
+        ? typeof avatar.lipSyncAssetPath === 'string'
+          ? avatar.lipSyncAssetPath
+          : null
+        : typeof avatar.assetPath === 'string'
+          ? avatar.assetPath
+          : null;
     if (!assetPath) return null;
     const { access } = await import('node:fs/promises');
     const { join } = await import('node:path');
@@ -344,9 +408,17 @@ export class AccountsService {
     } catch {
       return null;
     }
+    const storedMime =
+      kind === 'lipSync'
+        ? typeof avatar.lipSyncMimeType === 'string'
+          ? avatar.lipSyncMimeType
+          : null
+        : typeof avatar.mimeType === 'string'
+          ? avatar.mimeType
+          : null;
     const mime =
-      typeof avatar.mimeType === 'string' && avatar.mimeType
-        ? avatar.mimeType
+      storedMime && storedMime
+        ? storedMime
         : abs.toLowerCase().endsWith('.png')
           ? 'image/png'
           : abs.toLowerCase().endsWith('.webp')
@@ -355,7 +427,9 @@ export class AccountsService {
               ? 'video/mp4'
               : abs.toLowerCase().endsWith('.webm')
                 ? 'video/webm'
-                : 'image/jpeg';
+                : abs.toLowerCase().endsWith('.mov')
+                  ? 'video/quicktime'
+                  : 'image/jpeg';
     return { path: abs, mimeType: mime };
   }
 

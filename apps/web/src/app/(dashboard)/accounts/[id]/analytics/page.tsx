@@ -25,11 +25,19 @@ import {
 } from '@/lib/api-data';
 import type { Account } from '@/lib/domain-types';
 
-type Preset = '7D' | '30D' | '90D' | 'CUSTOM';
+type Preset = '7D' | '30D' | '90D' | 'ALL' | 'CUSTOM';
 
-function presetDates(preset: Preset, from: string, to: string): { from: string; to: string } {
+function presetDates(
+  preset: Preset,
+  from: string,
+  to: string,
+): { from?: string; to?: string } {
   const now = new Date();
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  if (preset === 'ALL') {
+    // Omit from/to so the API returns all-time metrics.
+    return {};
+  }
   if (preset === '7D') {
     const f = new Date(now); f.setUTCDate(f.getUTCDate() - 7);
     return { from: fmt(f), to: fmt(now) };
@@ -115,7 +123,7 @@ export default function AccountAnalyticsPage() {
       {/* Range controls */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex rounded-md border border-zinc-300 bg-white p-0.5">
-          {(['7D', '30D', '90D', 'CUSTOM'] as Preset[]).map((p) => (
+          {(['7D', '30D', '90D', 'ALL', 'CUSTOM'] as Preset[]).map((p) => (
             <button
               key={p}
               onClick={() => setPreset(p)}
@@ -124,7 +132,7 @@ export default function AccountAnalyticsPage() {
                 preset === p ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-800',
               )}
             >
-              {p === 'CUSTOM' ? 'Custom' : `Last ${p.replace('D', ' days')}`}
+              {p === 'CUSTOM' ? 'Custom' : p === 'ALL' ? 'All time' : `Last ${p.replace('D', ' days')}`}
             </button>
           ))}
         </div>

@@ -509,8 +509,10 @@ export interface AiPipelineItem {
   selectedCaptionPosition?: string | null;
   /** Caption text color: dark (light text) or light (dark text). */
   selectedCaptionColorMode?: string | null;
-  /** Hook vertical placement. */
+  /** Hook vertical placement (enum or 0–100 Y%). */
   selectedHookPosition?: string | null;
+  /** Per-video color filter override. */
+  selectedColorFilter?: string | null;
   /** English summary for the active narration (non-English channels only). */
   englishSummary?: string;
   metadata: string | null;
@@ -650,6 +652,13 @@ export async function selectHookPosition(
   selectedHookPosition: string,
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedHookPosition });
+}
+
+export async function selectColorFilter(
+  id: string,
+  selectedColorFilter: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedColorFilter });
 }
 
 /** Ask AI to rewrite the narration from an instruction; caller PATCHes to save. */

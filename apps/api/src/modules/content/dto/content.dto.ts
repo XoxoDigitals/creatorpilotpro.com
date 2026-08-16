@@ -31,16 +31,18 @@ export const updateScriptSchema = z
     script: z.string().min(1).max(50000).optional(),
     /** Switch the active variant (explainer / styleB / styleC) without rewriting copy. */
     selectedScriptId: z.string().min(1).max(40).optional(),
-    /** Switch the on-screen hook phrase at script approval. */
+    /** Switch the on-screen hook phrase at script approval (`none` = skip hook). */
     selectedHookTextId: z.string().min(1).max(40).optional(),
-    /** Caption burn-in template picked at script approval. */
+    /** Caption burn-in template picked at script approval (`none` = skip captions). */
     selectedCaptionTemplateId: z.string().min(1).max(40).optional(),
-    /** Vertical caption placement override (top / upper / center / lower / bottom). */
+    /** Vertical caption placement: enum or 0–100 Y% from top. */
     selectedCaptionPosition: z.string().min(1).max(20).optional(),
     /** Caption text color mode: dark (light text) or light (dark text). */
     selectedCaptionColorMode: z.string().min(1).max(20).optional(),
-    /** Vertical hook placement override. */
+    /** Vertical hook placement: enum or 0–100 Y% from top. */
     selectedHookPosition: z.string().min(1).max(20).optional(),
+    /** Per-video color filter override (none / vivid / warm / cool / contrast). */
+    selectedColorFilter: z.string().min(1).max(20).optional(),
   })
   .refine(
     (d) =>
@@ -51,11 +53,12 @@ export const updateScriptSchema = z
           d.selectedCaptionTemplateId?.trim() ||
           d.selectedCaptionPosition?.trim() ||
           d.selectedCaptionColorMode?.trim() ||
-          d.selectedHookPosition?.trim(),
+          d.selectedHookPosition?.trim() ||
+          d.selectedColorFilter?.trim(),
       ),
     {
       message:
-        'script, selectedScriptId, selectedHookTextId, selectedCaptionTemplateId, selectedCaptionPosition, selectedCaptionColorMode, or selectedHookPosition is required',
+        'script, selectedScriptId, selectedHookTextId, selectedCaptionTemplateId, selectedCaptionPosition, selectedCaptionColorMode, selectedHookPosition, or selectedColorFilter is required',
     },
   );
 export type UpdateScriptDto = z.infer<typeof updateScriptSchema>;

@@ -21,10 +21,20 @@ export {
   LEGACY_CAPTION_PRESETS,
   OVERLAY_POSITIONS,
   OVERLAY_POSITION_LABELS,
+  OVERLAY_POSITION_Y_PERCENT,
+  OVERLAY_OFF_ID,
+  CAPTION_MAX_WORDS,
+  CAPTION_PREVIEW_SAMPLE,
   CAPTION_COLOR_MODES,
   CAPTION_COLOR_MODE_LABELS,
   normalizeCaptionTemplateId,
   normalizeOverlayPosition,
+  normalizeOverlayYPercent,
+  clampOverlayYPercent,
+  overlayAssFromYPercent,
+  overlayPreviewTopPercent,
+  overlayPositionFromYPercent,
+  isOverlayOffId,
   normalizeCaptionColorMode,
   resolveCaptionColors,
   captionTemplateMeta,
@@ -51,6 +61,37 @@ export type CaptionPresetCompat = (typeof CAPTION_PRESETS)[number];
 
 export const COLOR_FILTER_PRESETS = ['none', 'vivid', 'warm', 'cool', 'contrast'] as const;
 export type ColorFilterPreset = (typeof COLOR_FILTER_PRESETS)[number];
+
+export const COLOR_FILTER_LABELS: Record<ColorFilterPreset, string> = {
+  none: 'None',
+  vivid: 'Vivid',
+  warm: 'Warm',
+  cool: 'Cool',
+  contrast: 'Contrast',
+};
+
+/** CSS filter approximating ffmpeg color presets for live AI-panel preview. */
+export function colorFilterCss(preset: ColorFilterPreset | string | null | undefined): string {
+  switch (preset) {
+    case 'vivid':
+      return 'saturate(1.35) contrast(1.08)';
+    case 'warm':
+      return 'sepia(0.22) saturate(1.2) brightness(1.03)';
+    case 'cool':
+      return 'saturate(0.95) hue-rotate(195deg) brightness(1.02)';
+    case 'contrast':
+      return 'contrast(1.22) saturate(1.05)';
+    case 'none':
+    default:
+      return 'none';
+  }
+}
+
+export function normalizeColorFilterPreset(raw: unknown): ColorFilterPreset {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if ((COLOR_FILTER_PRESETS as readonly string[]).includes(s)) return s as ColorFilterPreset;
+  return 'none';
+}
 
 /** `options` = per-video pick at script approval; `title` / `custom` = account defaults. */
 export const HOOK_TEXT_SOURCES = ['options', 'title', 'custom'] as const;
@@ -119,16 +160,21 @@ export const renderSettingsSchema = z.object({
     })
     .default({ enabled: false, preset: 'none' }),
   /**
-   * Corner reaction / talking-head PiP. Upload a face image or short clip;
-   * ffmpeg overlays it (no lip-sync ML). Prefer dialogue windows when available.
+   * Corner reaction / talking-head PiP. Upload a silent face image/clip and/or
+   * a lip-sync (talking-head) video; ffmpeg overlays it (no ML lip-sync).
+   * Prefer lipSyncAssetPath when present, else assetPath.
    */
   reactionAvatar: z
     .object({
       enabled: z.boolean().default(false),
-      /** Path relative to STORAGE_ROOT, e.g. accounts/{id}/reaction-avatar.png */
+      /** Silent / still reaction — path relative to STORAGE_ROOT. */
       assetPath: z.string().max(500).optional(),
+      /** Talking-head / lip-sync video preferred during dialogue windows. */
+      lipSyncAssetPath: z.string().max(500).optional(),
       fileName: z.string().max(200).optional(),
+      lipSyncFileName: z.string().max(200).optional(),
       mimeType: z.string().max(100).optional(),
+      lipSyncMimeType: z.string().max(100).optional(),
       shape: z.enum(['circle', 'square', 'rounded']).default('circle'),
       corner: z.enum(['br', 'bl', 'tr', 'tl']).default('br'),
       /** Width as % of video width (12–40). */

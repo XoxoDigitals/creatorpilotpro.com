@@ -27,8 +27,10 @@ import {
   finalVideoEffectsEnabled,
   resolveHookOverlayText,
   normalizeCaptionTemplateId,
-  normalizeOverlayPosition,
+  normalizeOverlayYPercent,
   normalizeCaptionColorMode,
+  normalizeColorFilterPreset,
+  isOverlayOffId,
   type RenderSettings,
 } from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
@@ -513,54 +515,81 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
       typeof step.selectedCaptionTemplateId === 'string'
         ? step.selectedCaptionTemplateId
         : null;
+    const captionsOff = isOverlayOffId(selectedTemplateRaw);
     // Per-video template pick at script approval enables burn for that item.
-    const captionTemplateId = normalizeCaptionTemplateId(
-      selectedTemplateRaw ?? renderSettings.burnCaptions.preset,
-    );
+    const captionTemplateId = captionsOff
+      ? normalizeCaptionTemplateId(renderSettings.burnCaptions.preset)
+      : normalizeCaptionTemplateId(
+          selectedTemplateRaw ?? renderSettings.burnCaptions.preset,
+        );
     const burnCaptions =
-      renderSettings.burnCaptions.enabled || !!selectedTemplateRaw?.trim();
-    const captionPosition = normalizeOverlayPosition(
-      typeof step.selectedCaptionPosition === 'string'
-        ? step.selectedCaptionPosition
-        : renderSettings.burnCaptions.position,
-      'center',
+      !captionsOff &&
+      (renderSettings.burnCaptions.enabled || !!selectedTemplateRaw?.trim());
+    const captionPosition = String(
+      normalizeOverlayYPercent(
+        typeof step.selectedCaptionPosition === 'string'
+          ? step.selectedCaptionPosition
+          : renderSettings.burnCaptions.position,
+        'center',
+      ),
     );
     const captionColorMode = normalizeCaptionColorMode(
       typeof step.selectedCaptionColorMode === 'string'
         ? step.selectedCaptionColorMode
         : renderSettings.burnCaptions.colorMode,
     );
-    const hookPosition = normalizeOverlayPosition(
-      typeof step.selectedHookPosition === 'string'
-        ? step.selectedHookPosition
-        : renderSettings.hookText.position,
-      'top',
+    const hookPosition = String(
+      normalizeOverlayYPercent(
+        typeof step.selectedHookPosition === 'string'
+          ? step.selectedHookPosition
+          : renderSettings.hookText.position,
+        'top',
+      ),
     );
+    const hookOff =
+      isOverlayOffId(step.selectedHookTextId) ||
+      (typeof step.selectedHookText === 'string' &&
+        !step.selectedHookText.trim() &&
+        isOverlayOffId(step.selectedHookTextId));
+    const selectedColorFilter =
+      typeof step.selectedColorFilter === 'string' && step.selectedColorFilter.trim()
+        ? normalizeColorFilterPreset(step.selectedColorFilter)
+        : null;
     const effectiveSettings: RenderSettings = {
       ...renderSettings,
       burnCaptions: {
         ...renderSettings.burnCaptions,
         enabled: burnCaptions,
         preset: captionTemplateId,
-        position: captionPosition,
+        position: captionPosition as RenderSettings['burnCaptions']['position'],
         colorMode: captionColorMode,
       },
       hookText: {
         ...renderSettings.hookText,
-        // Prefer burning hook whenever account enabled OR a hook was selected.
+        // Prefer burning hook whenever account enabled OR a hook was selected,
+        // unless the owner explicitly chose None.
         enabled:
-          renderSettings.hookText.enabled ||
-          !!(typeof step.selectedHookText === 'string' && step.selectedHookText.trim()),
-        position: hookPosition,
+          !hookOff &&
+          (renderSettings.hookText.enabled ||
+            !!(typeof step.selectedHookText === 'string' && step.selectedHookText.trim())),
+        position: hookPosition as RenderSettings['hookText']['position'],
       },
+      colorFilter:
+        selectedColorFilter && selectedColorFilter !== 'none'
+          ? { enabled: true, preset: selectedColorFilter }
+          : selectedColorFilter === 'none'
+            ? { enabled: false, preset: 'none' }
+            : renderSettings.colorFilter,
     };
 
     const subtitlePath = await resolveSubtitlePath(item.assets, voPath);
-    const hookOverlayText = resolveHookOverlayText(
-      effectiveSettings.hookText,
-      item.title,
-      typeof step.selectedHookText === 'string' ? step.selectedHookText : null,
-    );
+    const hookOverlayText = hookOff
+      ? null
+      : resolveHookOverlayText(
+          effectiveSettings.hookText,
+          item.title,
+          typeof step.selectedHookText === 'string' ? step.selectedHookText : null,
+        );
 
     let assPath: string | null = null;
     if (
@@ -666,9 +695,16 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     }
 
     // Step 3c: Reaction avatar PiP (corner face) — after trim/captions so it sits on top.
+    // Prefer lip-sync talking-head clip when uploaded; else silent image/clip.
     const avatar = effectiveSettings.reactionAvatar;
-    if (avatar.enabled && avatar.assetPath?.trim() && STORAGE_ROOT) {
-      const avatarAbs = join(STORAGE_ROOT, avatar.assetPath.replace(/^[/\\]+/, ''));
+    const preferredRel =
+      avatar.enabled && avatar.lipSyncAssetPath?.trim()
+        ? avatar.lipSyncAssetPath.trim()
+        : avatar.enabled && avatar.assetPath?.trim()
+          ? avatar.assetPath.trim()
+          : null;
+    if (preferredRel && STORAGE_ROOT) {
+      const avatarAbs = join(STORAGE_ROOT, preferredRel.replace(/^[/\\]+/, ''));
       try {
         await access(avatarAbs);
         const width = (await ffmpeg.probeVideoWidth(finalPath)) ?? 1080;
@@ -691,7 +727,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         await rename(pipOut, finalPath);
         console.log(
           `[worker:render] reaction avatar applied for ${contentItemId}` +
-            ` [${avatar.shape}/${avatar.corner}/${sizePx}px` +
+            ` [${avatar.lipSyncAssetPath?.trim() ? 'lip-sync' : 'silent'}/${avatar.shape}/${avatar.corner}/${sizePx}px` +
             (enableExpr ? ', dialogue-only' : ', always') +
             ']',
         );

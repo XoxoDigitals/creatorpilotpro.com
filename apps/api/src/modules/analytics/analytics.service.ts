@@ -95,9 +95,15 @@ export class AnalyticsService {
     fromStr?: string,
     toStr?: string,
   ): Promise<AccountMetricsView> {
-    const { from, to } = parseDateRange(fromStr, toStr);
+    // No from/to → all-time account snapshots (same convention as getAccountPosts).
+    const allTime = !fromStr && !toStr;
+    const { from, to } = allTime
+      ? { from: new Date(0), to: new Date() }
+      : parseDateRange(fromStr, toStr);
     const snapshots = await this.prisma.client.metricSnapshotAccount.findMany({
-      where: { accountId, date: { gte: from, lte: to } },
+      where: allTime
+        ? { accountId }
+        : { accountId, date: { gte: from, lte: to } },
       orderBy: { date: 'asc' },
     });
 
@@ -130,7 +136,7 @@ export class AnalyticsService {
         where: {
           accountId,
           status: 'PUBLISHED',
-          publishedAt: { gte: from, lte: to },
+          ...(allTime ? {} : { publishedAt: { gte: from, lte: to } }),
         },
         include: {
           metricSnapshots: { orderBy: { date: 'desc' }, take: 1 },

@@ -147,7 +147,7 @@ describe('buildFinalVideoFilterChain', () => {
     });
     expect(on).toContain('subtitles=');
     expect(on).toContain('force_style=');
-    expect(captionForceStyle({ enabled: true, preset: 'bottom_white' })).toContain('Alignment=2');
+    expect(captionForceStyle({ enabled: true, preset: 'bottom_white' })).toContain('Alignment=8');
   });
 
   it('draws hook text with optional fontfile', () => {

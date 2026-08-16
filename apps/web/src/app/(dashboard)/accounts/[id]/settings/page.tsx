@@ -547,6 +547,15 @@ export default function AccountSettingsPage() {
               ...(renderSettings.reactionAvatar?.mimeType
                 ? { mimeType: renderSettings.reactionAvatar.mimeType }
                 : {}),
+              ...(renderSettings.reactionAvatar?.lipSyncAssetPath
+                ? { lipSyncAssetPath: renderSettings.reactionAvatar.lipSyncAssetPath }
+                : {}),
+              ...(renderSettings.reactionAvatar?.lipSyncFileName
+                ? { lipSyncFileName: renderSettings.reactionAvatar.lipSyncFileName }
+                : {}),
+              ...(renderSettings.reactionAvatar?.lipSyncMimeType
+                ? { lipSyncMimeType: renderSettings.reactionAvatar.lipSyncMimeType }
+                : {}),
             },
           },
         },
@@ -1269,8 +1278,9 @@ export default function AccountSettingsPage() {
               label="Reaction avatar (corner PiP)"
             />
             <p className="text-[11px] text-zinc-500">
-              Upload a face photo or short clip. ffmpeg overlays it in the corner during dialogue
-              (or always). Not lip-synced — reaction / talking-head style.
+              Upload a silent face photo/clip and an optional lip-sync talking-head video. ffmpeg
+              overlays the lip-sync clip when present (else the silent asset) in the corner during
+              dialogue — not ML lip-sync, just PiP of your uploaded clip.
             </p>
             {renderSettings.reactionAvatar?.enabled && (
               <div className="space-y-3">
@@ -1279,15 +1289,16 @@ export default function AccountSettingsPage() {
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={`/api/v1/accounts/${id}/reaction-avatar?t=${encodeURIComponent(renderSettings.reactionAvatar.assetPath)}`}
-                      alt="Reaction avatar"
+                      alt="Silent reaction avatar"
                       className="h-20 w-20 rounded-full border border-zinc-200 object-cover bg-zinc-100"
                     />
                   ) : (
                     <div className="flex h-20 w-20 items-center justify-center rounded-full border border-dashed border-zinc-300 bg-white text-[10px] text-zinc-400">
-                      No face
+                      No silent
                     </div>
                   )}
                   <div className="min-w-0 flex-1 space-y-2">
+                    <p className="text-[11px] font-medium text-zinc-600">Silent face / clip</p>
                     <input
                       type="file"
                       accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
@@ -1303,7 +1314,7 @@ export default function AccountSettingsPage() {
                             }>(`/accounts/${id}/reaction-avatar`, file);
                             const vs = next.profile?.voiceSettings;
                             setRenderSettings(renderSettingsFromVoiceSettings(vs));
-                            toast('Reaction avatar uploaded', 'success');
+                            toast('Silent reaction avatar uploaded', 'success');
                           } catch (err) {
                             toast(
                               err instanceof ApiError ? err.message : 'Avatar upload failed',
@@ -1323,11 +1334,11 @@ export default function AccountSettingsPage() {
                             try {
                               const next = await api.del<{
                                 profile?: { voiceSettings?: unknown };
-                              }>(`/accounts/${id}/reaction-avatar`);
+                              }>(`/accounts/${id}/reaction-avatar/silent`);
                               setRenderSettings(
                                 renderSettingsFromVoiceSettings(next.profile?.voiceSettings),
                               );
-                              toast('Reaction avatar removed', 'success');
+                              toast('Silent avatar removed', 'success');
                             } catch (err) {
                               toast(
                                 err instanceof ApiError ? err.message : 'Remove failed',
@@ -1337,9 +1348,74 @@ export default function AccountSettingsPage() {
                           })();
                         }}
                       >
-                        Remove face
+                        Remove silent
                       </Button>
                     )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-start gap-3 border-t border-zinc-200 pt-3">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full border border-dashed border-zinc-300 bg-white text-center text-[10px] text-zinc-400">
+                    {renderSettings.reactionAvatar.lipSyncAssetPath ? 'Lip-sync set' : 'No lip-sync'}
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <p className="text-[11px] font-medium text-zinc-600">
+                      Lip-sync / talking-head video
+                    </p>
+                    <input
+                      type="file"
+                      accept="video/mp4,video/webm,video/quicktime"
+                      className="block w-full text-xs text-zinc-600"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!file || !id) return;
+                        void (async () => {
+                          try {
+                            const next = await apiUpload<{
+                              profile?: { voiceSettings?: unknown };
+                            }>(`/accounts/${id}/reaction-avatar/lip-sync`, file);
+                            const vs = next.profile?.voiceSettings;
+                            setRenderSettings(renderSettingsFromVoiceSettings(vs));
+                            toast('Lip-sync clip uploaded', 'success');
+                          } catch (err) {
+                            toast(
+                              err instanceof ApiError ? err.message : 'Lip-sync upload failed',
+                              'error',
+                            );
+                          }
+                        })();
+                      }}
+                    />
+                    {renderSettings.reactionAvatar.lipSyncAssetPath && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              const next = await api.del<{
+                                profile?: { voiceSettings?: unknown };
+                              }>(`/accounts/${id}/reaction-avatar/lip-sync`);
+                              setRenderSettings(
+                                renderSettingsFromVoiceSettings(next.profile?.voiceSettings),
+                              );
+                              toast('Lip-sync clip removed', 'success');
+                            } catch (err) {
+                              toast(
+                                err instanceof ApiError ? err.message : 'Remove failed',
+                                'error',
+                              );
+                            }
+                          })();
+                        }}
+                      >
+                        Remove lip-sync
+                      </Button>
+                    )}
+                    <p className="text-[10px] text-zinc-500">
+                      Preferred during dialogue when set. Falls back to the silent asset.
+                    </p>
                   </div>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">

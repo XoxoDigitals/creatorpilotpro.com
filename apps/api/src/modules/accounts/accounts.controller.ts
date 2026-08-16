@@ -245,6 +245,28 @@ export class AccountsController {
       mimeType: data.mimetype,
       stream: data.file,
       isTruncated: () => data.file.truncated,
+      kind: 'silent',
+    });
+  }
+
+  @Post(':id/reaction-avatar/lip-sync')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('account.reactionAvatar.lipSync.upload', 'ChannelProfile')
+  async uploadReactionAvatarLipSync(
+    @Param('id') id: string,
+    @Req() req: FastifyRequest,
+  ): Promise<AccountView> {
+    if (!req.isMultipart()) {
+      throw new BadRequestException('Expected a multipart/form-data upload.');
+    }
+    const data = await req.file();
+    if (!data) throw new BadRequestException('No file part found in the upload.');
+    return this.accounts.saveReactionAvatar(id, {
+      filename: data.filename,
+      mimeType: data.mimetype,
+      stream: data.file,
+      isTruncated: () => data.file.truncated,
+      kind: 'lipSync',
     });
   }
 
@@ -254,9 +276,26 @@ export class AccountsController {
     @Param('id') id: string,
     @Res() reply: FastifyReply,
   ): Promise<void> {
-    const hit = await this.accounts.reactionAvatarLocalPath(id);
+    const hit = await this.accounts.reactionAvatarLocalPath(id, 'silent');
     if (!hit) {
       void reply.status(404).send({ message: 'No reaction avatar uploaded.' });
+      return;
+    }
+    void reply
+      .header('Content-Type', hit.mimeType)
+      .header('Cache-Control', 'private, max-age=60')
+      .send(createReadStream(hit.path));
+  }
+
+  @Get(':id/reaction-avatar/lip-sync')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  async getReactionAvatarLipSync(
+    @Param('id') id: string,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const hit = await this.accounts.reactionAvatarLocalPath(id, 'lipSync');
+    if (!hit) {
+      void reply.status(404).send({ message: 'No lip-sync reaction clip uploaded.' });
       return;
     }
     void reply
@@ -269,7 +308,21 @@ export class AccountsController {
   @Roles('OWNER', 'ADMIN')
   @Audit('account.reactionAvatar.clear', 'ChannelProfile')
   clearReactionAvatar(@Param('id') id: string): Promise<AccountView> {
-    return this.accounts.clearReactionAvatar(id);
+    return this.accounts.clearReactionAvatar(id, { kind: 'all' });
+  }
+
+  @Delete(':id/reaction-avatar/silent')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('account.reactionAvatar.clearSilent', 'ChannelProfile')
+  clearReactionAvatarSilent(@Param('id') id: string): Promise<AccountView> {
+    return this.accounts.clearReactionAvatar(id, { kind: 'silent' });
+  }
+
+  @Delete(':id/reaction-avatar/lip-sync')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('account.reactionAvatar.clearLipSync', 'ChannelProfile')
+  clearReactionAvatarLipSync(@Param('id') id: string): Promise<AccountView> {
+    return this.accounts.clearReactionAvatar(id, { kind: 'lipSync' });
   }
 
   @Delete(':id')

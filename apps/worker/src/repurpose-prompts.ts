@@ -281,8 +281,10 @@ Return ONLY valid JSON:
   "overlayHooks": [
     "2-3 WORD HOOK",
     "ANOTHER SHORT HOOK",
-    "THIRD SHORT HOOK",
-    "FOURTH SHORT HOOK"
+    "LONGER VIRAL HOOK HERE",
+    "TWO LINE|HOOK PHRASE",
+    "FIFTH SHORT HOOK",
+    "SIXTH LONGER HOOK"
   ],
   "variants": [
     {
@@ -315,10 +317,11 @@ Return ONLY valid JSON:
 Core rule: Narrate the story, not the obvious pixels.
 
 overlayHooks (required):
-- Exactly 4 distinct on-screen attention phrases for the video top center.
-- Each phrase is 2–3 words only (not a full sentence). Prefer punchy nouns/verbs.
+- Exactly 6 distinct on-screen attention phrases for the video top area.
+- Mix 3 short (2–3 words) and 3 longer (4–8 words, or two short lines separated by | ).
+- Punchy, scroll-stopping, viral angles: curiosity, stakes, contrast, taboo, money, identity, reveal — not paraphrases.
+- Ban generic filler: "you won't believe", "watch till the end", "in this video", "wait for it" alone.
 - No punctuation, no hashtags, no quotes. English even when spoken script is another language.
-- Different angles (curiosity / stakes / reveal / emotion) — not paraphrases of each other.
 
 Build each script around:
 HOOK → CONTEXT → PROBLEM/CHANGE → PROGRESSION → REACTION → PAYOFF.
@@ -334,7 +337,7 @@ Rules:
 
 Variant requirements:
 - explainer: clearest and most complete version. Conversational and engaging. If hasDialogue is true or any beat contains spoken conversation, summarize the important question/reply/explanation in third person.
-- styleB: fastest, punchiest, curiosity-driven version with short sentences and stronger open loops.
+- styleB (hooky): fastest, punchiest, curiosity-driven version — short rhythmic sentences, stronger open loops, denser stakes language; opening line must feel more viral than explainer.
 - styleC: calm, cinematic, documentary-style storytelling with controlled suspense and smooth progression.
 - The three variants must be genuinely different, not paraphrases.
 

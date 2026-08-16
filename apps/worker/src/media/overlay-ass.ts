@@ -7,7 +7,6 @@ import {
   captionAssStyleFields,
   hookAssStyleFields,
   normalizeCaptionTemplateId,
-  normalizeOverlayPosition,
   normalizeCaptionColorMode,
   formatImpactAssText,
   buildKaraokeAssCueEvents,
@@ -112,10 +111,8 @@ export function buildOverlayAssContent(opts: {
 }): string {
   const templateId = normalizeCaptionTemplateId(opts.templateId);
   const colorMode = normalizeCaptionColorMode(opts.colorMode);
-  const captionPos = normalizeOverlayPosition(opts.captionPosition, 'center');
-  const hookPos = normalizeOverlayPosition(opts.hookPosition, 'top');
-  const caption = captionAssStyleFields(templateId, captionPos, colorMode);
-  const hook = hookAssStyleFields(hookPos);
+  const caption = captionAssStyleFields(templateId, opts.captionPosition, colorMode);
+  const hook = hookAssStyleFields(opts.hookPosition);
   const playResX = opts.playResX ?? 1080;
   const playResY = opts.playResY ?? 1920;
   const lastCueEnd = opts.cues.reduce((m, c) => Math.max(m, c.endMs), 0);

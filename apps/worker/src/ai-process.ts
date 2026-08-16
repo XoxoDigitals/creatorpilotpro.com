@@ -506,7 +506,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       hasDialogue,
       // Present when the owner clicks Regenerate script — busts the AI cache.
       ...(currentStep.scriptNonce != null ? { regenerateNonce: currentStep.scriptNonce } : {}),
-      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 6 on-screen attention phrases — mix short (2–3 words) and longer (4–8 words or two short lines separated by | ). ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
+      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 6 on-screen attention phrases — mix punchy short (2–3 words) and longer viral (4–8 words or two short lines separated by | ). Prefer curiosity, stakes, contrast, taboo, money, identity, or reveal angles — never generic ("you won't believe", "watch this"). The hooky/hype variant (styleB) must open with a sharper scroll-stop line and keep sentences shorter/more rhythmic than explainer. ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
     });
     runInput = { kind: 'text', text: inputText };
   } else {

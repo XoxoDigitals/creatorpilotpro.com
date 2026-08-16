@@ -41,6 +41,7 @@ import {
   selectCaptionPosition,
   selectCaptionColorMode,
   selectHookPosition,
+  selectColorFilter,
   updateNarrationScript,
   updatePublishMetadata,
   type AiPipelineItem,
@@ -50,40 +51,30 @@ import {
   DEFAULT_BACKGROUND_BED_PERCENT,
   clampBackgroundBedPercent,
   CAPTION_TEMPLATE_PICKER,
-  OVERLAY_POSITIONS,
-  OVERLAY_POSITION_LABELS,
   CAPTION_COLOR_MODES,
   CAPTION_COLOR_MODE_LABELS,
+  CAPTION_PREVIEW_SAMPLE,
+  OVERLAY_OFF_ID,
+  COLOR_FILTER_PRESETS,
+  COLOR_FILTER_LABELS,
   captionTemplateMeta,
   normalizeCaptionTemplateId,
-  normalizeOverlayPosition,
+  normalizeOverlayYPercent,
+  overlayPreviewTopPercent,
   normalizeCaptionColorMode,
+  normalizeColorFilterPreset,
+  colorFilterCss,
   previewCaptionLines,
-  type OverlayPosition,
+  isOverlayOffId,
   type CaptionColorMode,
+  type ColorFilterPreset,
 } from '@scp/shared';
 
-function overlayPreviewPosClass(pos: OverlayPosition): string {
-  switch (pos) {
-    case 'top':
-      return 'left-3 right-3 top-5';
-    case 'upper':
-      return 'left-3 right-3 top-[18%]';
-    case 'center':
-      return 'left-3 right-3 top-1/2 -translate-y-1/2';
-    case 'lower':
-      return 'left-3 right-3 bottom-[28%]';
-    case 'bottom':
-    default:
-      return 'left-3 right-3 bottom-8';
-  }
-}
-
-function defaultCaptionPreviewPos(templateId: string | null | undefined): OverlayPosition {
+function defaultCaptionPreviewY(templateId: string | null | undefined): number {
   const align = captionTemplateMeta(templateId).align;
-  if (align === 'upper') return 'upper';
-  if (align === 'bottom') return 'bottom';
-  return 'center';
+  if (align === 'upper') return 20;
+  if (align === 'bottom') return 88;
+  return 46;
 }
 function readableAiText(value: string): string {
   const trimmed = value.trim();
@@ -305,25 +296,40 @@ function PipelineVideoFrame({
     captionPosition?: string | null;
     hookPosition?: string | null;
     colorMode?: string | null;
+    colorFilter?: string | null;
+    captionsOff?: boolean;
+    hookOff?: boolean;
   };
 }) {
-  const template = captionTemplateMeta(overlay?.templateId);
-  const hook = overlay?.hookText?.trim() || '';
-  const captionRaw = overlay?.captionSample?.trim() || '';
+  const captionsOff = !!overlay?.captionsOff || isOverlayOffId(overlay?.templateId);
+  const hookOff = !!overlay?.hookOff;
+  const template = captionTemplateMeta(
+    captionsOff ? 'impact_hormozi' : overlay?.templateId,
+  );
+  const hook = hookOff ? '' : overlay?.hookText?.trim() || '';
+  const captionRaw =
+    captionsOff ? '' : overlay?.captionSample?.trim() || CAPTION_PREVIEW_SAMPLE;
   const colorMode = normalizeCaptionColorMode(overlay?.colorMode);
   const captionLines = captionRaw
     ? previewCaptionLines(captionRaw, overlay?.templateId, { colorMode })
     : [];
-  const captionPos = normalizeOverlayPosition(
+  const captionY = normalizeOverlayYPercent(
     overlay?.captionPosition,
-    defaultCaptionPreviewPos(overlay?.templateId),
+    defaultCaptionPreviewY(overlay?.templateId) === 46
+      ? 'center'
+      : defaultCaptionPreviewY(overlay?.templateId) === 20
+        ? 'upper'
+        : 'bottom',
   );
-  const hookPos = normalizeOverlayPosition(overlay?.hookPosition, 'top');
+  const hookY = normalizeOverlayYPercent(overlay?.hookPosition, 'top');
+  const captionTop = overlayPreviewTopPercent(captionY, { blockHeightPercent: 12 });
+  const hookTop = overlayPreviewTopPercent(hookY, { blockHeightPercent: 10 });
+  const filterCss = colorFilterCss(normalizeColorFilterPreset(overlay?.colorFilter));
   const sizeClass =
     template.size === 'xl'
-      ? 'text-lg sm:text-xl'
+      ? 'text-[1.05rem] sm:text-[1.25rem]'
       : template.size === 'lg'
-        ? 'text-base sm:text-lg'
+        ? 'text-[0.95rem] sm:text-[1.1rem]'
         : template.size === 'sm'
           ? 'text-xs'
           : 'text-sm';
@@ -334,30 +340,36 @@ function PipelineVideoFrame({
     <div>
       <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
         {label}
-        {(hook || captionLines.length > 0) && (
+        {(hook || captionLines.length > 0 || filterCss !== 'none') && (
           <span className="ml-1 font-normal normal-case tracking-normal text-zinc-400">
             · live preview
           </span>
         )}
       </p>
       <div className="relative overflow-hidden rounded-md border border-zinc-200 bg-zinc-950">
-        <MediaEmbed
-          key={`${itemId}-${label}`}
-          kind="video"
-          embedUrl={embedUrl}
-          streamUrl={streamUrl}
-          poster={poster}
-          className={`${VIDEO_ASPECT} w-full border-0 bg-black object-contain`}
-        />
+        <div style={{ filter: filterCss === 'none' ? undefined : filterCss }}>
+          <MediaEmbed
+            key={`${itemId}-${label}`}
+            kind="video"
+            embedUrl={embedUrl}
+            streamUrl={streamUrl}
+            poster={poster}
+            className={`${VIDEO_ASPECT} w-full border-0 bg-black object-contain`}
+          />
+        </div>
         {(hook || captionLines.length > 0) && (
-          <div className="pointer-events-none absolute inset-0 z-10">
+          <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden px-3">
             {hook ? (
-              <div className={`absolute text-center ${overlayPreviewPosClass(hookPos)}`}>
+              <div
+                className="absolute left-3 right-3 text-center"
+                style={{ top: `${hookTop}%` }}
+              >
                 <span
-                  className="inline-block whitespace-pre-line text-base font-black uppercase tracking-wide text-white sm:text-lg"
+                  className="inline-block max-w-full whitespace-pre-line text-base font-black uppercase leading-tight tracking-wide text-white sm:text-lg"
                   style={{
                     textShadow:
-                      '0 0 4px #000, 0 0 4px #000, 2px 2px 0 #000, -2px -2px 0 #000',
+                      '0 0 4px #000, 0 0 4px #000, 2px 2px 0 #000, -2px -2px 0 #000, 0 2px 0 #000',
+                    WebkitTextStroke: '0.5px #000',
                   }}
                 >
                   {hook}
@@ -365,9 +377,12 @@ function PipelineVideoFrame({
               </div>
             ) : null}
             {captionLines.length > 0 ? (
-              <div className={`absolute text-center ${overlayPreviewPosClass(captionPos)}`}>
+              <div
+                className="absolute left-3 right-3 text-center"
+                style={{ top: `${captionTop}%` }}
+              >
                 <span
-                  className={`inline-block font-black uppercase leading-tight tracking-wide ${sizeClass} ${italicClass}`}
+                  className={`inline-block max-w-full font-black uppercase leading-[1.05] tracking-wide ${sizeClass} ${italicClass}`}
                   style={{
                     backgroundColor: template.boxed ? 'rgba(0,0,0,0.65)' : 'transparent',
                     padding: template.boxed ? '0.35rem 0.6rem' : undefined,
@@ -375,7 +390,7 @@ function PipelineVideoFrame({
                   }}
                 >
                   {captionLines.map((line, li) => (
-                    <span key={`line-${li}`} className="block">
+                    <span key={`line-${li}`} className="block whitespace-nowrap">
                       {line.map((span, i) => (
                         <span
                           key={`${span.text}-${li}-${i}`}
@@ -636,6 +651,7 @@ function hookTextList(item: AiPipelineItem) {
 
 function selectedHookText(item: AiPipelineItem) {
   const hooks = hookTextList(item);
+  if (isOverlayOffId(item.selectedHookTextId)) return null;
   if (hooks.length === 0) return null;
   return (
     hooks.find((h) => h.id === item.selectedHookTextId) ??
@@ -661,18 +677,25 @@ function NarrationScriptPanel({
   busy,
   onSaved,
   layout = 'fixed',
+  onPreviewOverlay,
 }: {
   item: AiPipelineItem;
   busy: boolean;
   onSaved: (next: AiPipelineItem) => void;
   /** `fluid` = full-width under analysis / inside accordion; `fixed` = legacy 340px box. */
   layout?: 'fixed' | 'fluid';
+  /** Live Y% / filter while dragging before PATCH completes. */
+  onPreviewOverlay?: (patch: {
+    captionY?: number | null;
+    hookY?: number | null;
+  }) => void;
 }) {
   const toast = useToast();
   const variants = variantList(item);
   const selected = selectedVariant(item);
   const hookOptions = hookTextList(item);
   const selectedHook = selectedHookText(item);
+  const hookOff = isOverlayOffId(item.selectedHookTextId);
   const stored = selected?.script
     ? selected.script
     : readableAiText(item.script ?? '');
@@ -691,6 +714,9 @@ function NarrationScriptPanel({
   const [savingCaptionPos, setSavingCaptionPos] = useState(false);
   const [savingCaptionColor, setSavingCaptionColor] = useState(false);
   const [savingHookPos, setSavingHookPos] = useState(false);
+  const [savingColorFilter, setSavingColorFilter] = useState(false);
+  const [localCaptionY, setLocalCaptionY] = useState<number | null>(null);
+  const [localHookY, setLocalHookY] = useState<number | null>(null);
   const locked =
     busy ||
     saving ||
@@ -701,21 +727,36 @@ function NarrationScriptPanel({
     selectingCaptionId != null ||
     savingCaptionPos ||
     savingCaptionColor ||
-    savingHookPos;
-  const selectedCaptionId = normalizeCaptionTemplateId(
-    item.selectedCaptionTemplateId ?? 'impact_hormozi',
-  );
-  const selectedCaptionPos = normalizeOverlayPosition(
-    item.selectedCaptionPosition,
-    defaultCaptionPreviewPos(selectedCaptionId),
-  );
+    savingHookPos ||
+    savingColorFilter;
+  const captionsOff = isOverlayOffId(item.selectedCaptionTemplateId);
+  const selectedCaptionId = captionsOff
+    ? OVERLAY_OFF_ID
+    : normalizeCaptionTemplateId(item.selectedCaptionTemplateId ?? 'impact_hormozi');
+  const selectedCaptionY =
+    localCaptionY ??
+    normalizeOverlayYPercent(
+      item.selectedCaptionPosition,
+      defaultCaptionPreviewY(selectedCaptionId) === 20
+        ? 'upper'
+        : defaultCaptionPreviewY(selectedCaptionId) === 88
+          ? 'bottom'
+          : 'center',
+    );
   const selectedCaptionColor = normalizeCaptionColorMode(item.selectedCaptionColorMode);
-  const selectedHookPos = normalizeOverlayPosition(item.selectedHookPosition, 'top');
+  const selectedHookY =
+    localHookY ?? normalizeOverlayYPercent(item.selectedHookPosition, 'top');
+  const selectedFilter = normalizeColorFilterPreset(item.selectedColorFilter);
 
   useEffect(() => {
     if (mode !== 'view') return;
     setDraft(selected?.script ? selected.script : readableAiText(item.script ?? ''));
   }, [item.id, item.script, item.selectedScriptId, item.scriptVariants, mode, selected?.script]);
+
+  useEffect(() => {
+    setLocalCaptionY(null);
+    setLocalHookY(null);
+  }, [item.id, item.selectedCaptionPosition, item.selectedHookPosition]);
 
   async function persist(script: string): Promise<boolean> {
     const trimmed = script.trim();
@@ -743,7 +784,12 @@ function NarrationScriptPanel({
   }
 
   async function onSelectHook(id: string) {
-    if (!canEdit || id === selectedHook?.id || locked) return;
+    if (!canEdit || locked) return;
+    if (id === OVERLAY_OFF_ID) {
+      if (hookOff) return;
+    } else if (id === selectedHook?.id) {
+      return;
+    }
     setSelectingHookId(id);
     try {
       const next = await selectHookText(item.id, id);
@@ -768,12 +814,13 @@ function NarrationScriptPanel({
     }
   }
 
-  async function onSelectCaptionPos(pos: OverlayPosition) {
-    if (!canEdit || pos === selectedCaptionPos || locked) return;
+  async function persistCaptionY(y: number) {
+    if (!canEdit || locked) return;
     setSavingCaptionPos(true);
     try {
-      const next = await selectCaptionPosition(item.id, pos);
+      const next = await selectCaptionPosition(item.id, String(y));
       onSaved(next);
+      setLocalCaptionY(null);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Failed to update caption position', 'error');
     } finally {
@@ -794,16 +841,30 @@ function NarrationScriptPanel({
     }
   }
 
-  async function onSelectHookPos(pos: OverlayPosition) {
-    if (!canEdit || pos === selectedHookPos || locked) return;
+  async function persistHookY(y: number) {
+    if (!canEdit || locked) return;
     setSavingHookPos(true);
     try {
-      const next = await selectHookPosition(item.id, pos);
+      const next = await selectHookPosition(item.id, String(y));
       onSaved(next);
+      setLocalHookY(null);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Failed to update hook position', 'error');
     } finally {
       setSavingHookPos(false);
+    }
+  }
+
+  async function onSelectColorFilter(preset: ColorFilterPreset) {
+    if (!canEdit || preset === selectedFilter || locked) return;
+    setSavingColorFilter(true);
+    try {
+      const next = await selectColorFilter(item.id, preset);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to update color filter', 'error');
+    } finally {
+      setSavingColorFilter(false);
     }
   }
 
@@ -878,6 +939,64 @@ function NarrationScriptPanel({
       ? 'flex flex-col space-y-2 [overflow-anchor:none]'
       : 'flex h-[340px] min-h-[340px] flex-col overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 p-2 [overflow-anchor:none]';
 
+  const scriptBlock =
+    mode === 'edit' ? (
+      <div className="flex min-h-0 flex-1 flex-col space-y-2">
+        <Textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={layout === 'fluid' ? 12 : 8}
+          className={
+            layout === 'fluid'
+              ? 'min-h-[180px] resize-y bg-white text-xs'
+              : 'min-h-0 flex-1 resize-none bg-white text-xs'
+          }
+          disabled={locked}
+        />
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button size="sm" variant="primary" onClick={() => void onSaveEdit()} disabled={locked}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setDraft(stored);
+              setMode('view');
+            }}
+            disabled={locked}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setAskOpen(true);
+              setPreview(null);
+            }}
+            disabled={locked}
+          >
+            Ask AI
+          </Button>
+        </div>
+      </div>
+    ) : (
+      <div className={layout === 'fluid' ? 'max-h-[28rem] overflow-auto' : 'min-h-0 flex-1 overflow-auto'}>
+        <p className="whitespace-pre-wrap text-xs text-zinc-700">{stored}</p>
+        {selected?.englishSummary?.trim() || item.englishSummary?.trim() ? (
+          <div className="mt-2 rounded-md border border-emerald-100 bg-emerald-50/60 p-2">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-emerald-700">
+              English summary
+            </div>
+            <p className="whitespace-pre-wrap text-xs text-zinc-700">
+              {(selected?.englishSummary?.trim() || item.englishSummary?.trim()) ?? ''}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    );
+
   return (
     <div className={shellClass}>
       <div className="mb-1 flex shrink-0 flex-wrap items-center justify-between gap-2">
@@ -940,14 +1059,31 @@ function NarrationScriptPanel({
           })}
         </div>
       )}
-      {hookOptions.length >= 2 && (
-        <div className="mb-2 shrink-0 space-y-1">
+
+      {/* Script directly under Explainer / Hooky / Documentary tabs */}
+      {scriptBlock}
+
+      {(hookOptions.length >= 1 || canEdit) && (
+        <div className="mb-2 shrink-0 space-y-1 pt-2">
           <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
             Hook text (on-screen)
           </div>
           <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              disabled={locked || !canEdit}
+              onClick={() => void onSelectHook(OVERLAY_OFF_ID)}
+              className={
+                'rounded-md border px-2 py-1 text-[11px] font-medium ' +
+                (hookOff
+                  ? 'border-zinc-400 bg-zinc-200 text-zinc-800'
+                  : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+              }
+            >
+              None{hookOff ? ' · selected' : ''}
+            </button>
             {hookOptions.map((h) => {
-              const active = h.id === selectedHook?.id;
+              const active = !hookOff && h.id === selectedHook?.id;
               return (
                 <button
                   key={h.id}
@@ -967,32 +1103,57 @@ function NarrationScriptPanel({
               );
             })}
           </div>
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-              Hook position
-            </span>
-            <Select
-              value={selectedHookPos}
-              disabled={locked || !canEdit}
-              onChange={(e) => void onSelectHookPos(e.target.value as OverlayPosition)}
-              className="h-7 max-w-[10rem] py-0 text-[11px]"
-            >
-              {OVERLAY_POSITIONS.map((p) => (
-                <option key={p} value={p}>
-                  {OVERLAY_POSITION_LABELS[p]}
-                </option>
-              ))}
-            </Select>
-          </div>
+          {!hookOff && (
+            <div className="space-y-0.5 pt-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  Hook position
+                </span>
+                <span className="text-[10px] tabular-nums text-zinc-400">{selectedHookY}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={selectedHookY}
+                disabled={locked || !canEdit}
+                onChange={(e) => {
+                  const y = Number(e.target.value);
+                  setLocalHookY(y);
+                  onPreviewOverlay?.({ hookY: y });
+                }}
+                onMouseUp={(e) => void persistHookY(Number((e.target as HTMLInputElement).value))}
+                onTouchEnd={(e) =>
+                  void persistHookY(Number((e.target as HTMLInputElement).value))
+                }
+                onBlur={(e) => void persistHookY(Number(e.target.value))}
+                className="w-full accent-amber-600"
+              />
+            </div>
+          )}
         </div>
       )}
+
       <div className="mb-2 shrink-0 space-y-1">
         <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
           Caption style (ffmpeg burn-in · max 2 lines)
         </div>
         <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            disabled={locked || !canEdit}
+            onClick={() => void onSelectCaption(OVERLAY_OFF_ID)}
+            className={
+              'rounded-md border px-2 py-1 text-[11px] font-medium ' +
+              (captionsOff
+                ? 'border-zinc-400 bg-zinc-200 text-zinc-800'
+                : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+            }
+          >
+            None{captionsOff ? ' · selected' : ''}
+          </button>
           {CAPTION_TEMPLATE_PICKER.map((t) => {
-            const active = t.id === selectedCaptionId;
+            const active = !captionsOff && t.id === selectedCaptionId;
             return (
               <button
                 key={t.id}
@@ -1013,106 +1174,97 @@ function NarrationScriptPanel({
             );
           })}
         </div>
-        <div className="flex flex-wrap items-center gap-2 pt-0.5">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-            Caption position
-          </span>
-          <Select
-            value={selectedCaptionPos}
-            disabled={locked || !canEdit}
-            onChange={(e) => void onSelectCaptionPos(e.target.value as OverlayPosition)}
-            className="h-7 max-w-[10rem] py-0 text-[11px]"
-          >
-            {OVERLAY_POSITIONS.map((p) => (
-              <option key={p} value={p}>
-                {OVERLAY_POSITION_LABELS[p]}
-              </option>
-            ))}
-          </Select>
-          <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-            Text color
-          </span>
-          <Select
-            value={selectedCaptionColor}
-            disabled={locked || !canEdit}
-            onChange={(e) => void onSelectCaptionColor(e.target.value as CaptionColorMode)}
-            className="h-7 max-w-[12rem] py-0 text-[11px]"
-          >
-            {CAPTION_COLOR_MODES.map((m) => (
-              <option key={m} value={m}>
-                {CAPTION_COLOR_MODE_LABELS[m]}
-              </option>
-            ))}
-          </Select>
-        </div>
+        {!captionsOff && (
+          <>
+            <div className="space-y-0.5 pt-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  Caption position
+                </span>
+                <span className="text-[10px] tabular-nums text-zinc-400">{selectedCaptionY}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={selectedCaptionY}
+                disabled={locked || !canEdit}
+                onChange={(e) => {
+                  const y = Number(e.target.value);
+                  setLocalCaptionY(y);
+                  onPreviewOverlay?.({ captionY: y });
+                }}
+                onMouseUp={(e) =>
+                  void persistCaptionY(Number((e.target as HTMLInputElement).value))
+                }
+                onTouchEnd={(e) =>
+                  void persistCaptionY(Number((e.target as HTMLInputElement).value))
+                }
+                onBlur={(e) => void persistCaptionY(Number(e.target.value))}
+                className="w-full accent-sky-600"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Text color
+              </span>
+              <Select
+                value={selectedCaptionColor}
+                disabled={locked || !canEdit}
+                onChange={(e) => void onSelectCaptionColor(e.target.value as CaptionColorMode)}
+                className="h-7 max-w-[12rem] py-0 text-[11px]"
+              >
+                {CAPTION_COLOR_MODES.map((m) => (
+                  <option key={m} value={m}>
+                    {CAPTION_COLOR_MODE_LABELS[m]}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </>
+        )}
         <p className="text-[11px] text-zinc-500">
           Preview updates on the original video. Captions burn in with ffmpeg after you approve
-          (always max 2 lines). Karaoke highlight lights each word as the narrator speaks it.
+          (always max 2 lines). Choose None to skip hook or captions.
         </p>
       </div>
+
+      <div className="mb-2 shrink-0 space-y-1">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+          Color filter (live preview)
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {COLOR_FILTER_PRESETS.map((p) => {
+            const active = p === selectedFilter;
+            return (
+              <button
+                key={p}
+                type="button"
+                disabled={locked || !canEdit}
+                onClick={() => void onSelectColorFilter(p)}
+                className={
+                  'rounded-md border px-2 py-1 text-[11px] font-medium ' +
+                  (active
+                    ? 'border-violet-300 bg-violet-50 text-violet-900'
+                    : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+                }
+              >
+                {COLOR_FILTER_LABELS[p]}
+                {active ? ' · selected' : ''}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50/60 px-2 py-1.5">
         <p className="text-[11px] font-medium text-zinc-600">Reaction avatar</p>
         <p className="text-[10px] text-zinc-500">
-          Configure face upload + corner PiP under Account → Settings → Render effects. Shown during
-          dialogue (or always) after you approve and render.
+          Upload a silent face/image and optional lip-sync talking-head clip under Account →
+          Settings → Render effects. ffmpeg PiP prefers the lip-sync clip during dialogue (not ML
+          lip-sync).
         </p>
       </div>
-      {mode === 'edit' ? (
-        <div className="flex min-h-0 flex-1 flex-col space-y-2">
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={layout === 'fluid' ? 12 : 8}
-            className={
-              layout === 'fluid'
-                ? 'min-h-[180px] resize-y bg-white text-xs'
-                : 'min-h-0 flex-1 resize-none bg-white text-xs'
-            }
-            disabled={locked}
-          />
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <Button size="sm" variant="primary" onClick={() => void onSaveEdit()} disabled={locked}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setDraft(stored);
-                setMode('view');
-              }}
-              disabled={locked}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setAskOpen(true);
-                setPreview(null);
-              }}
-              disabled={locked}
-            >
-              Ask AI
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className={layout === 'fluid' ? 'max-h-[28rem] overflow-auto' : 'min-h-0 flex-1 overflow-auto'}>
-          <p className="whitespace-pre-wrap text-xs text-zinc-700">{stored}</p>
-          {selected?.englishSummary?.trim() || item.englishSummary?.trim() ? (
-            <div className="mt-2 rounded-md border border-emerald-100 bg-emerald-50/60 p-2">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-emerald-700">
-                English summary
-              </div>
-              <p className="whitespace-pre-wrap text-xs text-zinc-700">
-                {(selected?.englishSummary?.trim() || item.englishSummary?.trim()) ?? ''}
-              </p>
-            </div>
-          ) : null}
-        </div>
-      )}
 
       <Modal
         open={askOpen}
@@ -1179,6 +1331,102 @@ function NarrationScriptPanel({
           )}
         </div>
       </Modal>
+    </div>
+  );
+}
+
+
+function AiPreRenderRow({
+  item,
+  busy,
+  onSaved,
+}: {
+  item: AiPipelineItem;
+  busy: boolean;
+  onSaved: (next: AiPipelineItem) => void;
+}) {
+  const [draftCaptionY, setDraftCaptionY] = useState<number | null>(null);
+  const [draftHookY, setDraftHookY] = useState<number | null>(null);
+  const captionsOff = isOverlayOffId(item.selectedCaptionTemplateId);
+  const hookOff = isOverlayOffId(item.selectedHookTextId);
+
+  useEffect(() => {
+    setDraftCaptionY(null);
+    setDraftHookY(null);
+  }, [item.id, item.selectedCaptionPosition, item.selectedHookPosition]);
+
+  return (
+    <div className="mt-3 space-y-3 [overflow-anchor:none]">
+      <div
+        className={
+          'grid items-start gap-3 ' +
+          (hasOriginalPreview(item) ? 'md:grid-cols-[minmax(14rem,22rem)_minmax(0,1fr)]' : '')
+        }
+      >
+        {hasOriginalPreview(item) && (
+          <PipelineVideoFrame
+            label="Original"
+            itemId={item.id}
+            embedUrl={originalEmbedUrl(item)}
+            streamUrl={originalStreamUrl(item)}
+            poster={
+              !originalEmbedUrl(item) && item.hasThumbnail
+                ? contentThumbnailUrl(item.id)
+                : undefined
+            }
+            overlay={{
+              hookText: hookOff ? null : item.selectedHookText,
+              hookOff,
+              captionsOff,
+              captionSample: CAPTION_PREVIEW_SAMPLE,
+              templateId: captionsOff
+                ? OVERLAY_OFF_ID
+                : (item.selectedCaptionTemplateId ?? 'impact_hormozi'),
+              captionPosition:
+                draftCaptionY != null
+                  ? String(draftCaptionY)
+                  : item.selectedCaptionPosition,
+              hookPosition:
+                draftHookY != null ? String(draftHookY) : item.selectedHookPosition,
+              colorMode: item.selectedCaptionColorMode,
+              colorFilter: item.selectedColorFilter,
+            }}
+          />
+        )}
+        <div className="min-w-0 space-y-3">
+          {item.analysis && (
+            <PipelineAccordion
+              id={`pre-analysis-${item.id}`}
+              title="Analysis"
+              defaultOpen={false}
+            >
+              <p className="max-h-72 overflow-auto whitespace-pre-wrap text-xs text-zinc-700">
+                {readableAiText(item.analysis)}
+              </p>
+            </PipelineAccordion>
+          )}
+          {item.script && (
+            <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+              <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                Narration script
+              </div>
+              <NarrationScriptPanel
+                item={item}
+                busy={busy}
+                layout="fluid"
+                onPreviewOverlay={(patch) => {
+                  if (patch.captionY != null) setDraftCaptionY(patch.captionY);
+                  if (patch.hookY != null) setDraftHookY(patch.hookY);
+                }}
+                onSaved={onSaved}
+              />
+            </div>
+          )}
+          {!item.analysis && !item.script && hasOriginalPreview(item) && (
+            <p className="text-xs text-zinc-500">Waiting for analysis and narration…</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1668,81 +1916,17 @@ export default function AccountAiPipelinePage() {
                 )}
 
                 {!showFinalPreview && (hasOriginalPreview(it) || it.analysis || it.script) && (
-                  <div className="mt-3 space-y-3 [overflow-anchor:none]">
-                    <div
-                      className={
-                        'grid items-start gap-3 ' +
-                        (hasOriginalPreview(it) ? 'md:grid-cols-[minmax(14rem,22rem)_minmax(0,1fr)]' : '')
-                      }
-                    >
-                      {hasOriginalPreview(it) && (
-                        <PipelineVideoFrame
-                          label="Original"
-                          itemId={it.id}
-                          embedUrl={originalEmbedUrl(it)}
-                          streamUrl={originalStreamUrl(it)}
-                          poster={
-                            !originalEmbedUrl(it) && it.hasThumbnail
-                              ? contentThumbnailUrl(it.id)
-                              : undefined
-                          }
-                          overlay={{
-                            hookText: it.selectedHookText,
-                            captionSample: (() => {
-                              const script = readableAiText(it.script ?? '');
-                              const first =
-                                script.split(/(?<=[.!?])\s+/).find((s) => s.trim()) ??
-                                script.slice(0, 80);
-                              return first.trim().slice(0, 90) || 'Sample caption line';
-                            })(),
-                            templateId: it.selectedCaptionTemplateId ?? 'impact_hormozi',
-                            captionPosition: it.selectedCaptionPosition,
-                            hookPosition: it.selectedHookPosition,
-                            colorMode: it.selectedCaptionColorMode,
-                          }}
-                        />
-                      )}
-                      <div className="min-w-0 space-y-3">
-                        {it.analysis && (
-                          <PipelineAccordion
-                            id={`pre-analysis-${it.id}`}
-                            title="Analysis"
-                            defaultOpen={false}
-                          >
-                            <p className="max-h-72 overflow-auto whitespace-pre-wrap text-xs text-zinc-700">
-                              {readableAiText(it.analysis)}
-                            </p>
-                          </PipelineAccordion>
-                        )}
-                        {it.script && (
-                          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
-                            <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                              Narration script
-                            </div>
-                            <NarrationScriptPanel
-                              item={it}
-                              busy={busyId === it.id}
-                              layout="fluid"
-                              onSaved={(next) =>
-                                setItems((prev) =>
-                                  prev
-                                    ? prev.map((row) =>
-                                        row.id === next.id ? { ...row, ...next } : row,
-                                      )
-                                    : prev,
-                                )
-                              }
-                            />
-                          </div>
-                        )}
-                        {!it.analysis && !it.script && hasOriginalPreview(it) && (
-                          <p className="text-xs text-zinc-500">
-                            Waiting for analysis and narration…
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <AiPreRenderRow
+                    item={it}
+                    busy={busyId === it.id}
+                    onSaved={(next) =>
+                      setItems((prev) =>
+                        prev
+                          ? prev.map((row) => (row.id === next.id ? { ...row, ...next } : row))
+                          : prev,
+                      )
+                    }
+                  />
                 )}
               </Card>
             );

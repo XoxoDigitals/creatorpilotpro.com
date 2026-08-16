@@ -1,6 +1,6 @@
 import type { Asset, ContentItem } from '@scp/db';
 import { assetHasMedia, drivePreviewEmbedUrl } from '@scp/storage';
-import { buildHookTextVariants } from '@scp/shared';
+import { buildHookTextVariants, isOverlayOffId, OVERLAY_OFF_ID, normalizeColorFilterPreset } from '@scp/shared';
 import { toAssetView, type AssetView } from '../storage/asset.view';
 
 /** Public view of a content item (docs/03 Domain 4). */
@@ -110,6 +110,8 @@ export interface AiPipelineItemView {
   selectedCaptionColorMode: string | null;
   /** Hook vertical placement override. */
   selectedHookPosition: string | null;
+  /** Per-video color filter override (null = account default). */
+  selectedColorFilter: string | null;
   /**
    * English summary for the selected (or sole) narration script when the channel
    * output language is not English. Empty string when English or unavailable.
@@ -224,6 +226,9 @@ function parseHookTextVariants(
   }
   const selectedRaw =
     typeof step.selectedHookTextId === 'string' ? step.selectedHookTextId : null;
+  if (selectedRaw && isOverlayOffId(selectedRaw)) {
+    return { variants, selectedHookTextId: OVERLAY_OFF_ID, selectedHookText: null };
+  }
   const selectedHookTextId =
     (selectedRaw && variants.some((v) => v.id === selectedRaw) ? selectedRaw : null) ??
     variants[0]?.id ??
@@ -349,6 +354,10 @@ export function toAiPipelineItemView(
     selectedHookPosition:
       typeof step.selectedHookPosition === 'string' && step.selectedHookPosition.trim()
         ? step.selectedHookPosition.trim()
+        : null,
+    selectedColorFilter:
+      typeof step.selectedColorFilter === 'string' && step.selectedColorFilter.trim()
+        ? normalizeColorFilterPreset(step.selectedColorFilter)
         : null,
     englishSummary: selectedVariant?.englishSummary?.trim() || stepSummary || '',
     metadata: asText(step.metadata),

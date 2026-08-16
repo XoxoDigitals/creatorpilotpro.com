@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
 import type { ContentItemStatus, Prisma } from '@scp/db';
-import { withPublishReviewApproved, normalizeCaptionTemplateId, normalizeOverlayPosition, normalizeCaptionColorMode } from '@scp/shared';
+import { withPublishReviewApproved, normalizeCaptionTemplateId, normalizeOverlayYPercent, normalizeCaptionColorMode, normalizeColorFilterPreset, isOverlayOffId, OVERLAY_OFF_ID } from '@scp/shared';
 import { drivePreviewEmbedUrl } from '@scp/storage';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
@@ -114,6 +114,11 @@ function applySelectedHookText(
 ): void {
   const id = opts.selectedHookTextId?.trim();
   if (!id) return;
+  if (isOverlayOffId(id)) {
+    step.selectedHookTextId = OVERLAY_OFF_ID;
+    step.selectedHookText = '';
+    return;
+  }
   const variants = hookTextRows(step.hookTextVariants);
   const found = variants.find((v) => v.id === id);
   if (!found) throw new BadRequestException('Unknown hook text option.');
@@ -129,6 +134,10 @@ function applySelectedCaptionTemplate(
 ): void {
   const id = opts.selectedCaptionTemplateId?.trim();
   if (!id) return;
+  if (isOverlayOffId(id)) {
+    step.selectedCaptionTemplateId = OVERLAY_OFF_ID;
+    return;
+  }
   step.selectedCaptionTemplateId = normalizeCaptionTemplateId(id);
 }
 
@@ -138,7 +147,8 @@ function applySelectedCaptionPosition(
 ): void {
   const raw = opts.selectedCaptionPosition?.trim();
   if (!raw) return;
-  step.selectedCaptionPosition = normalizeOverlayPosition(raw, 'center');
+  // Persist continuous Y% (0–100) so sliders round-trip; enums still accepted.
+  step.selectedCaptionPosition = String(normalizeOverlayYPercent(raw, 'center'));
 }
 
 function applySelectedCaptionColorMode(
@@ -156,7 +166,17 @@ function applySelectedHookPosition(
 ): void {
   const raw = opts.selectedHookPosition?.trim();
   if (!raw) return;
-  step.selectedHookPosition = normalizeOverlayPosition(raw, 'top');
+  step.selectedHookPosition = String(normalizeOverlayYPercent(raw, 'top'));
+}
+
+function applySelectedColorFilter(
+  step: Record<string, unknown>,
+  opts: { selectedColorFilter?: string },
+): void {
+  const raw = opts.selectedColorFilter?.trim();
+  if (!raw) return;
+  const preset = normalizeColorFilterPreset(raw);
+  step.selectedColorFilter = preset;
 }
 
 @Injectable()
@@ -678,6 +698,7 @@ export class ContentService {
       selectedCaptionPosition?: string;
       selectedCaptionColorMode?: string;
       selectedHookPosition?: string;
+      selectedColorFilter?: string;
     },
   ): Promise<AiPipelineItemView> {
     const item = await this.findPipelineItem(id);
@@ -708,9 +729,18 @@ export class ContentService {
       });
     }
 
+    if (dto.selectedColorFilter?.trim()) {
+      applySelectedColorFilter(step, {
+        selectedColorFilter: dto.selectedColorFilter,
+      });
+    }
+
     if (dto.selectedHookTextId?.trim()) {
       // Persist synthesized options for legacy items so selection sticks.
-      if (!Array.isArray(step.hookTextVariants) || (step.hookTextVariants as unknown[]).length < 2) {
+      if (
+        !isOverlayOffId(dto.selectedHookTextId) &&
+        (!Array.isArray(step.hookTextVariants) || (step.hookTextVariants as unknown[]).length < 2)
+      ) {
         const view = toAiPipelineItemView(item);
         step.hookTextVariants = view.hookTextVariants;
         if (!step.selectedHookTextId && view.selectedHookTextId) {

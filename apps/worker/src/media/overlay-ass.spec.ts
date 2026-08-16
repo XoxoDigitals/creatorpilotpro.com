@@ -47,9 +47,14 @@ Second line
       cues: [{ startMs: 0, endMs: 1000, text: 'One two three four five six' }],
     });
     expect(ass).toContain('TRASH TO\\NTREASURE');
-    // Hook upper → Alignment 8; caption bottom → Alignment 2
+    // Continuous Y% uses Alignment 8 (top) + MarginV for both hook and caption.
     expect(ass).toMatch(/Style: Hook,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,8,/);
-    expect(ass).toMatch(/Style: Caption,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,2,/);
+    expect(ass).toMatch(/Style: Caption,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,8,/);
+    // Bottom caption should sit lower (larger MarginV) than upper hook.
+    const hookStyle = ass.split('\n').find((l) => l.startsWith('Style: Hook,'))!;
+    const captionStyle = ass.split('\n').find((l) => l.startsWith('Style: Caption,'))!;
+    const marginOf = (line: string) => Number(line.split(',').at(-2));
+    expect(marginOf(captionStyle)).toBeGreaterThan(marginOf(hookStyle));
   });
 
   it('expands karaoke_word into per-word dialogues', () => {

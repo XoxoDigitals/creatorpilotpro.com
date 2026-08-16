@@ -63,6 +63,27 @@ export const OVERLAY_POSITION_LABELS: Record<OverlayPosition, string> = {
   bottom: 'Bottom',
 };
 
+/** Discrete positions → Y% from top (legacy → continuous slider). */
+export const OVERLAY_POSITION_Y_PERCENT: Record<OverlayPosition, number> = {
+  top: 6,
+  upper: 20,
+  center: 46,
+  lower: 70,
+  bottom: 88,
+};
+
+/** Sentinel: skip hook / caption burn-in for this video. */
+export const OVERLAY_OFF_ID = 'none';
+
+/** Hard cap so ASS + CSS preview stay ≤2 visual lines (no mid-line wrap). */
+export const CAPTION_MAX_WORDS = 6;
+
+/** Short phrase for live CSS preview (wraps to ≤2 lines). */
+export const CAPTION_PREVIEW_SAMPLE = 'WAIT FOR IT';
+
+/** Safe inset from frame edge as % of height (CSS + ASS). */
+export const OVERLAY_SAFE_EDGE_PERCENT = 5;
+
 export type CaptionTemplateMeta = {
   id: CaptionTemplateId;
   label: string;
@@ -314,40 +335,120 @@ export function normalizeOverlayPosition(
 ): OverlayPosition {
   const s = typeof raw === 'string' ? raw.trim() : '';
   if ((OVERLAY_POSITIONS as readonly string[]).includes(s)) return s as OverlayPosition;
+  // Numeric / pct strings → nearest discrete bucket (legacy callers).
+  if (s && /^\d+(\.\d+)?$/.test(s)) {
+    return overlayPositionFromYPercent(Number(s));
+  }
   return fallback;
+}
+
+/** Clamp continuous vertical placement (0 = top, 100 = bottom). */
+export function clampOverlayYPercent(raw: unknown, fallback = 46): number {
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim()
+        ? Number(raw.trim())
+        : NaN;
+  if (!Number.isFinite(n)) return Math.max(0, Math.min(100, fallback));
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+/**
+ * Resolve stored position (enum or numeric %) → continuous Y% from top.
+ * Safe for sliders + ASS MarginV mapping.
+ */
+export function normalizeOverlayYPercent(
+  raw: unknown,
+  fallbackPos: OverlayPosition = 'center',
+): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return clampOverlayYPercent(raw, OVERLAY_POSITION_Y_PERCENT[fallbackPos]);
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return OVERLAY_POSITION_Y_PERCENT[fallbackPos];
+    if (/^\d+(\.\d+)?$/.test(s)) {
+      return clampOverlayYPercent(Number(s), OVERLAY_POSITION_Y_PERCENT[fallbackPos]);
+    }
+    if ((OVERLAY_POSITIONS as readonly string[]).includes(s)) {
+      return OVERLAY_POSITION_Y_PERCENT[s as OverlayPosition];
+    }
+  }
+  return OVERLAY_POSITION_Y_PERCENT[fallbackPos];
+}
+
+/** Nearest discrete bucket for a continuous Y% (settings UIs that still use enums). */
+export function overlayPositionFromYPercent(yPercent: number): OverlayPosition {
+  const y = clampOverlayYPercent(yPercent, 46);
+  let best: OverlayPosition = 'center';
+  let bestDist = Infinity;
+  for (const pos of OVERLAY_POSITIONS) {
+    const d = Math.abs(OVERLAY_POSITION_Y_PERCENT[pos] - y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = pos;
+    }
+  }
+  return best;
+}
+
+/**
+ * Map continuous Y% → ASS Alignment 8 (top) + MarginV with safe edge padding
+ * so multi-line XL captions/hooks are not clipped at the frame edge.
+ */
+export function overlayAssFromYPercent(
+  yPercent: number,
+  playResY = 1920,
+  opts?: { lineCount?: number; fontSize?: number },
+): { alignment: number; marginV: number } {
+  const fontSize = opts?.fontSize ?? 52;
+  const lineCount = Math.max(1, Math.min(2, opts?.lineCount ?? 2));
+  const blockH = Math.round(fontSize * 1.15 * lineCount);
+  const safePx = Math.max(
+    Math.round((OVERLAY_SAFE_EDGE_PERCENT / 100) * playResY),
+    Math.round(fontSize * 0.9),
+  );
+  const usable = Math.max(0, playResY - 2 * safePx - blockH);
+  const y = clampOverlayYPercent(yPercent, 46) / 100;
+  const marginV = Math.round(safePx + y * usable);
+  return { alignment: 8, marginV };
+}
+
+/** CSS `top` % for live preview — mirrors ASS safe margins. */
+export function overlayPreviewTopPercent(
+  yPercent: number,
+  opts?: { blockHeightPercent?: number },
+): number {
+  const block = opts?.blockHeightPercent ?? 10;
+  const safe = OVERLAY_SAFE_EDGE_PERCENT;
+  const usable = Math.max(0, 100 - 2 * safe - block);
+  const y = clampOverlayYPercent(yPercent, 46) / 100;
+  return Math.round((safe + y * usable) * 10) / 10;
 }
 
 /** Map position → ASS Alignment + MarginV (1080x1920 PlayRes). */
 export function overlayPositionAss(pos: OverlayPosition): { alignment: number; marginV: number } {
-  switch (pos) {
-    case 'top':
-      return { alignment: 8, marginV: 48 };
-    case 'upper':
-      return { alignment: 8, marginV: 220 };
-    case 'center':
-      return { alignment: 5, marginV: 0 };
-    case 'lower':
-      return { alignment: 2, marginV: 320 };
-    case 'bottom':
-    default:
-      return { alignment: 2, marginV: 80 };
-  }
+  return overlayAssFromYPercent(OVERLAY_POSITION_Y_PERCENT[pos]);
 }
 
-/** Split words into up to `maxLines` balanced rows (captions = 2). */
-export function wrapWordsToLines(words: string[], maxLines = 2): string[][] {
-  const clean = words.filter(Boolean);
+/** Split words into up to `maxLines` balanced rows (captions = 2). Caps total words. */
+export function wrapWordsToLines(
+  words: string[],
+  maxLines = 2,
+  maxWords = CAPTION_MAX_WORDS,
+): string[][] {
+  const clean = words.filter(Boolean).slice(0, Math.max(1, maxWords));
   if (clean.length === 0) return [];
-  const lines = Math.max(1, Math.min(4, maxLines));
+  const lines = Math.max(1, Math.min(2, maxLines));
   if (lines === 1 || clean.length <= 2) return [clean];
-  if (lines === 2) {
-    const mid = Math.ceil(clean.length / 2);
-    return [clean.slice(0, mid), clean.slice(mid)].filter((r) => r.length > 0);
-  }
-  const size = Math.ceil(clean.length / lines);
-  const out: string[][] = [];
-  for (let i = 0; i < clean.length; i += size) out.push(clean.slice(i, i + size));
-  return out.filter((r) => r.length > 0);
+  const mid = Math.ceil(clean.length / 2);
+  return [clean.slice(0, mid), clean.slice(mid)].filter((r) => r.length > 0);
+}
+
+export function isOverlayOffId(raw: unknown): boolean {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return s === OVERLAY_OFF_ID || s === 'off' || s === '__none__';
 }
 
 export function normalizeCaptionTemplateId(raw: unknown): CaptionTemplateId {
@@ -486,7 +587,8 @@ export function previewCaptionLines(
     .trim()
     .toUpperCase()
     .split(/\s+/)
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, CAPTION_MAX_WORDS);
   if (words.length === 0) return [];
 
   const colorFor = (_w: string, i: number, indices: Set<number>, sortedIdx: number[]): string => {
@@ -575,7 +677,8 @@ export function formatImpactAssText(
     .toUpperCase()
     .replace(/[{}]/g, '')
     .split(/\s+/)
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, CAPTION_MAX_WORDS);
   if (words.length === 0) return '';
 
   const base = assColor(colors.color);
@@ -657,7 +760,8 @@ export function buildKaraokeAssCueEvents(
     .toUpperCase()
     .replace(/[{}]/g, '')
     .split(/\s+/)
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, CAPTION_MAX_WORDS);
   if (words.length === 0) return [];
   const span = Math.max(1, cue.endMs - cue.startMs);
   const slice = Math.max(80, Math.floor(span / words.length));
@@ -675,7 +779,7 @@ export function buildKaraokeAssCueEvents(
 /** Style line fields for ffmpeg ASS burn-in. */
 export function captionAssStyleFields(
   id: unknown,
-  positionOverride?: OverlayPosition | null,
+  positionOverride?: OverlayPosition | string | number | null,
   colorMode: CaptionColorMode = 'dark',
 ): {
   name: string;
@@ -695,8 +799,11 @@ export function captionAssStyleFields(
     meta.size === 'xl' ? 64 : meta.size === 'lg' ? 52 : meta.size === 'sm' ? 36 : 46;
   const defaultPos: OverlayPosition =
     meta.align === 'center' ? 'center' : meta.align === 'upper' ? 'upper' : 'bottom';
-  const pos = normalizeOverlayPosition(positionOverride, defaultPos);
-  const { alignment, marginV } = overlayPositionAss(pos);
+  const yPercent = normalizeOverlayYPercent(positionOverride, defaultPos);
+  const { alignment, marginV } = overlayAssFromYPercent(yPercent, 1920, {
+    fontSize,
+    lineCount: 2,
+  });
   return {
     name: 'Caption',
     fontSize,
@@ -711,7 +818,9 @@ export function captionAssStyleFields(
   };
 }
 
-export function hookAssStyleFields(positionOverride?: OverlayPosition | null): {
+export function hookAssStyleFields(
+  positionOverride?: OverlayPosition | string | number | null,
+): {
   name: string;
   fontSize: number;
   primary: string;
@@ -723,11 +832,15 @@ export function hookAssStyleFields(positionOverride?: OverlayPosition | null): {
   italic: boolean;
   shadow: number;
 } {
-  const pos = normalizeOverlayPosition(positionOverride, 'top');
-  const { alignment, marginV } = overlayPositionAss(pos);
+  const fontSize = 52;
+  const yPercent = normalizeOverlayYPercent(positionOverride, 'top');
+  const { alignment, marginV } = overlayAssFromYPercent(yPercent, 1920, {
+    fontSize,
+    lineCount: 2,
+  });
   return {
     name: 'Hook',
-    fontSize: 52,
+    fontSize,
     primary: assColor('#FFFFFF'),
     outline: assColor('#000000'),
     borderStyle: 1,
