@@ -36,6 +36,7 @@ import {
   retryAi,
   rewriteNarrationScript,
   selectNarrationScript,
+  selectHookText,
   updateNarrationScript,
   updatePublishMetadata,
   type AiPipelineItem,
@@ -505,6 +506,21 @@ function variantList(item: AiPipelineItem) {
   return item.scriptVariants?.filter((v) => v.script.trim()) ?? [];
 }
 
+function hookTextList(item: AiPipelineItem) {
+  return item.hookTextVariants?.filter((v) => v.text.trim()) ?? [];
+}
+
+function selectedHookText(item: AiPipelineItem) {
+  const hooks = hookTextList(item);
+  if (hooks.length === 0) return null;
+  return (
+    hooks.find((h) => h.id === item.selectedHookTextId) ??
+    hooks.find((h) => h.text === item.selectedHookText) ??
+    hooks[0] ??
+    null
+  );
+}
+
 function selectedVariant(item: AiPipelineItem) {
   const variants = variantList(item);
   if (variants.length === 0) return null;
@@ -531,6 +547,8 @@ function NarrationScriptPanel({
   const toast = useToast();
   const variants = variantList(item);
   const selected = selectedVariant(item);
+  const hookOptions = hookTextList(item);
+  const selectedHook = selectedHookText(item);
   const stored = selected?.script
     ? selected.script
     : readableAiText(item.script ?? '');
@@ -544,7 +562,9 @@ function NarrationScriptPanel({
   const [rewriting, setRewriting] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [selectingId, setSelectingId] = useState<string | null>(null);
-  const locked = busy || saving || rewriting || accepting || selectingId != null;
+  const [selectingHookId, setSelectingHookId] = useState<string | null>(null);
+  const locked =
+    busy || saving || rewriting || accepting || selectingId != null || selectingHookId != null;
 
   useEffect(() => {
     if (mode !== 'view') return;
@@ -573,6 +593,19 @@ function NarrationScriptPanel({
       toast(err instanceof ApiError ? err.message : 'Failed to select narration option', 'error');
     } finally {
       setSelectingId(null);
+    }
+  }
+
+  async function onSelectHook(id: string) {
+    if (!canEdit || id === selectedHook?.id || locked) return;
+    setSelectingHookId(id);
+    try {
+      const next = await selectHookText(item.id, id);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to select hook text', 'error');
+    } finally {
+      setSelectingHookId(null);
     }
   }
 
@@ -707,6 +740,35 @@ function NarrationScriptPanel({
               </button>
             );
           })}
+        </div>
+      )}
+      {hookOptions.length >= 2 && (
+        <div className="mb-2 shrink-0 space-y-1">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+            Hook text (on-screen)
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {hookOptions.map((h) => {
+              const active = h.id === selectedHook?.id;
+              return (
+                <button
+                  key={h.id}
+                  type="button"
+                  disabled={locked || !canEdit}
+                  onClick={() => void onSelectHook(h.id)}
+                  className={
+                    'rounded-md border px-2 py-1 text-[11px] font-semibold tracking-wide ' +
+                    (active
+                      ? 'border-amber-300 bg-amber-50 text-amber-900'
+                      : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+                  }
+                >
+                  {h.text}
+                  {active ? ' · selected' : ''}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
       {mode === 'edit' ? (

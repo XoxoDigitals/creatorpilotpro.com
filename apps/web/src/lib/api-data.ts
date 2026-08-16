@@ -499,6 +499,10 @@ export interface AiPipelineItem {
     estimatedSpokenSec: number | null;
   }[];
   selectedScriptId?: string | null;
+  /** Short on-screen hook options (2–3 words) shown at script approval. */
+  hookTextVariants?: { id: string; text: string }[];
+  selectedHookTextId?: string | null;
+  selectedHookText?: string | null;
   /** English summary for the active narration (non-English channels only). */
   englishSummary?: string;
   metadata: string | null;
@@ -603,6 +607,13 @@ export async function selectNarrationScript(
   selectedScriptId: string,
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedScriptId });
+}
+
+export async function selectHookText(
+  id: string,
+  selectedHookTextId: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedHookTextId });
 }
 
 /** Ask AI to rewrite the narration from an instruction; caller PATCHes to save. */

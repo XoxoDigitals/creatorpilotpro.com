@@ -17,13 +17,15 @@
  */
 import { join, dirname } from 'node:path';
 import { stat, mkdir, unlink, access, rename } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import type PgBoss from 'pg-boss';
 import {
   QUEUE,
   parseVoiceSettings,
   renderSettingsFromVoiceSettings,
-  buildFinalVideoFilterChain,
+  buildFinalVideoFilterFallbacks,
   finalVideoEffectsEnabled,
+  resolveHookOverlayText,
   type RenderSettings,
 } from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
@@ -91,9 +93,8 @@ async function resolveAccountRenderSettings(contentItemId: string): Promise<Rend
         select: { watchedSource: { select: { targetAccountId: true } } },
       },
       publishTargets: {
-        where: { status: { not: 'DRAFT' } },
         select: { accountId: true },
-        take: 1,
+        take: 5,
         orderBy: { createdAt: 'asc' },
       },
     },
@@ -101,14 +102,39 @@ async function resolveAccountRenderSettings(contentItemId: string): Promise<Rend
   const accountId =
     item?.idea?.accountId ??
     item?.sourceVideo?.watchedSource?.targetAccountId ??
-    item?.publishTargets[0]?.accountId ??
+    item?.publishTargets.find((t) => t.accountId)?.accountId ??
     null;
-  if (!accountId) return renderSettingsFromVoiceSettings(null);
+  if (!accountId) {
+    console.warn(
+      `[worker:render] no account linked for ${contentItemId} — using default render settings`,
+    );
+    return renderSettingsFromVoiceSettings(null);
+  }
   const profile = await prisma.channelProfile.findUnique({
     where: { accountId },
     select: { voiceSettings: true },
   });
   return renderSettingsFromVoiceSettings(profile?.voiceSettings);
+}
+
+/** Prefer FFMPEG_FONTFILE, then common OS fonts (drawtext needs an explicit file on Linux). */
+function resolveDrawtextFontFile(): string | null {
+  const fromEnv = process.env.FFMPEG_FONTFILE?.trim();
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  const candidates = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+    '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+    'C:\\Windows\\Fonts\\arialbd.ttf',
+    'C:\\Windows\\Fonts\\arial.ttf',
+    'C:\\Windows\\Fonts\\segoeui.ttf',
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 async function resolveSubtitlePath(
@@ -474,28 +500,81 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     ]);
     await unlink(mergedPath).catch(() => {});
 
-    // Step 3b: Optional flip / color / burned captions (single re-encode when enabled).
+    // Step 3b: Trim lead-in + optional flip / color / hook / burned captions.
+    // Render mixes from ORIGINAL (untrimmed), so account trimStartMs must apply here.
     const renderSettings = await resolveAccountRenderSettings(contentItemId);
     const subtitlePath = await resolveSubtitlePath(item.assets, voPath);
-    const vf = buildFinalVideoFilterChain({
-      settings: renderSettings,
-      subtitlePath,
-    });
+    const hookOverlayText = resolveHookOverlayText(
+      renderSettings.hookText,
+      item.title,
+      typeof (item.currentStep as Record<string, unknown> | null)?.selectedHookText === 'string'
+        ? ((item.currentStep as Record<string, unknown>).selectedHookText as string)
+        : null,
+    );
+    const fontFile = resolveDrawtextFontFile();
+    if (renderSettings.hookText.enabled && hookOverlayText && !fontFile) {
+      console.warn(
+        `[worker:render] hook text enabled but no font file found — set FFMPEG_FONTFILE or install DejaVu/Arial`,
+      );
+    }
     const finalPath = join(renderDir, 'final.mp4');
-    if (finalVideoEffectsEnabled(renderSettings, subtitlePath) && vf) {
-      try {
-        await ffmpeg.applyFinalVideoEffects(loudnormPath, finalPath, vf);
-        console.log(
-          `[worker:render] applied final video effects for ${contentItemId}` +
-            (renderSettings.flipHorizontal.enabled ? ' [flip]' : '') +
-            (renderSettings.colorFilter.enabled ? ` [color:${renderSettings.colorFilter.preset}]` : '') +
-            (renderSettings.burnCaptions.enabled && subtitlePath ? ' [captions]' : ''),
+    const needsEffectsPass = finalVideoEffectsEnabled(
+      renderSettings,
+      subtitlePath,
+      hookOverlayText,
+    );
+    console.log(
+      `[worker:render] effects for ${contentItemId}: trim=${renderSettings.trimStartMs}ms` +
+        ` flip=${renderSettings.flipHorizontal.enabled}` +
+        ` color=${renderSettings.colorFilter.enabled ? renderSettings.colorFilter.preset : 'off'}` +
+        ` hook=${hookOverlayText ? JSON.stringify(hookOverlayText) : 'off'}` +
+        ` captions=${renderSettings.burnCaptions.enabled ? (subtitlePath ? 'yes' : 'no-srt') : 'off'}`,
+    );
+
+    if (needsEffectsPass) {
+      const candidates = buildFinalVideoFilterFallbacks({
+        settings: renderSettings,
+        subtitlePath,
+        hookOverlayText: fontFile ? hookOverlayText : null,
+        fontFile,
+      });
+      let applied = false;
+      let lastErr: unknown;
+      for (const vf of candidates) {
+        try {
+          await unlink(finalPath).catch(() => {});
+          await ffmpeg.applyFinalVideoEffects(loudnormPath, finalPath, vf, {
+            trimStartMs: renderSettings.trimStartMs,
+          });
+          applied = true;
+          console.log(
+            `[worker:render] applied final video effects for ${contentItemId}` +
+              (renderSettings.trimStartMs > 0 ? ` [trim:${renderSettings.trimStartMs}ms]` : '') +
+              (renderSettings.flipHorizontal.enabled ? ' [flip]' : '') +
+              (renderSettings.colorFilter.enabled
+                ? ` [color:${renderSettings.colorFilter.preset}]`
+                : '') +
+              (vf.includes('drawtext=') && hookOverlayText ? ` [hook:${hookOverlayText}]` : '') +
+              (vf.includes('subtitles=') ? ' [captions]' : '') +
+              (!vf ? ' [trim-only]' : ''),
+          );
+          break;
+        } catch (err) {
+          lastErr = err;
+          console.warn(
+            `[worker:render] effects attempt failed (vf=${vf || '(none)'}):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+      if (!applied) {
+        console.warn(
+          `[worker:render] all final effects failed — using loudnorm output:`,
+          lastErr,
         );
-      } catch (err) {
-        console.warn(`[worker:render] final effects failed — using loudnorm output:`, err);
         await unlink(finalPath).catch(() => {});
         await rename(loudnormPath, finalPath);
-      } finally {
+      } else {
         await unlink(loudnormPath).catch(() => {});
       }
     } else {

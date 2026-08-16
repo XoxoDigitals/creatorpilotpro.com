@@ -1,5 +1,6 @@
 import type { Asset, ContentItem } from '@scp/db';
 import { assetHasMedia, drivePreviewEmbedUrl } from '@scp/storage';
+import { buildHookTextVariants } from '@scp/shared';
 import { toAssetView, type AssetView } from '../storage/asset.view';
 
 /** Public view of a content item (docs/03 Domain 4). */
@@ -71,6 +72,11 @@ export interface ScriptVariantView {
   estimatedSpokenSec: number | null;
 }
 
+export interface HookTextVariantView {
+  id: string;
+  text: string;
+}
+
 /**
  * AI-pipeline projection — items that have cleared Review and are moving through
  * the AI/TTS/render chain. Exposes `currentStep.analysis` / `currentStep.script`
@@ -91,6 +97,11 @@ export interface AiPipelineItemView {
   /** Three narration options (explainer / hooky / documentary); empty if legacy single script. */
   scriptVariants: ScriptVariantView[];
   selectedScriptId: string | null;
+  /** Short on-screen hook phrases (2–3 words) for the approval picker. */
+  hookTextVariants: HookTextVariantView[];
+  selectedHookTextId: string | null;
+  /** Denormalized selected hook phrase. */
+  selectedHookText: string | null;
   /**
    * English summary for the selected (or sole) narration script when the channel
    * output language is not English. Empty string when English or unavailable.
@@ -163,6 +174,61 @@ function parseScriptVariants(step: Record<string, unknown>): {
     variants[0]?.id ??
     null;
   return { variants, selectedScriptId };
+}
+
+function parseHookTextVariants(
+  step: Record<string, unknown>,
+  title: string,
+  scriptVariants: ScriptVariantView[],
+): {
+  variants: HookTextVariantView[];
+  selectedHookTextId: string | null;
+  selectedHookText: string | null;
+} {
+  const variants: HookTextVariantView[] = [];
+  const raw = step.hookTextVariants;
+  if (Array.isArray(raw)) {
+    for (const row of raw) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      const o = row as Record<string, unknown>;
+      const text = typeof o.text === 'string' ? o.text.trim() : '';
+      if (!text) continue;
+      const id =
+        typeof o.id === 'string' && o.id.trim()
+          ? o.id.trim()
+          : `hook-${variants.length + 1}`;
+      variants.push({ id, text });
+    }
+  }
+  if (variants.length < 2) {
+    // Legacy items: synthesize options from title + narration hooks.
+    const built = buildHookTextVariants({
+      title,
+      variantHooks: scriptVariants.map((v) => v.hook),
+      maxWords: 3,
+      maxOptions: 4,
+    });
+    for (const b of built) {
+      if (variants.some((v) => v.text.toUpperCase() === b.text.toUpperCase())) continue;
+      variants.push(b);
+      if (variants.length >= 4) break;
+    }
+  }
+  const selectedRaw =
+    typeof step.selectedHookTextId === 'string' ? step.selectedHookTextId : null;
+  const selectedHookTextId =
+    (selectedRaw && variants.some((v) => v.id === selectedRaw) ? selectedRaw : null) ??
+    variants[0]?.id ??
+    null;
+  const fromStep =
+    typeof step.selectedHookText === 'string' ? step.selectedHookText.trim() : '';
+  const selectedHookText =
+    (selectedHookTextId
+      ? variants.find((v) => v.id === selectedHookTextId)?.text
+      : null) ||
+    fromStep ||
+    null;
+  return { variants, selectedHookTextId, selectedHookText };
 }
 
 function parsePublishMetadata(raw: unknown): {
@@ -238,6 +304,7 @@ export function toAiPipelineItemView(
     null;
   const assets = c.assets ?? [];
   const variants = parseScriptVariants(step);
+  const hookTexts = parseHookTextVariants(step, c.title, variants.variants);
   const selectedVariant =
     variants.variants.find((v) => v.id === variants.selectedScriptId) ??
     variants.variants[0] ??
@@ -256,6 +323,9 @@ export function toAiPipelineItemView(
     script: asText(step.script),
     scriptVariants: variants.variants,
     selectedScriptId: variants.selectedScriptId,
+    hookTextVariants: hookTexts.variants,
+    selectedHookTextId: hookTexts.selectedHookTextId,
+    selectedHookText: hookTexts.selectedHookText,
     englishSummary: selectedVariant?.englishSummary?.trim() || stepSummary || '',
     metadata: asText(step.metadata),
     publishTitle: publish.title,

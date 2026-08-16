@@ -99,6 +99,30 @@ function applySelectedScript(
   }
 }
 
+function hookTextRows(raw: unknown): Array<Record<string, unknown> & { id?: unknown; text?: unknown }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (r): r is Record<string, unknown> & { id?: unknown; text?: unknown } =>
+      !!r && typeof r === 'object' && !Array.isArray(r),
+  );
+}
+
+/** Keep `selectedHookText` in sync with the picked short on-screen phrase. */
+function applySelectedHookText(
+  step: Record<string, unknown>,
+  opts: { selectedHookTextId?: string },
+): void {
+  const id = opts.selectedHookTextId?.trim();
+  if (!id) return;
+  const variants = hookTextRows(step.hookTextVariants);
+  const found = variants.find((v) => v.id === id);
+  if (!found) throw new BadRequestException('Unknown hook text option.');
+  const text = typeof found.text === 'string' ? found.text.trim() : '';
+  if (!text) throw new BadRequestException('Hook text option is empty.');
+  step.selectedHookTextId = id;
+  step.selectedHookText = text;
+}
+
 @Injectable()
 export class ContentService {
   constructor(
@@ -406,6 +430,9 @@ export class ContentService {
     delete step.narration;
     delete step.scriptVariants;
     delete step.selectedScriptId;
+    delete step.hookTextVariants;
+    delete step.selectedHookTextId;
+    delete step.selectedHookText;
     step.scriptNonce = Date.now();
     const updated = await this.prisma.client.contentItem.update({
       where: { id },
@@ -603,11 +630,24 @@ export class ContentService {
    */
   async updateScript(
     id: string,
-    dto: { script?: string; selectedScriptId?: string },
+    dto: { script?: string; selectedScriptId?: string; selectedHookTextId?: string },
   ): Promise<AiPipelineItemView> {
     const item = await this.findPipelineItem(id);
     this.assertScriptEditable(item.status);
     const step = { ...((item.currentStep ?? {}) as Record<string, unknown>) };
+
+    if (dto.selectedHookTextId?.trim()) {
+      // Persist synthesized options for legacy items so selection sticks.
+      if (!Array.isArray(step.hookTextVariants) || (step.hookTextVariants as unknown[]).length < 2) {
+        const view = toAiPipelineItemView(item);
+        step.hookTextVariants = view.hookTextVariants;
+        if (!step.selectedHookTextId && view.selectedHookTextId) {
+          step.selectedHookTextId = view.selectedHookTextId;
+          step.selectedHookText = view.selectedHookText ?? '';
+        }
+      }
+      applySelectedHookText(step, { selectedHookTextId: dto.selectedHookTextId });
+    }
 
     let englishSummary: string | null | undefined = undefined;
     if (dto.script != null) {
@@ -622,13 +662,15 @@ export class ContentService {
       }
     }
 
-    applySelectedScript(step, {
-      selectedScriptId: dto.selectedScriptId,
-      script: dto.script,
-      englishSummary,
-    });
-    if (typeof step.script !== 'string' || !step.script.trim()) {
-      throw new BadRequestException('Narration script cannot be empty.');
+    if (dto.script != null || dto.selectedScriptId?.trim()) {
+      applySelectedScript(step, {
+        selectedScriptId: dto.selectedScriptId,
+        script: dto.script,
+        englishSummary,
+      });
+      if (typeof step.script !== 'string' || !step.script.trim()) {
+        throw new BadRequestException('Narration script cannot be empty.');
+      }
     }
     const updated = await this.prisma.client.contentItem.update({
       where: { id },

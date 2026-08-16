@@ -16,6 +16,7 @@ import {
   type StyleProfileAnswers,
   type CaptionPreset,
   type ColorFilterPreset,
+  type HookTextSource,
   type RenderSettings,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -487,6 +488,17 @@ export default function AccountSettingsPage() {
               preset: renderSettings.burnCaptions.preset,
               ...(renderSettings.burnCaptions.fontSize != null
                 ? { fontSize: renderSettings.burnCaptions.fontSize }
+                : {}),
+            },
+            hookText: {
+              enabled: renderSettings.hookText.enabled,
+              source: renderSettings.hookText.source,
+              maxWords: renderSettings.hookText.maxWords ?? 3,
+              ...(renderSettings.hookText.customText?.trim()
+                ? { customText: renderSettings.hookText.customText.trim() }
+                : {}),
+              ...(renderSettings.hookText.fontSize != null
+                ? { fontSize: renderSettings.hookText.fontSize }
                 : {}),
             },
             flipHorizontal: { enabled: renderSettings.flipHorizontal.enabled },
@@ -998,7 +1010,7 @@ export default function AccountSettingsPage() {
                   burnCaptions: { ...s.burnCaptions, enabled: v },
                 }))
               }
-              label="Burn captions onto final video"
+              label="Burn captions (dialogue / voiceover lines)"
             />
             {renderSettings.burnCaptions.enabled && (
               <Field label="Caption style">
@@ -1019,10 +1031,91 @@ export default function AccountSettingsPage() {
                   <option value="karaoke">Karaoke / larger bottom</option>
                 </Select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Uses voiceover timings (SRT). Re-render existing videos after changing.
+                  Timed lines from voiceover SRT. Separate from the top hook.
                 </p>
               </Field>
             )}
+          </div>
+
+          <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
+            <Toggle
+              checked={renderSettings.hookText.enabled}
+              onChange={(v) =>
+                setRenderSettings((s) => ({
+                  ...s,
+                  hookText: { ...s.hookText, enabled: v },
+                }))
+              }
+              label="Hook text (2–3 words, top center)"
+            />
+            {renderSettings.hookText.enabled && (
+              <div className="space-y-3">
+                <Field label="Hook source">
+                  <Select
+                    value={renderSettings.hookText.source}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        hookText: {
+                          ...s.hookText,
+                          source: e.target.value as HookTextSource,
+                        },
+                      }))
+                    }
+                  >
+                    <option value="options">Pick at script approval (3–4 options)</option>
+                    <option value="title">Always from video title</option>
+                    <option value="custom">Fixed custom hook text</option>
+                  </Select>
+                </Field>
+                {renderSettings.hookText.source === 'custom' && (
+                  <Field label="Custom hook (2–3 words)">
+                    <Input
+                      value={renderSettings.hookText.customText ?? ''}
+                      onChange={(e) =>
+                        setRenderSettings((s) => ({
+                          ...s,
+                          hookText: { ...s.hookText, customText: e.target.value },
+                        }))
+                      }
+                      placeholder="e.g. HIDDEN SAFE"
+                      maxLength={48}
+                    />
+                  </Field>
+                )}
+                <Field label="Max words">
+                  <Select
+                    value={String(renderSettings.hookText.maxWords ?? 3)}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        hookText: {
+                          ...s.hookText,
+                          maxWords: Math.max(1, Math.min(5, Number(e.target.value) || 3)),
+                        },
+                      }))
+                    }
+                  >
+                    <option value="2">2 words</option>
+                    <option value="3">3 words</option>
+                    <option value="4">4 words</option>
+                  </Select>
+                </Field>
+                <p className="text-[11px] text-zinc-500">
+                  {renderSettings.hookText.source === 'options'
+                    ? 'On the AI tab at script approval, pick one of 3–4 short phrases. That choice is burned top-center — separate from captions.'
+                    : 'Big bold text at the top center to grab attention — not the same as captions.'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md border border-dashed border-zinc-300 bg-zinc-50/50 p-3">
+            <p className="text-sm font-medium text-zinc-700">Talking avatar (coming soon)</p>
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Lip-sync reaction face in the corner during dialogue only. Not available yet — this is
+              where the toggle will live.
+            </p>
           </div>
 
           <div className="rounded-md border border-zinc-200 bg-zinc-50/80 p-3">

@@ -31,10 +31,18 @@ export const updateScriptSchema = z
     script: z.string().min(1).max(50000).optional(),
     /** Switch the active variant (explainer / styleB / styleC) without rewriting copy. */
     selectedScriptId: z.string().min(1).max(40).optional(),
+    /** Switch the on-screen hook phrase (2–3 words) at script approval. */
+    selectedHookTextId: z.string().min(1).max(40).optional(),
   })
-  .refine((d) => Boolean(d.script?.trim() || d.selectedScriptId?.trim()), {
-    message: 'script or selectedScriptId is required',
-  });
+  .refine(
+    (d) =>
+      Boolean(
+        d.script?.trim() || d.selectedScriptId?.trim() || d.selectedHookTextId?.trim(),
+      ),
+    {
+      message: 'script, selectedScriptId, or selectedHookTextId is required',
+    },
+  );
 export type UpdateScriptDto = z.infer<typeof updateScriptSchema>;
 
 /** Instruction-driven rewrite of the current narration script (preview; not saved until PATCH). */

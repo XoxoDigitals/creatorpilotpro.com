@@ -759,35 +759,33 @@ export class Ffmpeg {
   }
 
   /**
-   * Re-encode video with optional flip / color / burned captions. Audio is
-   * stream-copied from the already-mixed input. No-op when `vf` is empty —
-   * callers should skip this when effects are disabled.
+   * Re-encode (or trim-copy) the muxed video with optional flip / color / hook /
+   * burned captions. `trimStartMs` seeks before decode so lead-in is dropped even
+   * when the source is the untrimmed ORIGINAL asset.
    */
   async applyFinalVideoEffects(
     srcPath: string,
     destPath: string,
     vf: string,
+    opts: { trimStartMs?: number } = {},
   ): Promise<void> {
     await this.ensureAvailable();
-    if (!vf.trim()) {
-      throw new Error('applyFinalVideoEffects called with empty filter chain');
+    const trimSec = Math.max(0, (opts.trimStartMs ?? 0) / 1000);
+    const filter = vf.trim();
+    if (!filter && trimSec <= 0) {
+      throw new Error('applyFinalVideoEffects called with empty filter chain and no trim');
     }
     const args = [
       '-hide_banner',
       '-loglevel',
       'error',
+      ...(trimSec > 0 ? ['-ss', String(trimSec)] : []),
       '-i',
       srcPath,
-      '-vf',
-      vf,
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '20',
-      '-c:a',
-      'copy',
+      ...(filter ? ['-vf', filter] : []),
+      ...(filter
+        ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac']
+        : ['-c', 'copy']),
       '-movflags',
       '+faststart',
       '-y',

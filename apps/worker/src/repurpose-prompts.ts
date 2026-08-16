@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { TaskType, formatOutputLanguagePolicy, languageDisplayName } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 9;
+export const REPURPOSE_PROMPT_REV = 10;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -94,6 +94,11 @@ export const narrationVariantSchema = z.object({
 
 const narrationRewriteRawSchema = z.object({
   variants: z.array(narrationVariantSchema).min(1).nullish(),
+  /** Short on-screen attention phrases (2–3 words each). */
+  overlayHooks: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
   /** Legacy single-script shape (pre-variant). */
   script: z.string().nullish(),
   hook: z.string().nullish().transform((v) => v ?? ''),
@@ -273,6 +278,12 @@ Given a beat-by-beat video analysis, duration budget, optional channel style, an
 
 Return ONLY valid JSON:
 {
+  "overlayHooks": [
+    "2-3 WORD HOOK",
+    "ANOTHER SHORT HOOK",
+    "THIRD SHORT HOOK",
+    "FOURTH SHORT HOOK"
+  ],
   "variants": [
     {
       "id": "explainer",
@@ -302,6 +313,12 @@ Return ONLY valid JSON:
 }
 
 Core rule: Narrate the story, not the obvious pixels.
+
+overlayHooks (required):
+- Exactly 4 distinct on-screen attention phrases for the video top center.
+- Each phrase is 2–3 words only (not a full sentence). Prefer punchy nouns/verbs.
+- No punctuation, no hashtags, no quotes. English even when spoken script is another language.
+- Different angles (curiosity / stakes / reveal / emotion) — not paraphrases of each other.
 
 Build each script around:
 HOOK → CONTEXT → PROBLEM/CHANGE → PROGRESSION → REACTION → PAYOFF.

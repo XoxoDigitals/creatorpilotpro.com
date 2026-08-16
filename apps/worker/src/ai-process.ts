@@ -14,6 +14,7 @@ import {
   TaskType,
   styleVersionFromProfile,
   withChannelStyle,
+  buildHookTextVariants,
   type ChannelStyleFields,
 } from '@scp/shared';
 import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
@@ -505,7 +506,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       hasDialogue,
       // Present when the owner clicks Regenerate script — busts the AI cache.
       ...(currentStep.scriptNonce != null ? { regenerateNonce: currentStep.scriptNonce } : {}),
-      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Scene-aligned lines[] required when beats are present. ${personHook} ${dialogueHook} Output JSON with variants[].`,
+      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 4 short 2–3 word on-screen attention phrases. ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
     });
     runInput = { kind: 'text', text: inputText };
   } else {
@@ -594,11 +595,30 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       }
       const selected = variants.find((v) => v.id === 'explainer') ?? variants[0];
       const scriptText = selected?.script || extractNarrationScript(result.output);
+      const overlayHooks =
+        result.output &&
+        typeof result.output === 'object' &&
+        !Array.isArray(result.output) &&
+        Array.isArray((result.output as Record<string, unknown>).overlayHooks)
+          ? ((result.output as Record<string, unknown>).overlayHooks as unknown[]).filter(
+              (h): h is string => typeof h === 'string',
+            )
+          : [];
+      const hookTextVariants = buildHookTextVariants({
+        title: item.title,
+        variantHooks: variants.map((v) => v.hook),
+        overlayHooks,
+        maxWords: 3,
+        maxOptions: 4,
+      });
       updatedStep.script = scriptText;
       updatedStep.selectedScriptId = selected?.id ?? 'explainer';
       updatedStep.scriptVariants = variants;
       updatedStep.englishSummary = selected?.englishSummary ?? '';
       updatedStep.narration = result.output;
+      updatedStep.hookTextVariants = hookTextVariants;
+      updatedStep.selectedHookTextId = hookTextVariants[0]?.id ?? null;
+      updatedStep.selectedHookText = hookTextVariants[0]?.text ?? '';
       await prisma.contentItem.update({
         where: { id: contentItemId },
         data: { currentStep: updatedStep as any, status: 'SCRIPT_READY' },

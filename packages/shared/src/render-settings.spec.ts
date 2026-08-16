@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFinalVideoFilterChain,
+  buildFinalVideoFilterFallbacks,
   finalVideoEffectsEnabled,
   resolveTrimStartMs,
   clampTrimStartMs,
   parseRenderSettings,
+  shortenToHookWords,
+  resolveHookOverlayText,
+  buildHookTextVariants,
   DEFAULT_TRIM_START_MS,
   DEFAULT_RENDER_SETTINGS,
   captionForceStyle,
@@ -29,17 +33,68 @@ describe('resolveTrimStartMs', () => {
   });
 });
 
+describe('hook text', () => {
+  it('shortens titles to a few uppercase words', () => {
+    expect(shortenToHookWords('Worker Finds Hidden Wall Safe During Demo', 3)).toBe(
+      'WORKER FINDS HIDDEN',
+    );
+  });
+
+  it('builds 3–4 distinct options from AI + title', () => {
+    const opts = buildHookTextVariants({
+      title: 'Worker Finds Hidden Wall Safe During Demo',
+      overlayHooks: ['HIDDEN SAFE', 'SECRET REVEALED', 'WAIT FOR IT', 'HIDDEN SAFE'],
+      variantHooks: ['You will not believe this find'],
+      maxWords: 3,
+      maxOptions: 4,
+    });
+    expect(opts.length).toBeGreaterThanOrEqual(3);
+    expect(opts.length).toBeLessThanOrEqual(4);
+    expect(new Set(opts.map((o) => o.text)).size).toBe(opts.length);
+  });
+
+  it('resolves custom vs title vs selected options', () => {
+    expect(
+      resolveHookOverlayText(
+        { enabled: true, source: 'custom', customText: 'wait for it', maxWords: 3 },
+        'Long Title Here',
+      ),
+    ).toBe('WAIT FOR IT');
+    expect(
+      resolveHookOverlayText(
+        { enabled: true, source: 'title', maxWords: 2 },
+        'Hidden Safe Revealed Live',
+      ),
+    ).toBe('HIDDEN SAFE');
+    expect(
+      resolveHookOverlayText(
+        { enabled: true, source: 'options', maxWords: 3 },
+        'Hidden Safe Revealed Live',
+        'SECRET WALL',
+      ),
+    ).toBe('SECRET WALL');
+    expect(
+      resolveHookOverlayText({ enabled: false, source: 'title', maxWords: 3 }, 'Anything'),
+    ).toBeNull();
+  });
+});
+
 describe('buildFinalVideoFilterChain', () => {
   const base = { ...DEFAULT_RENDER_SETTINGS };
 
-  it('returns empty when all effects off', () => {
+  it('returns empty vf when visual effects off (trim is applied via -ss separately)', () => {
     expect(
       buildFinalVideoFilterChain({
         settings: base,
         subtitlePath: '/tmp/vo.srt',
+        hookOverlayText: 'HOOK',
       }),
     ).toBe('');
-    expect(finalVideoEffectsEnabled(base, '/tmp/vo.srt')).toBe(false);
+    // Default trimStartMs=500 still requires an effects pass for lead-in cut.
+    expect(finalVideoEffectsEnabled(base, '/tmp/vo.srt', 'HOOK')).toBe(true);
+    expect(
+      finalVideoEffectsEnabled({ ...base, trimStartMs: 0 }, '/tmp/vo.srt', 'HOOK'),
+    ).toBe(false);
   });
 
   it('includes hflip when flip enabled', () => {
@@ -86,6 +141,47 @@ describe('buildFinalVideoFilterChain', () => {
     expect(captionForceStyle({ enabled: true, preset: 'bottom' })).toContain('Alignment=2');
   });
 
+  it('draws hook text with optional fontfile', () => {
+    const vf = buildFinalVideoFilterChain({
+      settings: {
+        ...base,
+        hookText: { enabled: true, source: 'title', maxWords: 3 },
+        burnCaptions: { enabled: true, preset: 'bottom' },
+      },
+      subtitlePath: '/data/voiceover.srt',
+      hookOverlayText: 'HIDDEN SAFE',
+      fontFile: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    });
+    expect(vf).toContain("drawtext=text='HIDDEN SAFE'");
+    expect(vf).toContain('fontfile=');
+    expect(vf).toContain('subtitles=');
+    expect(
+      finalVideoEffectsEnabled(
+        { ...base, trimStartMs: 0, hookText: { enabled: true, source: 'title', maxWords: 3 } },
+        null,
+        'HIDDEN SAFE',
+      ),
+    ).toBe(true);
+  });
+
+  it('builds progressive fallbacks without hook then without captions', () => {
+    const fallbacks = buildFinalVideoFilterFallbacks({
+      settings: {
+        ...base,
+        flipHorizontal: { enabled: true },
+        hookText: { enabled: true, source: 'title', maxWords: 3 },
+        burnCaptions: { enabled: true, preset: 'bottom' },
+      },
+      subtitlePath: '/data/voiceover.srt',
+      hookOverlayText: 'HIDDEN SAFE',
+    });
+    expect(fallbacks[0]).toContain('drawtext=');
+    expect(fallbacks[0]).toContain('subtitles=');
+    expect(fallbacks[1]).not.toContain('drawtext=');
+    expect(fallbacks[1]).toContain('subtitles=');
+    expect(fallbacks[2]).toBe('hflip');
+  });
+
   it('combines flip + color + captions', () => {
     const vf = buildFinalVideoFilterChain({
       settings: {
@@ -109,12 +205,15 @@ describe('parseRenderSettings', () => {
         trimStartMs: 750,
         flipHorizontal: { enabled: true },
         burnCaptions: { enabled: true, preset: 'karaoke' },
+        hookText: { enabled: true, source: 'custom', customText: 'WAIT FOR IT', maxWords: 3 },
         colorFilter: { enabled: true, preset: 'cool' },
       },
     });
     expect(s.trimStartMs).toBe(750);
     expect(s.flipHorizontal.enabled).toBe(true);
     expect(s.burnCaptions.preset).toBe('karaoke');
+    expect(s.hookText.enabled).toBe(true);
+    expect(s.hookText.customText).toBe('WAIT FOR IT');
     expect(s.colorFilter.preset).toBe('cool');
   });
 });
