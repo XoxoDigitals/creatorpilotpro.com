@@ -4,7 +4,7 @@
  * credentials are absent — log + skip, never crash.
  */
 import type PgBoss from 'pg-boss';
-import type { PrismaClient } from '@scp/db';
+import { Prisma, type PrismaClient } from '@scp/db';
 import { decryptAccountAuth, getMasterKey, getPrisma, raiseIncident } from './publish-support.js';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
@@ -61,7 +61,7 @@ async function markPublishTargetPlatformIssue(
         reason: opts.reason,
         detectedAt: new Date().toISOString(),
         source: 'analytics-sync',
-      },
+      } as Prisma.InputJsonValue,
     },
   });
   await raiseIncident(prisma, {

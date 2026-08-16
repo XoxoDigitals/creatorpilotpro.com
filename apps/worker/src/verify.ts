@@ -3,6 +3,7 @@
  * and +24h. A BLOCK issue (copyright / rejection / processing failure) triggers
  * the failure protocol — target → DRAFT, incident, notify, auto-hold siblings.
  */
+import { Prisma } from '@scp/db';
 import { FacebookAdapter, TikTokAdapter, YouTubeAdapter } from '@scp/publish-adapters';
 import {
   adapterAuth,
@@ -88,10 +89,14 @@ export async function runVerify(job: VerifyJob): Promise<void> {
         lastError: {
           message: summary,
           platformPostId: job.platformPostId,
-          issues: blocking,
+          issues: blocking.map((i) => ({
+            code: i.code,
+            message: i.message,
+            severity: i.severity,
+          })),
           detectedAt: new Date().toISOString(),
           reason: isDeleted ? 'removed_from_platform' : isCopyright ? 'copyright' : 'platform_reject',
-        },
+        } as Prisma.InputJsonValue,
       },
     });
     await raiseIncident(prisma, {
