@@ -30,6 +30,11 @@ export const voiceSettingsSchema = z.object({
    * 100 = same loudness as voiceover; lower quietens music/ambience under VO.
    */
   backgroundBedPercent: z.number().int().min(1).max(100).optional(),
+  /**
+   * Final-video effects (captions / flip / color / lead-in trim). Nested object;
+   * see render-settings.ts. Stored as-is on the profile JSON.
+   */
+  renderSettings: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type VoiceSettings = z.infer<typeof voiceSettingsSchema>;
@@ -98,6 +103,9 @@ export function parseVoiceSettings(
     backgroundBedPercent: clampBackgroundBedPercent(
       row.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
     ),
+    ...(row.renderSettings && typeof row.renderSettings === 'object' && !Array.isArray(row.renderSettings)
+      ? { renderSettings: row.renderSettings as Record<string, unknown> }
+      : {}),
     ...(typeof row.language === 'string' && row.language
       ? { language: row.language }
       : base.language

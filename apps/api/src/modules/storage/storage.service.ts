@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, rename, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { spawn } from 'node:child_process';
 import {
   BadRequestException,
   Injectable,
@@ -22,6 +23,11 @@ import {
   type GDriveConfig,
   type GDriveSettingsPartial,
 } from '@scp/storage';
+import {
+  DEFAULT_TRIM_START_MS,
+  renderSettingsFromVoiceSettings,
+  resolveTrimStartMs,
+} from '@scp/shared';
 import type { Readable } from 'node:stream';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingsService } from '../system/settings.service';
@@ -34,6 +40,42 @@ function safeFilename(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? 'upload';
   const cleaned = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
   return cleaned.length > 0 ? cleaned.slice(0, 180) : 'upload.bin';
+}
+
+async function runFfmpegTrim(srcPath: string, destPath: string, trimStartMs: number): Promise<void> {
+  const trimSec = Math.max(0, trimStartMs) / 1000;
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    ...(trimSec > 0 ? ['-ss', String(trimSec)] : []),
+    '-i',
+    srcPath,
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryfast',
+    '-crf',
+    '20',
+    '-c:a',
+    'aac',
+    '-movflags',
+    '+faststart',
+    '-y',
+    destPath,
+  ];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('ffmpeg', args, { windowsHide: true });
+    let stderr = '';
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg trim failed (${code}): ${stderr.slice(0, 300)}`));
+    });
+  });
 }
 
 @Injectable()
@@ -73,6 +115,8 @@ export class StorageService {
     filename: string;
     stream: Readable;
     isTruncated: () => boolean;
+    /** When set (manual upload), apply account lead-in trim to FINAL videos. */
+    accountId?: string;
   }): Promise<AssetView> {
     const content = await this.prisma.client.contentItem.findFirst({
       where: { id: input.contentItemId, deletedAt: null },
@@ -123,10 +167,45 @@ export class StorageService {
       throw new PayloadTooLargeException('Upload exceeds the maximum file size.');
     }
 
-    const md5 = hash.digest('hex');
+    let md5 = hash.digest('hex');
+    let localPath: string | null = dest;
+
+    // Lead-in trim for manual FINAL uploads (account setting, default 500ms).
+    if (input.kind === 'FINAL' && localPath) {
+      let trimStartMs = DEFAULT_TRIM_START_MS;
+      if (input.accountId) {
+        const profile = await this.prisma.client.channelProfile.findUnique({
+          where: { accountId: input.accountId },
+          select: { voiceSettings: true },
+        });
+        trimStartMs = resolveTrimStartMs({
+          accountTrimMs: renderSettingsFromVoiceSettings(profile?.voiceSettings).trimStartMs,
+          sourceTrimMs: null,
+        });
+      }
+      if (trimStartMs > 0) {
+        const trimmed = join(dirname(dest), `trimmed-${safeFilename(input.filename)}`);
+        try {
+          await runFfmpegTrim(dest, trimmed, trimStartMs);
+          await unlink(dest).catch(() => undefined);
+          await rename(trimmed, dest);
+          const hashed = await md5File(dest);
+          md5 = hashed.md5;
+          bytes = hashed.bytes;
+          localPath = dest;
+        } catch (err) {
+          await unlink(trimmed).catch(() => undefined);
+          // Keep untrimmed upload if ffmpeg is missing — do not fail the upload.
+          console.warn(
+            `[storage] lead-in trim skipped for ${input.contentItemId}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+
     let driveFileId: string | null = null;
     let storageState: 'LOCAL' | 'DRIVE' | 'BOTH' = 'LOCAL';
-    let localPath: string | null = dest;
 
     if (useDrive) {
       try {

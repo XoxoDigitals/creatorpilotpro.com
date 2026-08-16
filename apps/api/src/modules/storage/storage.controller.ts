@@ -28,6 +28,7 @@ export class StorageController {
     @Req() req: FastifyRequest,
     @Query('contentItemId') contentItemId?: string,
     @Query('kind') kind?: string,
+    @Query('accountId') accountId?: string,
   ): Promise<AssetView> {
     if (!contentItemId) throw new BadRequestException('contentItemId query param is required.');
     if (kind && kind !== 'ORIGINAL' && kind !== 'FINAL' && kind !== 'THUMBNAIL') {
@@ -44,6 +45,7 @@ export class StorageController {
       filename: data.filename,
       stream: data.file,
       isTruncated: () => data.file.truncated,
+      ...(accountId ? { accountId } : {}),
     });
   }
 }

@@ -9,7 +9,7 @@
  * Without timed lines, falls back to one continuous synth of the full script.
  * Edge TTS timings (VTT/SRT) are preferred over re-transcription.
  */
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { writeFile, mkdir, unlink, copyFile, stat } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
 import { QUEUE, parseVoiceSettings, type VoiceSettings } from '@scp/shared';
@@ -857,6 +857,38 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
           bytes: BigInt(stats.size),
         },
       });
+    }
+
+    // Register TTS timings as SUBTITLE so burn-captions can find them on render.
+    const srtPath = join(dirname(synth.finalWavPath), 'voiceover.srt');
+    try {
+      const srtStats = await stat(srtPath);
+      const existingSub = await prisma.asset.findFirst({
+        where: { contentItemId, kind: 'SUBTITLE' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existingSub) {
+        await prisma.asset.update({
+          where: { id: existingSub.id },
+          data: {
+            localPath: srtPath,
+            bytes: BigInt(srtStats.size),
+            storageState: 'LOCAL',
+          },
+        });
+      } else {
+        await prisma.asset.create({
+          data: {
+            contentItemId,
+            kind: 'SUBTITLE',
+            storageState: 'LOCAL',
+            localPath: srtPath,
+            bytes: BigInt(srtStats.size),
+          },
+        });
+      }
+    } catch {
+      /* no SRT when timings empty */
     }
 
     await prisma.contentItem.update({

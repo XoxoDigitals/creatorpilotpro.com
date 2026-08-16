@@ -15,7 +15,8 @@ import {
 } from './publish-support.js';
 import type { VerifyJob } from './publish-jobs.js';
 
-const COPYRIGHT_RE = /copyright|claim|takedown/i;
+const COPYRIGHT_RE =
+  /copyright|claim|takedown|rights.?manager|infring|dmca|muted|matched.?third.?party|content.?id/i;
 
 /** Auto-pause the account after this many copyright strikes (docs/10 backlog #8). */
 const STRIKE_PAUSE_THRESHOLD = 3;
@@ -75,15 +76,33 @@ export async function runVerify(job: VerifyJob): Promise<void> {
 
   if (blocking.length > 0) {
     // Failure protocol: roll the target back to DRAFT + raise an incident.
-    await prisma.publishTarget.update({ where: { id: target.id }, data: { status: 'DRAFT' } });
-    const isCopyright = blocking.some((i) => COPYRIGHT_RE.test(i.code) || COPYRIGHT_RE.test(i.message));
+    const summary = blocking.map((b) => b.message).join('; ');
+    const isDeleted = blocking.some((i) => i.code === 'video-deleted' || i.code === 'not-found');
+    const isCopyright =
+      !isDeleted &&
+      blocking.some((i) => COPYRIGHT_RE.test(i.code) || COPYRIGHT_RE.test(i.message));
+    await prisma.publishTarget.update({
+      where: { id: target.id },
+      data: {
+        status: 'DRAFT',
+        lastError: {
+          message: summary,
+          platformPostId: job.platformPostId,
+          issues: blocking,
+          detectedAt: new Date().toISOString(),
+          reason: isDeleted ? 'removed_from_platform' : isCopyright ? 'copyright' : 'platform_reject',
+        },
+      },
+    });
     await raiseIncident(prisma, {
       kind: isCopyright ? 'COPYRIGHT' : 'PLATFORM_REJECT',
       severity: 'HIGH',
       accountId: account.id,
       contentItemId: target.contentItemId,
       publishTargetId: target.id,
-      title: `${isCopyright ? 'Copyright issue' : 'Platform issue'} on ${account.name} (${job.phase})`,
+      title: isDeleted
+        ? `Video removed from ${account.name} (${job.phase})`
+        : `${isCopyright ? 'Copyright issue' : 'Platform issue'} on ${account.name} (${job.phase})`,
       detail: { platformPostId: job.platformPostId, issues: blocking },
     });
 

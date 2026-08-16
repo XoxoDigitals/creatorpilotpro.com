@@ -109,7 +109,12 @@ export class SchedulingService {
   async upcoming(accountId: string): Promise<UpcomingView> {
     const [targets, failedRows, publishedRows, freeSlots] = await Promise.all([
       this.prisma.client.publishTarget.findMany({
-        where: { accountId, status: 'SCHEDULED', scheduledAt: { not: null } },
+        where: {
+          accountId,
+          status: 'SCHEDULED',
+          scheduledAt: { not: null },
+          contentItem: { deletedAt: null },
+        },
         include: {
           contentItem: { select: { title: true, currentStep: true } },
         },
@@ -119,6 +124,7 @@ export class SchedulingService {
       this.prisma.client.publishTarget.findMany({
         where: {
           accountId,
+          contentItem: { deletedAt: null },
           OR: [
             { status: 'FAILED' },
             { status: 'DRAFT', lastError: { not: Prisma.DbNull } },
@@ -131,7 +137,7 @@ export class SchedulingService {
         take: 20,
       }),
       this.prisma.client.publishTarget.findMany({
-        where: { accountId, status: 'PUBLISHED' },
+        where: { accountId, status: 'PUBLISHED', contentItem: { deletedAt: null } },
         include: {
           contentItem: { select: { title: true, currentStep: true } },
         },

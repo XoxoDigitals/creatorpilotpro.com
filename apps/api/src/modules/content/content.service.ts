@@ -496,8 +496,18 @@ export class ContentService {
       throw new BadRequestException('Cannot delete a video while it is publishing.');
     }
     await this.prisma.client.publishTarget.updateMany({
-      where: { contentItemId: id, status: { in: ['PENDING', 'SCHEDULED'] } },
-      data: { status: 'DRAFT' },
+      where: {
+        contentItemId: id,
+        status: { in: ['PENDING', 'SCHEDULED', 'PUBLISHED', 'FAILED', 'DRAFT'] },
+      },
+      data: {
+        status: 'DRAFT',
+        lastError: {
+          message: 'Deleted from CreatorPilot',
+          reason: 'user_deleted_system',
+          detectedAt: new Date().toISOString(),
+        } as Prisma.InputJsonValue,
+      },
     });
     await this.prisma.client.contentItem.update({
       where: { id },

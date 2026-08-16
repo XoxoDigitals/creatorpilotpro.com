@@ -7,6 +7,7 @@ export * from './content-languages.js';
 export * from './english-voiceover-summary.js';
 export * from './channel-performance.js';
 export * from './voice-settings.js';
+export * from './render-settings.js';
 export * from './publish-review.js';
 export * from './documentary-collage.js';
 export * from './extract-video-urls.js';

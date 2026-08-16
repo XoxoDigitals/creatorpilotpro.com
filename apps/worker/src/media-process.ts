@@ -11,6 +11,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type PgBoss from 'pg-boss';
 import { hotTierPath, md5File, TieredStorage } from '@scp/storage';
+import { renderSettingsFromVoiceSettings, resolveTrimStartMs } from '@scp/shared';
 import { Ffmpeg } from './media/ffmpeg.js';
 import { getPrisma, raiseIncident, sourceHotPath } from './ingestion-support.js';
 import { getStorageRoot } from './config.js';
@@ -77,7 +78,19 @@ export async function runMedia(sourceVideoId: string, _boss: PgBoss): Promise<vo
   });
 
   const ffmpeg = new Ffmpeg();
-  const trimStartMs = video.watchedSource?.trimStartMs ?? 500;
+  let accountTrimMs: number | null = null;
+  const accountId = video.watchedSource?.targetAccountId ?? null;
+  if (accountId) {
+    const profile = await prisma.channelProfile.findUnique({
+      where: { accountId },
+      select: { voiceSettings: true },
+    });
+    accountTrimMs = renderSettingsFromVoiceSettings(profile?.voiceSettings).trimStartMs;
+  }
+  const trimStartMs = resolveTrimStartMs({
+    accountTrimMs,
+    sourceTrimMs: video.watchedSource?.trimStartMs ?? null,
+  });
 
   if (await ffmpeg.available()) {
     const finalPath = hotTierPath(root, item.id, 'FINAL', 'final.mp4');

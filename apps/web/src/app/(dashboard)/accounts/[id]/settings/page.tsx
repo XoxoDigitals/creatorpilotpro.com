@@ -9,7 +9,14 @@ import {
   contentLanguageOptionLabel,
   DEFAULT_BACKGROUND_BED_PERCENT,
   clampBackgroundBedPercent,
+  DEFAULT_TRIM_START_MS,
+  DEFAULT_RENDER_SETTINGS,
+  renderSettingsFromVoiceSettings,
+  clampTrimStartMs,
   type StyleProfileAnswers,
+  type CaptionPreset,
+  type ColorFilterPreset,
+  type RenderSettings,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -137,6 +144,30 @@ export default function AccountSettingsPage() {
     'PUBLIC',
   );
   const [defaultCategory, setDefaultCategory] = useState('22');
+  const [renderSettings, setRenderSettings] = useState<RenderSettings>({ ...DEFAULT_RENDER_SETTINGS });
+  const [settingsSection, setSettingsSection] = useState<
+    | 'pipeline'
+    | 'brand'
+    | 'metadata'
+    | 'approval'
+    | 'schedule'
+    | 'voice'
+    | 'render'
+    | 'publish'
+    | 'danger'
+  >('pipeline');
+
+  const settingsTabs: { id: typeof settingsSection; label: string }[] = [
+    { id: 'pipeline', label: 'Content pipeline' },
+    { id: 'brand', label: 'Brand & prompt' },
+    { id: 'metadata', label: 'Publish metadata' },
+    { id: 'approval', label: 'Approval' },
+    { id: 'schedule', label: 'Posting schedule' },
+    { id: 'voice', label: 'Voice' },
+    { id: 'render', label: 'Render effects' },
+    { id: 'publish', label: 'Timing & crosspost' },
+    ...(real ? [{ id: 'danger' as const, label: 'Delete' }] : []),
+  ];
 
   const localeOptions = useMemo(() => {
     const set = new Set(voices.map((v) => v.locale).filter(Boolean));
@@ -228,6 +259,7 @@ export default function AccountSettingsPage() {
             voiceCfg?.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
           ),
         );
+        setRenderSettings(renderSettingsFromVoiceSettings(p.voiceSettings));
         const approval = p.approvalPolicy as { scriptGate?: boolean } | null;
         if (typeof approval?.scriptGate === 'boolean') setScriptGate(approval.scriptGate);
         const sched = p.schedulingPrefs as {
@@ -448,6 +480,21 @@ export default function AccountSettingsPage() {
           volume: voiceVolume,
           language,
           backgroundBedPercent: clampBackgroundBedPercent(backgroundBedPercent),
+          renderSettings: {
+            trimStartMs: clampTrimStartMs(renderSettings.trimStartMs),
+            burnCaptions: {
+              enabled: renderSettings.burnCaptions.enabled,
+              preset: renderSettings.burnCaptions.preset,
+              ...(renderSettings.burnCaptions.fontSize != null
+                ? { fontSize: renderSettings.burnCaptions.fontSize }
+                : {}),
+            },
+            flipHorizontal: { enabled: renderSettings.flipHorizontal.enabled },
+            colorFilter: {
+              enabled: renderSettings.colorFilter.enabled,
+              preset: renderSettings.colorFilter.preset,
+            },
+          },
         },
         titleTemplate,
         descriptionTemplate,
@@ -487,7 +534,7 @@ export default function AccountSettingsPage() {
 
   if (loading) {
     return (
-      <div className="max-w-3xl space-y-6">
+      <div className="w-full space-y-6">
         <Skeleton className="h-40 w-full rounded-lg" />
         <Skeleton className="h-64 w-full rounded-lg" />
       </div>
@@ -495,16 +542,38 @@ export default function AccountSettingsPage() {
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="w-full space-y-6">
       {!real && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           Demo account — Save is illustrative. Connect a real account to persist a channel profile.
         </div>
       )}
 
+      <nav className="flex gap-1 overflow-x-auto border-b border-zinc-200">
+        {settingsTabs.map((tab) => {
+          const active = settingsSection === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setSettingsSection(tab.id)}
+              className={cn(
+                '-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm transition-colors',
+                active
+                  ? 'border-indigo-600 font-medium text-indigo-700'
+                  : 'border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-800',
+              )}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </nav>
+
+      {settingsSection === 'pipeline' && (
       <Card>
         <CardHeader
-          title="1. Content pipeline"
+          title="Content pipeline"
           description="Which workspace tabs and pipelines this account uses"
         />
         <div className="grid gap-4 p-4 sm:grid-cols-2">
@@ -541,10 +610,12 @@ export default function AccountSettingsPage() {
           </div>
         </div>
       </Card>
+      )}
 
+      {settingsSection === 'brand' && (
       <Card>
         <CardHeader
-          title="2. Brand & master prompt"
+          title="Brand & master prompt"
           description="Questionnaire + guidelines → one master brief injected into every AI task"
         />
         <div className="space-y-4 p-4">
@@ -578,10 +649,12 @@ export default function AccountSettingsPage() {
           </Field>
         </div>
       </Card>
+      )}
 
+      {settingsSection === 'metadata' && (
       <Card>
         <CardHeader
-          title="3. Publish metadata"
+          title="Publish metadata"
           description="Default title, description, and tags applied to posts on this account"
         />
         <div className="space-y-4 p-4">
@@ -629,10 +702,12 @@ export default function AccountSettingsPage() {
           />
         </div>
       </Card>
+      )}
 
+      {settingsSection === 'approval' && (
       <Card>
         <CardHeader
-          title="4. Approval policy"
+          title="Approval policy"
           description="Human review gates before voiceover / publish"
         />
         <div className="p-4">
@@ -643,10 +718,12 @@ export default function AccountSettingsPage() {
           />
         </div>
       </Card>
+      )}
 
+      {settingsSection === 'schedule' && (
       <Card>
         <CardHeader
-          title="5. Daily posting schedule"
+          title="Daily posting schedule"
           description="Posts per day, weekdays, and time slots used for “next free slot”"
         />
         <div className="space-y-4 p-4">
@@ -765,10 +842,12 @@ export default function AccountSettingsPage() {
           </div>
         </div>
       </Card>
+      )}
 
+      {settingsSection === 'voice' && (
       <Card>
         <CardHeader
-          title="6. Voice"
+          title="Voice"
           description="Default Edge Neural TTS voice (falls back to Kokoro → Gemini → OpenAI)"
         />
         <div className="space-y-4 p-4">
@@ -881,10 +960,126 @@ export default function AccountSettingsPage() {
           )}
         </div>
       </Card>
+      )}
 
+      {settingsSection === 'render' && (
       <Card>
         <CardHeader
-          title="7. Publish timing & crosspost"
+          title="Video render effects"
+          description="Each option is off until you enable it. Applied on Re-render / new renders (start trim also applies on ingest)."
+        />
+        <div className="space-y-4 p-4">
+          <Field label="Cut start of video (ms)">
+            <Input
+              type="number"
+              min={0}
+              max={60000}
+              step={100}
+              value={renderSettings.trimStartMs}
+              onChange={(e) =>
+                setRenderSettings((s) => ({
+                  ...s,
+                  trimStartMs: clampTrimStartMs(e.target.value || DEFAULT_TRIM_START_MS),
+                }))
+              }
+            />
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Default {DEFAULT_TRIM_START_MS} ms (0.5s). Drops the first frames on ingest / manual
+              normalize.
+            </p>
+          </Field>
+
+          <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
+            <Toggle
+              checked={renderSettings.burnCaptions.enabled}
+              onChange={(v) =>
+                setRenderSettings((s) => ({
+                  ...s,
+                  burnCaptions: { ...s.burnCaptions, enabled: v },
+                }))
+              }
+              label="Burn captions onto final video"
+            />
+            {renderSettings.burnCaptions.enabled && (
+              <Field label="Caption style">
+                <Select
+                  value={renderSettings.burnCaptions.preset}
+                  onChange={(e) =>
+                    setRenderSettings((s) => ({
+                      ...s,
+                      burnCaptions: {
+                        ...s.burnCaptions,
+                        preset: e.target.value as CaptionPreset,
+                      },
+                    }))
+                  }
+                >
+                  <option value="bottom">Bottom (standard)</option>
+                  <option value="center">Center</option>
+                  <option value="karaoke">Karaoke / larger bottom</option>
+                </Select>
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  Uses voiceover timings (SRT). Re-render existing videos after changing.
+                </p>
+              </Field>
+            )}
+          </div>
+
+          <div className="rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
+            <Toggle
+              checked={renderSettings.flipHorizontal.enabled}
+              onChange={(v) =>
+                setRenderSettings((s) => ({
+                  ...s,
+                  flipHorizontal: { enabled: v },
+                }))
+              }
+              label="Flip video horizontally (mirror)"
+            />
+          </div>
+
+          <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
+            <Toggle
+              checked={renderSettings.colorFilter.enabled}
+              onChange={(v) =>
+                setRenderSettings((s) => ({
+                  ...s,
+                  colorFilter: { ...s.colorFilter, enabled: v },
+                }))
+              }
+              label="Apply color filter"
+            />
+            {renderSettings.colorFilter.enabled && (
+              <Field label="Filter preset">
+                <Select
+                  value={renderSettings.colorFilter.preset}
+                  onChange={(e) =>
+                    setRenderSettings((s) => ({
+                      ...s,
+                      colorFilter: {
+                        ...s.colorFilter,
+                        preset: e.target.value as ColorFilterPreset,
+                      },
+                    }))
+                  }
+                >
+                  <option value="vivid">Vivid</option>
+                  <option value="warm">Warm</option>
+                  <option value="cool">Cool</option>
+                  <option value="contrast">Contrast</option>
+                  <option value="none">None</option>
+                </Select>
+              </Field>
+            )}
+          </div>
+        </div>
+      </Card>
+      )}
+
+      {settingsSection === 'publish' && (
+      <Card>
+        <CardHeader
+          title="Publish timing & crosspost"
           description="Defaults when you upload a finished idea or manual video"
         />
         <div className="space-y-4 p-4">
@@ -969,8 +1164,9 @@ export default function AccountSettingsPage() {
           </p>
         </div>
       </Card>
+      )}
 
-      {real && (
+      {settingsSection === 'danger' && real && (
         <Card className="border-red-200">
           <CardHeader
             title="Delete this account"
@@ -1005,12 +1201,14 @@ export default function AccountSettingsPage() {
         </Card>
       )}
 
+      {settingsSection !== 'danger' && (
       <div className="flex justify-end gap-2">
         <Button onClick={() => void load()}>Discard</Button>
         <Button variant="primary" onClick={save} disabled={saving}>
           {saving ? 'Saving…' : 'Save channel profile'}
         </Button>
       </div>
+      )}
     </div>
   );
 }

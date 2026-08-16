@@ -654,6 +654,17 @@ export async function updatePublishTargetSchedule(
   await api.patch(`/publish/target/${encodeURIComponent(publishTargetId)}`, { scheduledAt });
 }
 
+/** Delete from CreatorPilot and optionally from Facebook. */
+export async function removePublishTarget(
+  publishTargetId: string,
+  opts: { deleteFromSystem?: boolean; deleteFromPlatform?: boolean } = {},
+): Promise<{ id: string; deletedFromPlatform: boolean; deletedFromSystem: boolean }> {
+  return api.post(`/publish/target/${encodeURIComponent(publishTargetId)}/remove`, {
+    deleteFromSystem: opts.deleteFromSystem ?? true,
+    deleteFromPlatform: opts.deleteFromPlatform ?? false,
+  });
+}
+
 /** Ask the API to translate an item's title to English (best-effort). */
 export async function translateTitle(
   id: string,
@@ -928,7 +939,7 @@ export async function manualPublish(input: ManualPublishInput): Promise<{ conten
     type: 'MANUAL_UPLOAD',
   });
   await api.upload(
-    `/storage/upload?contentItemId=${encodeURIComponent(content.id)}&kind=FINAL`,
+    `/storage/upload?contentItemId=${encodeURIComponent(content.id)}&kind=FINAL&accountId=${encodeURIComponent(input.accountId)}`,
     input.file,
   );
   const accountIds = [

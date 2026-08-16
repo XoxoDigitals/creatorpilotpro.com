@@ -12,14 +12,16 @@ import {
 } from '@scp/shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { SlotPlannerService } from '../scheduling/slot-planner.service';
+import { ContentService } from '../content/content.service';
 import { canTransition } from '../content/content-state';
 import {
   parseStepMetadata,
   toPublishTargetView,
   type PublishTargetView,
 } from './publish-target.view';
-import type { CreatePublishDto, PatchTargetDto } from './dto/publish.dto';
+import type { CreatePublishDto, PatchTargetDto, RemoveTargetDto } from './dto/publish.dto';
 
 function constraintsFor(platform: Platform): PlatformConstraints {
   switch (platform) {
@@ -55,6 +57,8 @@ export class PublishingService {
     private readonly prisma: PrismaService,
     private readonly planner: SlotPlannerService,
     private readonly queue: QueueProducer,
+    private readonly crypto: CryptoService,
+    private readonly content: ContentService,
   ) {}
 
   /** Fail-fast metadata guard (docs/06 §1). Full media validation runs in the worker. */
@@ -424,5 +428,90 @@ export class PublishingService {
     }
 
     return toPublishTargetView(target);
+  }
+
+  /**
+   * Delete from CreatorPilot and/or from the platform (Facebook Page video).
+   * Soft-deletes the content item when deleteFromSystem is true.
+   */
+  async removeTarget(
+    id: string,
+    dto: RemoveTargetDto,
+  ): Promise<{ id: string; deletedFromPlatform: boolean; deletedFromSystem: boolean }> {
+    const target = await this.prisma.client.publishTarget.findUnique({
+      where: { id },
+      include: {
+        account: {
+          select: {
+            id: true,
+            platform: true,
+            connectionMethod: true,
+            authPayload: true,
+            name: true,
+          },
+        },
+        contentItem: { select: { id: true, deletedAt: true, status: true } },
+      },
+    });
+    if (!target) throw new NotFoundException('Publish target not found.');
+    if (target.status === 'PUBLISHING') {
+      throw new BadRequestException('Cannot delete while a publish is in progress.');
+    }
+
+    let deletedFromPlatform = false;
+    if (dto.deleteFromPlatform && target.platformPostId) {
+      if (target.account.connectionMethod === 'MANUAL') {
+        throw new BadRequestException(
+          'Manual accounts are not deleted on the platform from here — remove the video on the platform yourself.',
+        );
+      }
+      if (target.account.platform === 'FACEBOOK') {
+        if (!target.account.authPayload) {
+          throw new BadRequestException('Account has no Facebook credentials to delete with.');
+        }
+        const auth = JSON.parse(this.crypto.decrypt(target.account.authPayload)) as {
+          pageId?: string;
+          pageAccessToken?: string;
+        };
+        if (!auth.pageId || !auth.pageAccessToken) {
+          throw new BadRequestException('Facebook page token missing — reconnect the Page.');
+        }
+        const adapter = new FacebookAdapter();
+        adapter.primeVerifyAuth(target.platformPostId, {
+          pageId: auth.pageId,
+          pageAccessToken: auth.pageAccessToken,
+        });
+        await adapter.delete(target.platformPostId);
+        deletedFromPlatform = true;
+      } else {
+        throw new BadRequestException(
+          `Platform delete is currently supported for Facebook only (got ${target.account.platform}).`,
+        );
+      }
+      await this.prisma.client.publishTarget.update({
+        where: { id },
+        data: {
+          status: 'DRAFT',
+          platformPostId: null,
+          lastError: {
+            message: 'Deleted from Facebook by user',
+            reason: 'user_deleted_platform',
+            detectedAt: new Date().toISOString(),
+          },
+        },
+      });
+    }
+
+    let deletedFromSystem = false;
+    if (dto.deleteFromSystem) {
+      if (target.contentItem.deletedAt == null) {
+        await this.content.softDelete(target.contentItemId);
+      }
+      deletedFromSystem = true;
+    } else if (deletedFromPlatform) {
+      // Platform-only delete already flipped the target above.
+    }
+
+    return { id, deletedFromPlatform, deletedFromSystem };
   }
 }

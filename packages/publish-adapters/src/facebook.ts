@@ -302,32 +302,91 @@ export class FacebookAdapter implements PublishAdapter {
       );
     }
 
-    const res = await this.fetchImpl(this.graphUrl(`${platformPostId}?fields=status`), {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${auth.pageAccessToken}`, accept: 'application/json' },
-    });
+    const res = await this.fetchImpl(
+      this.graphUrl(`${platformPostId}?fields=status,title,privacy,permalink_url`),
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${auth.pageAccessToken}`, accept: 'application/json' },
+      },
+    );
     const data = (await res.json().catch(() => ({}))) as {
       status?: { video_status?: string; processing_progress?: number } | string;
-      error?: { message?: string };
+      privacy?: { value?: string } | string;
+      error?: { message?: string; code?: number; error_subcode?: number; error_user_msg?: string };
     };
-    if (!res.ok) {
-      throw new Error(
-        `Facebook status GET failed (${res.status}): ${data.error?.message ?? JSON.stringify(data)}`,
-      );
+
+    const errMsg = [data.error?.message, data.error?.error_user_msg].filter(Boolean).join(' ');
+    if (!res.ok || data.error) {
+      if (FacebookAdapter.isMissingVideoError(res.status, data.error?.code, errMsg)) {
+        return {
+          live: false,
+          issues: [
+            {
+              code: 'video-deleted',
+              message: `Video was removed from Facebook${errMsg ? `: ${errMsg}` : '.'}`,
+              severity: 'BLOCK',
+            },
+          ],
+        };
+      }
+      if (FacebookAdapter.looksLikeCopyright(errMsg)) {
+        return {
+          live: false,
+          issues: [
+            {
+              code: 'copyright',
+              message: errMsg || 'Facebook reported a copyright / rights issue.',
+              severity: 'BLOCK',
+            },
+          ],
+        };
+      }
+      return {
+        live: false,
+        issues: [
+          {
+            code: 'video-error',
+            message: errMsg || `Facebook status GET failed (${res.status}).`,
+            severity: 'BLOCK',
+          },
+        ],
+      };
     }
 
     const videoStatus = (
       typeof data.status === 'string' ? data.status : (data.status?.video_status ?? 'unknown')
     ).toLowerCase();
+    const privacy =
+      typeof data.privacy === 'string'
+        ? data.privacy.toLowerCase()
+        : String(data.privacy?.value ?? '').toLowerCase();
 
     const issues: PlatformIssue[] = [];
     let live = false;
+
+    if (FacebookAdapter.looksLikeCopyright(videoStatus)) {
+      issues.push({
+        code: 'copyright',
+        message: `Facebook copyright/rights status: ${videoStatus}`,
+        severity: 'BLOCK',
+      });
+      return { live: false, issues };
+    }
+
     if (videoStatus === 'ready' || videoStatus === 'published' || videoStatus === 'live') {
       live = true;
+      if (privacy === 'secret' || privacy === 'self_only') {
+        issues.push({
+          code: 'privacy-restricted',
+          message: `Facebook video privacy is "${privacy}" (may indicate a rights restriction).`,
+          severity: 'WARNING',
+        });
+      }
     } else if (videoStatus === 'error' || videoStatus === 'expired' || videoStatus === 'failed') {
+      const msg = `Facebook reported video_status "${videoStatus}".`;
       issues.push({
-        code: `video-${videoStatus}`,
-        message: `Facebook reported video_status "${videoStatus}".`,
+        code: FacebookAdapter.looksLikeCopyright(msg) ? 'copyright' : `video-${videoStatus}`,
+        message: msg,
         severity: 'BLOCK',
       });
     } else {
@@ -339,6 +398,55 @@ export class FacebookAdapter implements PublishAdapter {
     }
 
     return { live, issues };
+  }
+
+  /**
+   * Delete a Page video / Reel from Facebook.
+   * Call {@link primeVerifyAuth} first so the page token is available.
+   */
+  async delete(platformPostId: string): Promise<void> {
+    const auth = this.authByVideoId.get(platformPostId);
+    if (!auth) {
+      throw new Error(
+        `FacebookAdapter.delete: no page token cached for video ${platformPostId}. ` +
+          'Call primeVerifyAuth(videoId, { pageId, pageAccessToken }) first.',
+      );
+    }
+    const res = await this.fetchImpl(this.graphUrl(platformPostId), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${auth.pageAccessToken}`, accept: 'application/json' },
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      error?: { message?: string; code?: number };
+    };
+    if (res.ok && (data.success === true || data.success === undefined)) {
+      this.authByVideoId.delete(platformPostId);
+      return;
+    }
+    // Already gone — treat as success for idempotent deletes.
+    if (FacebookAdapter.isMissingVideoError(res.status, data.error?.code, data.error?.message ?? '')) {
+      this.authByVideoId.delete(platformPostId);
+      return;
+    }
+    throw new Error(
+      `Facebook delete failed (${res.status}): ${data.error?.message ?? JSON.stringify(data)}`,
+    );
+  }
+
+  static looksLikeCopyright(text: string): boolean {
+    return /copyright|claim|takedown|rights.?manager|infring|dmca|muted|matched.?third.?party|content.?id/i.test(
+      text,
+    );
+  }
+
+  static isMissingVideoError(httpStatus: number, graphCode: number | undefined, message: string): boolean {
+    if (httpStatus === 404) return true;
+    // Graph: 100 unsupported get / 803 unknown path / 33 object missing
+    if (graphCode === 100 || graphCode === 803 || graphCode === 33) return true;
+    return /does not exist|unsupported get request|nonexisting|has been deleted|was deleted|cannot be found/i.test(
+      message,
+    );
   }
 
   getConstraints(): PlatformConstraints {

@@ -16,6 +16,7 @@ import {
   getPostMetricsView,
   getPublishTargetDetail,
   publishTargetNow,
+  removePublishTarget,
   retryPublishTarget,
   updatePublishTargetSchedule,
   type PostMetrics,
@@ -81,6 +82,8 @@ export function PostDetailModal({
   const [retrying, setRetrying] = useState(false);
   const [scheduleDraft, setScheduleDraft] = useState('');
   const [savingSchedule, setSavingSchedule] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [alsoDeletePlatform, setAlsoDeletePlatform] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -343,7 +346,7 @@ export function PostDetailModal({
                     <Button
                       size="sm"
                       variant="secondary"
-                      disabled={retrying || publishingNow}
+                      disabled={retrying || publishingNow || deleting}
                       onClick={() => {
                         void (async () => {
                           setRetrying(true);
@@ -372,7 +375,7 @@ export function PostDetailModal({
                     <Button
                       size="sm"
                       variant="primary"
-                      disabled={publishingNow || retrying}
+                      disabled={publishingNow || retrying || deleting}
                       onClick={() => {
                         void (async () => {
                           setPublishingNow(true);
@@ -402,6 +405,63 @@ export function PostDetailModal({
                       {publishingNow ? 'Starting…' : 'Publish now'}
                     </Button>
                   )}
+                </div>
+              )}
+
+              {detail.status !== 'PUBLISHING' && (
+                <div className="mt-4 space-y-2 border-t border-zinc-200 pt-3">
+                  {detail.status === 'PUBLISHED' && detail.platformPostId && detail.platform === 'FACEBOOK' && (
+                    <label className="flex items-center gap-2 text-xs text-zinc-600">
+                      <input
+                        type="checkbox"
+                        checked={alsoDeletePlatform}
+                        onChange={(e) => setAlsoDeletePlatform(e.target.checked)}
+                      />
+                      Also delete from Facebook
+                    </label>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={deleting}
+                    onClick={() => {
+                      const fromFb =
+                        alsoDeletePlatform &&
+                        detail.status === 'PUBLISHED' &&
+                        !!detail.platformPostId &&
+                        detail.platform === 'FACEBOOK';
+                      const ok = window.confirm(
+                        fromFb
+                          ? 'Delete this video from CreatorPilot and from Facebook?'
+                          : 'Delete this video from CreatorPilot? This cannot be undone.',
+                      );
+                      if (!ok) return;
+                      void (async () => {
+                        setDeleting(true);
+                        try {
+                          await removePublishTarget(detail.id, {
+                            deleteFromSystem: true,
+                            deleteFromPlatform: fromFb,
+                          });
+                          toast(
+                            fromFb ? 'Deleted from CreatorPilot and Facebook' : 'Deleted from CreatorPilot',
+                            'success',
+                          );
+                          onChanged?.();
+                          onClose();
+                        } catch (err) {
+                          toast(
+                            err instanceof ApiError ? err.message : 'Could not delete video',
+                            'error',
+                          );
+                        } finally {
+                          setDeleting(false);
+                        }
+                      })();
+                    }}
+                  >
+                    {deleting ? 'Deleting…' : 'Delete video'}
+                  </Button>
                 </div>
               )}
             </section>

@@ -11,8 +11,10 @@ import { ZodBody } from '../../common/pipes/zod-validation.pipe';
 import {
   createPublishSchema,
   patchTargetSchema,
+  removeTargetSchema,
   type CreatePublishDto,
   type PatchTargetDto,
+  type RemoveTargetDto,
 } from './dto/publish.dto';
 
 /**
@@ -54,6 +56,17 @@ export class PublishingController {
     @Body(new ZodBody(patchTargetSchema)) body: PatchTargetDto,
   ): Promise<PublishTargetView> {
     return this.publishing.patchTarget(id, body);
+  }
+
+  /** Delete from CreatorPilot and/or remove the live Facebook video. */
+  @Post('target/:id/remove')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('publish.target.remove', 'PublishTarget')
+  removeTarget(
+    @Param('id') id: string,
+    @Body(new ZodBody(removeTargetSchema)) body: RemoveTargetDto,
+  ): Promise<{ id: string; deletedFromPlatform: boolean; deletedFromSystem: boolean }> {
+    return this.publishing.removeTarget(id, body);
   }
 
   // ── Manual mode (Phase 10) ─────────────────────────────────────────────────

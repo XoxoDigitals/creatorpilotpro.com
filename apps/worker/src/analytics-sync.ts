@@ -16,6 +16,70 @@ type DayBucket = {
   engagements: number;
 };
 
+/** Classify Meta GET errors that mean the video is gone (deleted / unavailable). */
+function isFacebookVideoMissing(
+  httpStatus: number,
+  body: { error?: { message?: string; code?: number; error_user_msg?: string } },
+): boolean {
+  if (httpStatus === 404) return true;
+  const code = body.error?.code;
+  if (code === 100 || code === 803 || code === 33) return true;
+  const msg = [body.error?.message, body.error?.error_user_msg].filter(Boolean).join(' ');
+  return /does not exist|unsupported get request|nonexisting|has been deleted|was deleted|cannot be found/i.test(
+    msg,
+  );
+}
+
+function looksLikeFacebookCopyright(text: string): boolean {
+  return /copyright|claim|takedown|rights.?manager|infring|dmca|muted|matched.?third.?party|content.?id/i.test(
+    text,
+  );
+}
+
+/** Mark a published target as removed/blocked after Meta reports it gone or claimed. */
+async function markPublishTargetPlatformIssue(
+  prisma: PrismaClient,
+  target: {
+    id: string;
+    accountId: string;
+    contentItemId: string;
+    platformPostId: string | null;
+  },
+  opts: {
+    reason: 'removed_from_platform' | 'copyright' | 'platform_reject';
+    message: string;
+    kind: 'COPYRIGHT' | 'PLATFORM_REJECT';
+  },
+): Promise<void> {
+  await prisma.publishTarget.update({
+    where: { id: target.id },
+    data: {
+      status: 'DRAFT',
+      lastError: {
+        message: opts.message,
+        platformPostId: target.platformPostId,
+        reason: opts.reason,
+        detectedAt: new Date().toISOString(),
+        source: 'analytics-sync',
+      },
+    },
+  });
+  await raiseIncident(prisma, {
+    kind: opts.kind,
+    severity: 'HIGH',
+    accountId: target.accountId,
+    contentItemId: target.contentItemId,
+    publishTargetId: target.id,
+    title:
+      opts.reason === 'removed_from_platform'
+        ? 'Video removed from Facebook'
+        : opts.reason === 'copyright'
+          ? 'Copyright issue detected on Facebook'
+          : 'Facebook platform issue detected',
+    detail: { platformPostId: target.platformPostId, message: opts.message },
+  });
+}
+
 /** Fetch Facebook Page fan_count; null when auth/API fails (caller must not overwrite). */
 async function fetchFacebookFanCount(
   pageId: string,
@@ -241,6 +305,79 @@ async function upsertPostSnapshot(
   });
 }
 
+async function reconcileFacebookPublishedTargets(
+  prisma: PrismaClient,
+  accountId: string,
+  pageAccessToken: string,
+): Promise<void> {
+  const published = await prisma.publishTarget.findMany({
+    where: {
+      accountId,
+      status: 'PUBLISHED',
+      platformPostId: { not: null },
+      contentItem: { deletedAt: null },
+    },
+    select: { id: true, accountId: true, contentItemId: true, platformPostId: true },
+    take: 80,
+    orderBy: { publishedAt: 'desc' },
+  });
+
+  for (const target of published) {
+    const postId = target.platformPostId;
+    if (!postId) continue;
+    try {
+      const url =
+        `${GRAPH}/${encodeURIComponent(postId)}?` +
+        new URLSearchParams({
+          fields: 'id,status',
+          access_token: pageAccessToken,
+        }).toString();
+      const res = await fetch(url);
+      const data = (await res.json().catch(() => ({}))) as {
+        status?: { video_status?: string } | string;
+        error?: { message?: string; code?: number; error_user_msg?: string };
+      };
+      if (isFacebookVideoMissing(res.status, data)) {
+        await markPublishTargetPlatformIssue(prisma, target, {
+          reason: 'removed_from_platform',
+          message: `Video ${postId} is no longer on Facebook.`,
+          kind: 'PLATFORM_REJECT',
+        });
+        continue;
+      }
+      if (!res.ok || data.error) {
+        const msg = [data.error?.message, data.error?.error_user_msg].filter(Boolean).join(' ');
+        if (looksLikeFacebookCopyright(msg)) {
+          await markPublishTargetPlatformIssue(prisma, target, {
+            reason: 'copyright',
+            message: msg || 'Facebook copyright / rights issue.',
+            kind: 'COPYRIGHT',
+          });
+        }
+        continue;
+      }
+      const videoStatus = (
+        typeof data.status === 'string' ? data.status : (data.status?.video_status ?? '')
+      ).toLowerCase();
+      if (looksLikeFacebookCopyright(videoStatus)) {
+        await markPublishTargetPlatformIssue(prisma, target, {
+          reason: 'copyright',
+          message: `Facebook copyright/rights status: ${videoStatus}`,
+          kind: 'COPYRIGHT',
+        });
+      } else if (videoStatus === 'error' || videoStatus === 'expired' || videoStatus === 'failed') {
+        await markPublishTargetPlatformIssue(prisma, target, {
+          reason: 'platform_reject',
+          message: `Facebook video_status "${videoStatus}".`,
+          kind: 'PLATFORM_REJECT',
+        });
+      }
+    } catch (err) {
+      console.warn(`[analytics:account-sync] reconcile ${postId} failed:`, err);
+    }
+  }
+}
+
 async function syncFacebookAccount(
   prisma: PrismaClient,
   accountId: string,
@@ -306,6 +443,9 @@ async function syncFacebookAccount(
       console.warn(`[analytics:account-sync] import video ${video.id} failed:`, err);
     }
   }
+
+  // Probe our published FB posts — detect deletes / copyright takedowns Meta no longer lists.
+  await reconcileFacebookPublishedTargets(prisma, accountId, pageAccessToken);
 
   // If Insights returned nothing useful, seed account daily buckets from video
   // publish dates so KPI cards + the views chart match the per-video table.
@@ -473,19 +613,76 @@ export async function runPostSync(publishTargetId: string, _boss: PgBoss): Promi
       const url =
         `${GRAPH}/${encodeURIComponent(target.platformPostId)}?` +
         new URLSearchParams({
-          fields: 'views,likes.summary(true),comments.summary(true)',
+          fields: 'views,likes.summary(true),comments.summary(true),status',
           access_token: token,
         }).toString();
       const res = await fetch(url);
-      if (!res.ok) {
-        console.warn(`[analytics:post-sync] Meta video HTTP ${res.status} for ${target.platformPostId}`);
-        return;
-      }
-      const data = (await res.json()) as {
+      const data = (await res.json().catch(() => ({}))) as {
         views?: number;
         likes?: { summary?: { total_count?: number } };
         comments?: { summary?: { total_count?: number } };
+        status?: { video_status?: string } | string;
+        error?: { message?: string; code?: number; error_user_msg?: string };
       };
+      if (isFacebookVideoMissing(res.status, data)) {
+        await markPublishTargetPlatformIssue(
+          prisma,
+          {
+            id: target.id,
+            accountId: target.accountId,
+            contentItemId: target.contentItemId,
+            platformPostId: target.platformPostId,
+          },
+          {
+            reason: 'removed_from_platform',
+            message: `Video ${target.platformPostId} is no longer on Facebook.`,
+            kind: 'PLATFORM_REJECT',
+          },
+        );
+        console.warn(`[analytics:post-sync] marked removed FB target ${publishTargetId}`);
+        return;
+      }
+      if (!res.ok || data.error) {
+        const msg = [data.error?.message, data.error?.error_user_msg].filter(Boolean).join(' ');
+        console.warn(`[analytics:post-sync] Meta video HTTP ${res.status} for ${target.platformPostId}: ${msg}`);
+        if (looksLikeFacebookCopyright(msg)) {
+          await markPublishTargetPlatformIssue(
+            prisma,
+            {
+              id: target.id,
+              accountId: target.accountId,
+              contentItemId: target.contentItemId,
+              platformPostId: target.platformPostId,
+            },
+            {
+              reason: 'copyright',
+              message: msg || 'Facebook copyright / rights issue.',
+              kind: 'COPYRIGHT',
+            },
+          );
+        }
+        return;
+      }
+      const videoStatus = (
+        typeof data.status === 'string' ? data.status : (data.status?.video_status ?? '')
+      ).toLowerCase();
+      if (looksLikeFacebookCopyright(videoStatus)) {
+        await markPublishTargetPlatformIssue(
+          prisma,
+          {
+            id: target.id,
+            accountId: target.accountId,
+            contentItemId: target.contentItemId,
+            platformPostId: target.platformPostId,
+          },
+          {
+            reason: 'copyright',
+            message: `Facebook copyright/rights status: ${videoStatus}`,
+            kind: 'COPYRIGHT',
+          },
+        );
+        return;
+      }
       await upsertPostSnapshot(prisma, publishTargetId, target.accountId, today, {
         views: typeof data.views === 'number' ? data.views : 0,
         likes: data.likes?.summary?.total_count ?? 0,

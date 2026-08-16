@@ -757,4 +757,47 @@ export class Ffmpeg {
       throw new Error(ffmpegFailureMessage('ffmpeg audio concat failed', res.code, res.stderr));
     }
   }
+
+  /**
+   * Re-encode video with optional flip / color / burned captions. Audio is
+   * stream-copied from the already-mixed input. No-op when `vf` is empty —
+   * callers should skip this when effects are disabled.
+   */
+  async applyFinalVideoEffects(
+    srcPath: string,
+    destPath: string,
+    vf: string,
+  ): Promise<void> {
+    await this.ensureAvailable();
+    if (!vf.trim()) {
+      throw new Error('applyFinalVideoEffects called with empty filter chain');
+    }
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-vf',
+      vf,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-c:a',
+      'copy',
+      '-movflags',
+      '+faststart',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg final video effects failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
 }

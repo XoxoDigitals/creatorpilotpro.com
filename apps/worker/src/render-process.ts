@@ -15,10 +15,17 @@
  * State: TTS_DONE → RENDERED (success) or TTS_DONE → FAILED (error).
  * Then auto-metadata: RENDERED → METADATA_READY via the AI queue.
  */
-import { join } from 'node:path';
-import { stat, mkdir, unlink } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { stat, mkdir, unlink, access, rename } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
-import { QUEUE, parseVoiceSettings } from '@scp/shared';
+import {
+  QUEUE,
+  parseVoiceSettings,
+  renderSettingsFromVoiceSettings,
+  buildFinalVideoFilterChain,
+  finalVideoEffectsEnabled,
+  type RenderSettings,
+} from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
 import {
   Ffmpeg,
@@ -72,6 +79,58 @@ async function resolveBackgroundBedPercent(contentItemId: string): Promise<numbe
   return (
     parseVoiceSettings(profile?.voiceSettings, profile?.language).backgroundBedPercent ?? 100
   );
+}
+
+async function resolveAccountRenderSettings(contentItemId: string): Promise<RenderSettings> {
+  const prisma = getPrisma();
+  const item = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    select: {
+      idea: { select: { accountId: true } },
+      sourceVideo: {
+        select: { watchedSource: { select: { targetAccountId: true } } },
+      },
+      publishTargets: {
+        where: { status: { not: 'DRAFT' } },
+        select: { accountId: true },
+        take: 1,
+        orderBy: { createdAt: 'asc' },
+      },
+    },
+  });
+  const accountId =
+    item?.idea?.accountId ??
+    item?.sourceVideo?.watchedSource?.targetAccountId ??
+    item?.publishTargets[0]?.accountId ??
+    null;
+  if (!accountId) return renderSettingsFromVoiceSettings(null);
+  const profile = await prisma.channelProfile.findUnique({
+    where: { accountId },
+    select: { voiceSettings: true },
+  });
+  return renderSettingsFromVoiceSettings(profile?.voiceSettings);
+}
+
+async function resolveSubtitlePath(
+  assets: Array<{ kind: string; localPath: string | null }>,
+  voPath: string,
+): Promise<string | null> {
+  const sub = [...assets].reverse().find((a) => a.kind === 'SUBTITLE' && a.localPath);
+  if (sub?.localPath) {
+    try {
+      await access(sub.localPath);
+      return sub.localPath;
+    } catch {
+      /* missing */
+    }
+  }
+  const besideVo = join(dirname(voPath), 'voiceover.srt');
+  try {
+    await access(besideVo);
+    return besideVo;
+  } catch {
+    return null;
+  }
 }
 
 // ── Demucs check ────────────────────────────────────────────────────────────
@@ -404,18 +463,44 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     }
 
     // Step 3: Loudness normalization (EBU R128)
-    const finalPath = join(renderDir, 'final.mp4');
+    const loudnormPath = join(renderDir, 'loudnorm.mp4');
     await ffmpeg.exec([
       '-i', mergedPath,
       '-c:v', 'copy',
       '-af', 'loudnorm=I=-16:LRA=11:TP=-1.5',
       '-c:a', 'aac',
       '-movflags', '+faststart',
-      '-y', finalPath,
+      '-y', loudnormPath,
     ]);
-
-    // Clean up intermediate
     await unlink(mergedPath).catch(() => {});
+
+    // Step 3b: Optional flip / color / burned captions (single re-encode when enabled).
+    const renderSettings = await resolveAccountRenderSettings(contentItemId);
+    const subtitlePath = await resolveSubtitlePath(item.assets, voPath);
+    const vf = buildFinalVideoFilterChain({
+      settings: renderSettings,
+      subtitlePath,
+    });
+    const finalPath = join(renderDir, 'final.mp4');
+    if (finalVideoEffectsEnabled(renderSettings, subtitlePath) && vf) {
+      try {
+        await ffmpeg.applyFinalVideoEffects(loudnormPath, finalPath, vf);
+        console.log(
+          `[worker:render] applied final video effects for ${contentItemId}` +
+            (renderSettings.flipHorizontal.enabled ? ' [flip]' : '') +
+            (renderSettings.colorFilter.enabled ? ` [color:${renderSettings.colorFilter.preset}]` : '') +
+            (renderSettings.burnCaptions.enabled && subtitlePath ? ' [captions]' : ''),
+        );
+      } catch (err) {
+        console.warn(`[worker:render] final effects failed — using loudnorm output:`, err);
+        await unlink(finalPath).catch(() => {});
+        await rename(loudnormPath, finalPath);
+      } finally {
+        await unlink(loudnormPath).catch(() => {});
+      }
+    } else {
+      await rename(loudnormPath, finalPath);
+    }
 
     // Step 4: Create/update FINAL asset
     const finalStats = await stat(finalPath);

@@ -33,3 +33,16 @@ export const patchTargetSchema = z
     { message: 'Provide scheduledAt, cancel, publishNow, or retry.' },
   );
 export type PatchTargetDto = z.infer<typeof patchTargetSchema>;
+
+/** Remove a publish target from our system and/or from the platform. */
+export const removeTargetSchema = z
+  .object({
+    /** Soft-delete the content item in CreatorPilot (default true). */
+    deleteFromSystem: z.boolean().default(true),
+    /** Also DELETE the video on Facebook/YouTube/TikTok when still published. */
+    deleteFromPlatform: z.boolean().default(false),
+  })
+  .refine((v) => v.deleteFromSystem || v.deleteFromPlatform, {
+    message: 'Choose deleteFromSystem and/or deleteFromPlatform.',
+  });
+export type RemoveTargetDto = z.infer<typeof removeTargetSchema>;
