@@ -36,7 +36,7 @@ function constraintsFor(platform: Platform): PlatformConstraints {
 
 /** Include shape needed by `toPublishTargetView` (copy + media flags + views). */
 const TARGET_INCLUDE = {
-  account: { select: { platform: true } },
+  account: { select: { platform: true, name: true } },
   contentItem: {
     select: {
       title: true,

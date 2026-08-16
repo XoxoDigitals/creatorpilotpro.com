@@ -24,8 +24,45 @@ import {
 } from '@/lib/api-data';
 import { MediaEmbed } from '@/components/media-embed';
 import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
+import { analyticsConfigFor, type PostDrawerKpiId } from '@/lib/analytics-metrics';
 import type { Platform } from '@/lib/domain-types';
 import { ApiError } from '@/lib/api';
+
+function postModalMetricCard(
+  id: PostDrawerKpiId,
+  latest: NonNullable<PostMetrics['snapshots'][number]>,
+  uniqueLabel: string,
+): { label: string; value: string } | null {
+  switch (id) {
+    case 'views':
+      return { label: 'Views', value: compactNumber(latest.views) };
+    case 'uniqueViewers':
+      return { label: uniqueLabel, value: compactNumber(latest.uniqueViewers) };
+    case 'impressions':
+      return { label: 'Impressions', value: compactNumber(latest.impressions) };
+    case 'ctr':
+      return { label: 'CTR', value: `${latest.ctr.toFixed(1)}%` };
+    case 'watchTime':
+      return { label: 'Watch time', value: `${compactNumber(latest.watchTimeMin)} min` };
+    case 'avgViewDuration':
+      return { label: 'Avg view duration', value: `${latest.averageViewDurationSec}s` };
+    case 'retention':
+      return { label: 'Retention', value: `${latest.retentionRate.toFixed(0)}%` };
+    case 'likes':
+      return { label: 'Likes', value: compactNumber(latest.likes) };
+    case 'comments':
+      return { label: 'Comments', value: compactNumber(latest.comments) };
+    case 'shares':
+      return { label: 'Shares', value: compactNumber(latest.shares) };
+    case 'engagement':
+      return {
+        label: 'Engagement',
+        value: compactNumber(latest.likes + latest.comments + latest.shares + latest.saves),
+      };
+    default:
+      return null;
+  }
+}
 
 const STATUS_TONE: Record<
   PublishTargetDetail['status'],
@@ -179,7 +216,7 @@ export function PostDetailModal({
       title={title}
       description={
         detail
-          ? `${detail.platform} · ${STATUS_LABEL[detail.status]}`
+          ? `${detail.accountName?.trim() || detail.platform} · ${STATUS_LABEL[detail.status]}`
           : loading
             ? 'Loading…'
             : undefined
@@ -265,6 +302,9 @@ export function PostDetailModal({
             <section className="rounded-lg border border-zinc-200 bg-zinc-50/60 p-4">
               <div className="flex items-center gap-2">
                 <PlatformIcon platform={detail.platform as Platform} size={16} />
+                <span className="min-w-0 truncate text-sm font-medium text-zinc-900">
+                  {detail.accountName?.trim() || 'Connected account'}
+                </span>
                 <Badge tone={STATUS_TONE[detail.status]}>{STATUS_LABEL[detail.status]}</Badge>
               </div>
               <dl className="mt-3 space-y-2 text-sm">
@@ -471,14 +511,19 @@ export function PostDetailModal({
               {metricsLoading ? (
                 <Skeleton className="h-28 w-full rounded-lg" />
               ) : latest ? (
-                <div className="grid grid-cols-2 gap-2">
-                  <StatCard label="Views" value={compactNumber(latest.views)} />
-                  <StatCard label="Likes" value={compactNumber(latest.likes)} />
-                  <StatCard label="Comments" value={compactNumber(latest.comments)} />
-                  <StatCard label="Shares" value={compactNumber(latest.shares)} />
-                  <StatCard label="Impressions" value={compactNumber(latest.impressions)} />
-                  <StatCard label="Retention" value={`${latest.retentionRate.toFixed(0)}%`} />
-                </div>
+                (() => {
+                  const cfg = analyticsConfigFor(detail.platform);
+                  const cards = cfg.postDrawerKpis
+                    .map((id) => postModalMetricCard(id, latest, cfg.uniqueViewersLabel))
+                    .filter((c): c is { label: string; value: string } => c != null);
+                  return (
+                    <div className="grid grid-cols-2 gap-2">
+                      {cards.map((card) => (
+                        <StatCard key={card.label} label={card.label} value={card.value} />
+                      ))}
+                    </div>
+                  );
+                })()
               ) : (
                 <EmptyState
                   title="No analytics yet"

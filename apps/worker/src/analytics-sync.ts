@@ -114,7 +114,9 @@ async function fetchFacebookPageInsights(
   const until = Math.floor(Date.now() / 1000);
 
   // Prefer a small set of widely available metrics; fall back if the batch fails.
+  // page_impressions_unique = Reach (unique people who saw any content).
   const metricSets = [
+    ['page_impressions', 'page_impressions_unique', 'page_video_views', 'page_post_engagements'],
     ['page_impressions', 'page_video_views', 'page_post_engagements'],
     ['page_impressions', 'page_video_views'],
     ['page_impressions'],
@@ -163,6 +165,7 @@ async function fetchFacebookPageInsights(
           const n = typeof raw === 'number' ? raw : 0;
           const bucket = ensure(day);
           if (series.name === 'page_impressions') bucket.impressions = n;
+          else if (series.name === 'page_impressions_unique') bucket.uniqueViewers = n;
           else if (series.name === 'page_video_views') bucket.views = n;
           else if (series.name === 'page_post_engagements') bucket.engagements = n;
         }
@@ -222,9 +225,14 @@ async function listFacebookPageVideos(
         paging?: { next?: string };
       };
       for (const v of data.data ?? []) {
+        const rawTitle = (v.title ?? '').trim();
+        const rawDesc = (v.description ?? '').trim();
+        const fromDesc = rawDesc
+          ? rawDesc.split(/\n+/)[0]!.replace(/#\S+/g, '').trim().slice(0, 120)
+          : '';
         rows.push({
           id: v.id,
-          title: (v.title || v.description || `Facebook video ${v.id}`).slice(0, 200),
+          title: (rawTitle || fromDesc || `Facebook video ${v.id}`).slice(0, 200),
           createdTime: v.created_time ?? null,
           views: typeof v.views === 'number' ? v.views : 0,
           likes: v.likes?.summary?.total_count ?? 0,
@@ -696,7 +704,12 @@ async function ensureImportedYouTubeVideo(
   return content.publishTargets[0]!.id;
 }
 
-type YtDayBucket = DayBucket & { watchTimeMin: number; revenue: number };
+type YtDayBucket = DayBucket & {
+  watchTimeMin: number;
+  revenue: number;
+  /** averageViewPercentage from Analytics API (0–100). */
+  retentionRate: number;
+};
 
 /** Daily channel reports via YouTube Analytics API (requires yt-analytics scopes). */
 async function fetchYouTubeAnalyticsDays(
@@ -709,7 +722,11 @@ async function fetchYouTubeAnalyticsDays(
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
   let lastError: string | null = null;
 
+  // Thumbnail impressions/CTR require the Reporting API — not reliable on Analytics.
+  // averageViewPercentage = avg % of video watched (maps to retentionRate).
   const metricSets = [
+    'views,estimatedMinutesWatched,likes,comments,shares,averageViewPercentage,estimatedRevenue',
+    'views,estimatedMinutesWatched,likes,comments,shares,averageViewPercentage',
     'views,estimatedMinutesWatched,likes,comments,estimatedRevenue',
     'views,estimatedMinutesWatched,likes,comments',
     'views,estimatedMinutesWatched',
@@ -752,6 +769,8 @@ async function fetchYouTubeAnalyticsDays(
       const watchIdx = cols.indexOf('estimatedMinutesWatched');
       const likesIdx = cols.indexOf('likes');
       const commentsIdx = cols.indexOf('comments');
+      const sharesIdx = cols.indexOf('shares');
+      const retentionIdx = cols.indexOf('averageViewPercentage');
       const revenueIdx = cols.indexOf('estimatedRevenue');
       if (dayIdx < 0 || viewsIdx < 0) continue;
 
@@ -762,14 +781,18 @@ async function fetchYouTubeAnalyticsDays(
         const watchTimeMin = watchIdx >= 0 ? Math.round(Number(row[watchIdx] ?? 0) || 0) : 0;
         const likes = likesIdx >= 0 ? Number(row[likesIdx] ?? 0) || 0 : 0;
         const comments = commentsIdx >= 0 ? Number(row[commentsIdx] ?? 0) || 0 : 0;
+        const shares = sharesIdx >= 0 ? Number(row[sharesIdx] ?? 0) || 0 : 0;
+        const retentionRate =
+          retentionIdx >= 0 ? Number(row[retentionIdx] ?? 0) || 0 : 0;
         const revenue = revenueIdx >= 0 ? Number(row[revenueIdx] ?? 0) || 0 : 0;
         out.set(day, {
           views,
           uniqueViewers: 0,
           impressions: 0,
-          engagements: likes + comments,
+          engagements: likes + comments + shares,
           watchTimeMin,
           revenue,
+          retentionRate,
         });
       }
       if (out.size > 0) {
@@ -950,6 +973,7 @@ async function syncYouTubeAccount(
         engagements: bucket.engagements,
         watchTimeMin: bucket.watchTimeMin,
         ctr: 0,
+        retentionRate: bucket.retentionRate,
         revenue: bucket.revenue,
         rpm: bucket.views > 0 ? (bucket.revenue / bucket.views) * 1000 : 0,
         syncedAt: new Date(),
@@ -958,6 +982,7 @@ async function syncYouTubeAccount(
         views: bucket.views,
         engagements: bucket.engagements,
         watchTimeMin: bucket.watchTimeMin,
+        retentionRate: bucket.retentionRate,
         revenue: bucket.revenue,
         rpm: bucket.views > 0 ? (bucket.revenue / bucket.views) * 1000 : 0,
         ...(isToday && followers !== null ? { followers } : {}),

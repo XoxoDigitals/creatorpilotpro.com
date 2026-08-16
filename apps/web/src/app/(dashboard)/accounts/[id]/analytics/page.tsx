@@ -14,6 +14,13 @@ import { BreakdownBars } from '@/components/analytics/breakdown-bars';
 import { cn } from '@/lib/cn';
 import { compactNumber, relativeTime, absoluteTime } from '@/lib/format';
 import {
+  analyticsConfigFor,
+  POST_COLUMN_LABEL,
+  type AccountKpiId,
+  type PostColumnId,
+  type PostDrawerKpiId,
+} from '@/lib/analytics-metrics';
+import {
   getAccountView,
   getAccountMetrics,
   getAccountPostMetrics,
@@ -54,6 +61,122 @@ function presetDates(
   return { from: from || fmt(f), to: to || fmt(now) };
 }
 
+function accountKpiCard(
+  id: AccountKpiId,
+  totals: AccountMetrics['totals'],
+  latestFollowers: number,
+  opts: { uniqueLabel: string; monetized: boolean },
+): { label: string; value: string; hint?: string; delta?: string } {
+  switch (id) {
+    case 'views':
+      return { label: 'Views', value: compactNumber(totals.views), hint: 'range total' };
+    case 'uniqueViewers':
+      return {
+        label: opts.uniqueLabel,
+        value: compactNumber(totals.uniqueViewers),
+        hint: opts.uniqueLabel === 'Reach' ? 'unique impressions' : 'deduped',
+      };
+    case 'impressions':
+      return { label: 'Impressions', value: compactNumber(totals.impressions), hint: 'range total' };
+    case 'watchTime':
+      return {
+        label: 'Watch time',
+        value: `${compactNumber(totals.watchTimeMin)} min`,
+        hint: 'range total',
+      };
+    case 'followers':
+      return {
+        label: 'Followers',
+        value: compactNumber(latestFollowers),
+        delta:
+          totals.followersDelta !== 0
+            ? `${totals.followersDelta > 0 ? '+' : ''}${totals.followersDelta}`
+            : undefined,
+      };
+    case 'engagements':
+      return {
+        label: 'Engagements',
+        value: compactNumber(totals.engagements),
+        hint: 'likes+comments+shares',
+      };
+    case 'avgCtr':
+      return {
+        label: 'Avg CTR',
+        value: `${totals.avgCtr.toFixed(2)}%`,
+        hint: 'impressions→click',
+      };
+    case 'retention':
+      return {
+        label: 'Retention',
+        value: `${totals.avgRetentionRate.toFixed(1)}%`,
+        hint: 'avg % watched',
+      };
+    case 'revenue': {
+      const rev = parseFloat(totals.revenue);
+      return opts.monetized
+        ? { label: 'Est. revenue', value: rev > 0 ? `$${rev.toFixed(2)}` : '—', hint: 'range total' }
+        : { label: 'Est. revenue', value: '—', hint: 'not monetized' };
+    }
+  }
+}
+
+function postColumnValue(col: PostColumnId, p: PostTableRow): string {
+  switch (col) {
+    case 'views':
+      return compactNumber(p.views);
+    case 'uniqueViewers':
+      return compactNumber(p.uniqueViewers);
+    case 'impressions':
+      return compactNumber(p.impressions);
+    case 'ctr':
+      return `${p.ctr.toFixed(1)}%`;
+    case 'watchTime':
+      return `${compactNumber(p.watchTimeMin)}m`;
+    case 'retention':
+      return `${p.retentionRate.toFixed(0)}%`;
+    case 'likes':
+      return compactNumber(p.likes);
+    case 'comments':
+      return compactNumber(p.comments);
+    case 'shares':
+      return compactNumber(p.shares);
+  }
+}
+
+function drawerKpi(
+  id: PostDrawerKpiId,
+  s: PostMetrics['snapshots'][number],
+  uniqueLabel: string,
+): { label: string; value: string } {
+  switch (id) {
+    case 'views':
+      return { label: 'Views', value: compactNumber(s.views) };
+    case 'uniqueViewers':
+      return { label: uniqueLabel, value: compactNumber(s.uniqueViewers) };
+    case 'impressions':
+      return { label: 'Impressions', value: compactNumber(s.impressions) };
+    case 'ctr':
+      return { label: 'CTR', value: `${s.ctr.toFixed(1)}%` };
+    case 'watchTime':
+      return { label: 'Watch time', value: `${compactNumber(s.watchTimeMin)} min` };
+    case 'avgViewDuration':
+      return { label: 'Avg view duration', value: `${s.averageViewDurationSec}s` };
+    case 'retention':
+      return { label: 'Retention', value: `${s.retentionRate.toFixed(0)}%` };
+    case 'likes':
+      return { label: 'Likes', value: compactNumber(s.likes) };
+    case 'comments':
+      return { label: 'Comments', value: compactNumber(s.comments) };
+    case 'shares':
+      return { label: 'Shares', value: compactNumber(s.shares) };
+    case 'engagement':
+      return {
+        label: 'Engagement',
+        value: compactNumber(s.likes + s.comments + s.shares + s.saves),
+      };
+  }
+}
+
 export default function AccountAnalyticsPage() {
   const { id } = useParams<{ id: string }>();
   const [account, setAccount] = useState<Account | null>(null);
@@ -67,6 +190,10 @@ export default function AccountAnalyticsPage() {
   const [syncing, setSyncing] = useState(false);
 
   const range = useMemo(() => presetDates(preset, from, to), [preset, from, to]);
+  const cfg = useMemo(
+    () => analyticsConfigFor(account?.platform),
+    [account?.platform],
+  );
 
   const loadAccount = useCallback(async () => {
     try {
@@ -116,7 +243,12 @@ export default function AccountAnalyticsPage() {
     followersDelta: 0, engagements: 0, impressions: 0, avgCtr: 0, avgRetentionRate: 0,
   };
   const latest = metrics?.latest;
-  const rev = parseFloat(totals.revenue);
+  const kpiCards = cfg.accountKpis.map((kpiId) =>
+    accountKpiCard(kpiId, totals, latest?.followers ?? account.followers, {
+      uniqueLabel: cfg.uniqueViewersLabel,
+      monetized: account.monetized,
+    }),
+  );
 
   return (
     <div className="space-y-6">
@@ -148,33 +280,28 @@ export default function AccountAnalyticsPage() {
         </Button>
       </div>
 
-      {/* KPI cards — row 1 */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <StatCard label="Views" value={compactNumber(totals.views)} hint="range total" />
-        <StatCard label="Unique viewers" value={compactNumber(totals.uniqueViewers)} hint="deduped" />
-        <StatCard label="Impressions" value={compactNumber(totals.impressions)} hint="range total" />
-        <StatCard label="Watch time" value={`${compactNumber(totals.watchTimeMin)} min`} hint="range total" />
-        <StatCard label="Followers" value={compactNumber(latest?.followers ?? account.followers)}
-          delta={totals.followersDelta !== 0 ? `${totals.followersDelta > 0 ? '+' : ''}${totals.followersDelta}` : undefined}
-        />
-      </div>
-
-      {/* KPI cards — row 2 */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Engagements" value={compactNumber(totals.engagements)} hint="likes+comments+shares" />
-        <StatCard label="Avg CTR" value={`${totals.avgCtr.toFixed(2)}%`} hint="impressions→click" />
-        <StatCard label="Retention" value={`${totals.avgRetentionRate.toFixed(1)}%`} hint="avg % watched" />
-        {account.monetized ? (
-          <StatCard label="Est. revenue" value={rev > 0 ? `$${rev.toFixed(2)}` : '—'} hint="range total" />
-        ) : (
-          <StatCard label="Est. revenue" value="—" hint="not monetized" />
+      {/* KPI cards — platform-specific set */}
+      <div
+        className={cn(
+          'grid grid-cols-2 gap-3',
+          kpiCards.length >= 5 ? 'lg:grid-cols-5' : kpiCards.length === 4 ? 'lg:grid-cols-4' : 'lg:grid-cols-3',
         )}
+      >
+        {kpiCards.map((card) => (
+          <StatCard
+            key={card.label}
+            label={card.label}
+            value={card.value}
+            hint={card.hint}
+            delta={card.delta}
+          />
+        ))}
       </div>
 
-      {/* Trend + audience breakdowns */}
+      {/* Trend (+ optional demography) */}
       {metrics && metrics.snapshots.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Card className="p-4 lg:col-span-2">
+        <div className={cn('grid gap-4', cfg.showDemography ? 'lg:grid-cols-3' : '')}>
+          <Card className={cn('p-4', cfg.showDemography && 'lg:col-span-2')}>
             <p className="mb-2 text-xs font-medium text-zinc-600">Views per day</p>
             <div className="flex h-24 items-end gap-1 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
               {metrics.snapshots.map((s) => {
@@ -190,17 +317,18 @@ export default function AccountAnalyticsPage() {
             </div>
           </Card>
 
-          <Card className="p-4 space-y-4">
-            <BreakdownBars
-              title="Traffic countries"
-              rows={(latest?.trafficCountries ?? []).map((c) => ({ label: c.country, pct: c.pct, extra: c.views }))}
-            />
-          </Card>
+          {cfg.showDemography && (
+            <Card className="p-4 space-y-4">
+              <BreakdownBars
+                title="Traffic countries"
+                rows={(latest?.trafficCountries ?? []).map((c) => ({ label: c.country, pct: c.pct, extra: c.views }))}
+              />
+            </Card>
+          )}
         </div>
       )}
 
-      {/* More breakdowns */}
-      {latest && (
+      {cfg.showDemography && latest && (
         <div className="grid gap-4 lg:grid-cols-3">
           <Card className="p-4">
             <BreakdownBars
@@ -252,15 +380,13 @@ export default function AccountAnalyticsPage() {
               <TR>
                 <TH>Video</TH>
                 <TH>Published</TH>
-                <TH numeric>Views</TH>
-                <TH numeric>Unique</TH>
-                <TH numeric>Impressions</TH>
-                <TH numeric>CTR</TH>
-                <TH numeric>Watch</TH>
-                <TH numeric>Retention</TH>
-                <TH numeric>Likes</TH>
-                <TH numeric>Comments</TH>
-                <TH numeric>Shares</TH>
+                {cfg.postColumns.map((col) => (
+                  <TH key={col} numeric>
+                    {col === 'uniqueViewers' && cfg.uniqueViewersLabel !== 'Unique viewers'
+                      ? cfg.uniqueViewersLabel
+                      : POST_COLUMN_LABEL[col]}
+                  </TH>
+                ))}
               </TR>
             </THead>
             <TBody>
@@ -274,15 +400,11 @@ export default function AccountAnalyticsPage() {
                   <TD title={p.publishedAt ? absoluteTime(p.publishedAt) : ''}>
                     {p.publishedAt ? relativeTime(p.publishedAt) : '—'}
                   </TD>
-                  <TD numeric>{compactNumber(p.views)}</TD>
-                  <TD numeric>{compactNumber(p.uniqueViewers)}</TD>
-                  <TD numeric>{compactNumber(p.impressions)}</TD>
-                  <TD numeric>{p.ctr.toFixed(1)}%</TD>
-                  <TD numeric>{compactNumber(p.watchTimeMin)}m</TD>
-                  <TD numeric>{p.retentionRate.toFixed(0)}%</TD>
-                  <TD numeric>{compactNumber(p.likes)}</TD>
-                  <TD numeric>{compactNumber(p.comments)}</TD>
-                  <TD numeric>{compactNumber(p.shares)}</TD>
+                  {cfg.postColumns.map((col) => (
+                    <TD key={col} numeric>
+                      {postColumnValue(col, p)}
+                    </TD>
+                  ))}
                 </TR>
               ))}
             </TBody>
@@ -299,14 +421,10 @@ export default function AccountAnalyticsPage() {
               {s && (
                 <>
                   <div className="grid grid-cols-2 gap-3">
-                    <StatCard label="Views" value={compactNumber(s.views)} />
-                    <StatCard label="Unique viewers" value={compactNumber(s.uniqueViewers)} />
-                    <StatCard label="Impressions" value={compactNumber(s.impressions)} />
-                    <StatCard label="CTR" value={`${s.ctr.toFixed(1)}%`} />
-                    <StatCard label="Watch time" value={`${compactNumber(s.watchTimeMin)} min`} />
-                    <StatCard label="Avg view duration" value={`${s.averageViewDurationSec}s`} />
-                    <StatCard label="Retention" value={`${s.retentionRate.toFixed(0)}%`} />
-                    <StatCard label="Engagement" value={compactNumber(s.likes + s.comments + s.shares + s.saves)} />
+                    {cfg.postDrawerKpis.map((kpiId) => {
+                      const card = drawerKpi(kpiId, s, cfg.uniqueViewersLabel);
+                      return <StatCard key={card.label} label={card.label} value={card.value} />;
+                    })}
                   </div>
 
                   {selected.snapshots.length > 1 && (
@@ -327,7 +445,9 @@ export default function AccountAnalyticsPage() {
                     </div>
                   )}
 
-                  {Array.isArray(selected.retentionCurve) && selected.retentionCurve.length > 0 && (
+                  {cfg.showRetentionCurve &&
+                    Array.isArray(selected.retentionCurve) &&
+                    selected.retentionCurve.length > 0 && (
                     <div>
                       <p className="mb-2 text-xs font-medium text-zinc-600">Audience retention curve</p>
                       <div className="flex h-16 items-end gap-0.5 rounded-md border border-zinc-100 bg-zinc-50/60 p-2">
@@ -341,22 +461,26 @@ export default function AccountAnalyticsPage() {
                     </div>
                   )}
 
-                  <BreakdownBars
-                    title="Traffic countries"
-                    rows={(s.trafficCountries ?? []).map((c) => ({ label: c.country, pct: c.pct, extra: c.views }))}
-                  />
-                  <BreakdownBars
-                    title="Age groups"
-                    rows={(s.ageGroups ?? []).map((a) => ({ label: a.range, pct: a.pct }))}
-                  />
-                  <BreakdownBars
-                    title="Traffic sources"
-                    rows={(s.trafficSources ?? []).map((src) => ({ label: src.source, pct: src.pct, extra: src.views }))}
-                  />
-                  <BreakdownBars
-                    title="Devices"
-                    rows={(s.deviceSplit ?? []).map((d) => ({ label: d.device, pct: d.pct }))}
-                  />
+                  {cfg.showDemography && (
+                    <>
+                      <BreakdownBars
+                        title="Traffic countries"
+                        rows={(s.trafficCountries ?? []).map((c) => ({ label: c.country, pct: c.pct, extra: c.views }))}
+                      />
+                      <BreakdownBars
+                        title="Age groups"
+                        rows={(s.ageGroups ?? []).map((a) => ({ label: a.range, pct: a.pct }))}
+                      />
+                      <BreakdownBars
+                        title="Traffic sources"
+                        rows={(s.trafficSources ?? []).map((src) => ({ label: src.source, pct: src.pct, extra: src.views }))}
+                      />
+                      <BreakdownBars
+                        title="Devices"
+                        rows={(s.deviceSplit ?? []).map((d) => ({ label: d.device, pct: d.pct }))}
+                      />
+                    </>
+                  )}
                 </>
               )}
 

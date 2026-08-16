@@ -317,6 +317,7 @@ export interface PublishTargetDetail {
   id: string;
   contentItemId: string;
   accountId: string;
+  accountName?: string | null;
   platform: Platform;
   title: string;
   description: string | null;
@@ -375,6 +376,7 @@ export async function getPublishTargetDetail(id: string): Promise<PublishTargetD
       id: post.id,
       contentItemId: post.contentItemId,
       accountId: post.accountId,
+      accountName: 'Demo Page',
       platform: 'YOUTUBE',
       title: post.title,
       description: 'Demo description for this scheduled post.',

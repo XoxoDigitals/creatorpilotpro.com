@@ -266,6 +266,20 @@ export async function runPublish(
 
   const meta = resolveMetadata(override, account.profile, contentItem.title, aiMeta);
 
+  // Persist AI/publish title onto the content item when it is still a placeholder
+  // (analytics + calendar otherwise show "Untitled source video").
+  if (
+    meta.title.trim() &&
+    (!contentItem.title?.trim() ||
+      /^untitled(\s+source)?(\s+video)?$/i.test(contentItem.title.trim())) &&
+    meta.title.trim() !== contentItem.title.trim()
+  ) {
+    await prisma.contentItem.update({
+      where: { id: contentItem.id },
+      data: { title: meta.title.trim() },
+    });
+  }
+
   // Build the adapter (its constraints drive fail-fast metadata validation).
   // MANUAL accounts short-circuit — the adapter marks the target published so
   // the Owner can download the final asset and upload it by hand.

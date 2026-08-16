@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
 import { parseDateRange } from './dto/analytics.dto';
+import { resolveTargetCopy } from '../publishing/publish-target.view';
 import {
   toAccountSnapshot,
   toPostSnapshot,
@@ -220,7 +221,7 @@ export class AnalyticsService {
         ...dateFilter,
       },
       include: {
-        contentItem: { select: { title: true } },
+        contentItem: { select: { title: true, currentStep: true } },
         metricSnapshots: {
           orderBy: { date: 'desc' },
           take: 1,
@@ -232,9 +233,14 @@ export class AnalyticsService {
 
     return targets.map((t) => {
       const latest = t.metricSnapshots[0];
+      const copy = resolveTargetCopy(
+        t.metadataOverride,
+        t.contentItem.currentStep,
+        t.contentItem.title,
+      );
       return {
         publishTargetId: t.id,
-        contentTitle: t.contentItem.title,
+        contentTitle: copy.title || t.contentItem.title,
         publishedAt: t.publishedAt?.toISOString() ?? null,
         platformPostId: t.platformPostId,
         views: latest?.views ?? 0,
@@ -256,7 +262,7 @@ export class AnalyticsService {
     const target = await this.prisma.client.publishTarget.findUniqueOrThrow({
       where: { id: publishTargetId },
       include: {
-        contentItem: { select: { title: true } },
+        contentItem: { select: { title: true, currentStep: true } },
         metricSnapshots: { orderBy: { date: 'asc' } },
       },
     });
@@ -265,9 +271,15 @@ export class AnalyticsService {
       ? target.metricSnapshots[target.metricSnapshots.length - 1]
       : null;
 
+    const copy = resolveTargetCopy(
+      target.metadataOverride,
+      target.contentItem.currentStep,
+      target.contentItem.title,
+    );
+
     return {
       publishTargetId: target.id,
-      contentTitle: target.contentItem.title,
+      contentTitle: copy.title || target.contentItem.title,
       accountId: target.accountId,
       publishedAt: target.publishedAt?.toISOString() ?? null,
       platformPostId: target.platformPostId,

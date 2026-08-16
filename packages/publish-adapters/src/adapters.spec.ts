@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FacebookAdapter } from './facebook.js';
+import { FacebookAdapter, buildFacebookCaption } from './facebook.js';
 import { TikTokAdapter } from './tiktok.js';
 import { YouTubeAdapter } from './youtube.js';
 import { validateMetadata } from './validate.js';
@@ -153,18 +153,29 @@ describe('FacebookAdapter (Reels)', () => {
 
   it('runs start → upload → finish and returns the video id; token never in the URL', async () => {
     const calls: Call[] = [];
+    let finishBody = '';
     const fetchImpl = (async (url: unknown, init?: RequestInit) => {
       const u = String(url);
       calls.push({ url: u, method: init?.method ?? 'GET', headers: (init?.headers ?? {}) as Record<string, string> });
       if (u.includes('upload_phase=start'))
         return jsonResponse(200, { video_id: 'vid_1', upload_url: 'https://rupload.facebook.com/vid_1' });
       if (u.startsWith('https://rupload.facebook.com')) return new Response('', { status: 200 });
-      if (u.endsWith('/video_reels')) return jsonResponse(200, { success: true });
+      if (u.endsWith('/video_reels')) {
+        finishBody = typeof init?.body === 'string' ? init.body : '';
+        return jsonResponse(200, { success: true });
+      }
       return jsonResponse(404, {});
     }) as unknown as typeof fetch;
 
     const adapter = new FacebookAdapter({ graphVersion: 'v21.0', fetchImpl });
-    const res = await adapter.publish(fbTarget(), media(), meta());
+    const res = await adapter.publish(
+      fbTarget(),
+      media(),
+      meta({
+        description: 'Caption without tags',
+        tags: ['tiny home', 'diy project', 'fun', 'viral', 'extra1', 'extra2', 'extra3'],
+      }),
+    );
     expect(res.platformPostId).toBe('vid_1');
 
     const phases = calls.map((c) => c.url);
@@ -174,6 +185,28 @@ describe('FacebookAdapter (Reels)', () => {
     expect(calls.every((c) => !c.url.includes('TKN'))).toBe(true);
     expect(calls[0]!.headers).toHaveProperty('Authorization', 'Bearer TKN');
     expect(calls[1]!.headers).toHaveProperty('Authorization', 'OAuth TKN');
+
+    const description = new URLSearchParams(finishBody).get('description') ?? '';
+    expect(description).toContain('Caption without tags');
+    expect(description).toContain('#tiny home');
+    expect(description).toContain('#diy project');
+    expect(description).toContain('#fun');
+    expect(description).toContain('#viral');
+    expect(description).toContain('#extra1');
+    expect(description).not.toContain('#extra2');
+    expect(description).not.toContain('#extra3');
+    expect((description.match(/#/g) ?? []).length).toBe(5);
+  });
+
+  it('buildFacebookCaption merges ≤5 hashtags into the description', () => {
+    const caption = buildFacebookCaption(
+      meta({
+        title: 'Title',
+        description: 'Body copy',
+        tags: ['a', 'b', 'c', 'd', 'e', 'f'],
+      }),
+    );
+    expect(caption).toBe('Title\n\nBody copy\n\n#a #b #c #d #e');
   });
 
   it('publishes videos longer than 90s via Page Videos (not Reels)', async () => {

@@ -9,6 +9,8 @@ export interface PublishTargetView {
   id: string;
   contentItemId: string;
   accountId: string;
+  /** Connected page / channel display name. */
+  accountName: string | null;
   platform: SocialAccount['platform'];
   title: string;
   /** Resolved caption/description (override → content metadata). */
@@ -135,7 +137,7 @@ export function resolveTargetCopy(
 
 export function toPublishTargetView(
   t: PublishTarget & {
-    account?: Pick<SocialAccount, 'platform'> | null;
+    account?: Pick<SocialAccount, 'platform' | 'name'> | null;
     contentItem?: {
       title: string;
       currentStep?: unknown;
@@ -155,6 +157,7 @@ export function toPublishTargetView(
     id: t.id,
     contentItemId: t.contentItemId,
     accountId: t.accountId,
+    accountName: t.account?.name?.trim() || null,
     platform: t.account?.platform ?? 'YOUTUBE',
     title: copy.title,
     description: copy.description,

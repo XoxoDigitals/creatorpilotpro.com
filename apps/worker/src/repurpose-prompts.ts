@@ -393,8 +393,8 @@ function platformMetadataGuidance(platform?: string | null): string {
     case 'FACEBOOK':
       return `Target platform: Facebook (Reels / Page video).
 - title: clear, conversational, share-friendly; ~40–80 chars.
-- description: 1–3 short paragraphs for the feed caption; soft CTA (like / share / follow). Light hashtag use (0–5) at the end if helpful — Facebook is not hashtag-first.
-- tags: 5–12 topical labels (plain words). Avoid stuffing.
+- description: 1–3 short paragraphs for the feed caption; soft CTA (like / share / follow). End with at most 5 hashtags on the last line (Facebook is not hashtag-first — never more than 5).
+- tags: 0–5 topical labels WITHOUT the # prefix (same set as the caption hashtags). Prefer niche over spam.
 - keywords: optional.
 - category: optional.`;
     default:

@@ -71,6 +71,12 @@ describe('metadata prompt language', () => {
     expect(prompt).toContain('title, description, tags');
     expect(prompt).toContain('LANGUAGE POLICY');
   });
+
+  it('limits Facebook hashtags to at most 5', () => {
+    const prompt = defaultMetadataPrompt('FACEBOOK', 'en');
+    expect(prompt).toContain('at most 5 hashtags');
+    expect(prompt).toContain('0–5 topical labels');
+  });
 });
 
 describe('narration prompt', () => {

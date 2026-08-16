@@ -45,6 +45,94 @@ const GRAPH_VIDEO_BASE = 'https://graph-video.facebook.com';
 export const FACEBOOK_REEL_MAX_DURATION_SEC = 90;
 /** Meta Page Video max length (docs error 1363026). */
 export const FACEBOOK_PAGE_VIDEO_MAX_DURATION_SEC = 40 * 60;
+/** Facebook captions are not hashtag-first; keep at most this many at the end. */
+export const FACEBOOK_CAPTION_MAX_HASHTAGS = 5;
+
+/**
+ * Normalize tag labels to `#hashtag` form, dedupe (case-insensitive), cap at `max`.
+ * Multi-word labels keep internal spaces (`tiny home` → `#tiny home`).
+ */
+export function normalizeFacebookHashtags(
+  tags: readonly string[],
+  max = FACEBOOK_CAPTION_MAX_HASHTAGS,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tags) {
+    if (typeof raw !== 'string') continue;
+    const label = raw.replace(/^#+/, '').trim().replace(/\s+/g, ' ');
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(`#${label}`);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * Split a description into prose + a trailing hashtag block.
+ * A trailing block is a final paragraph made only of `#tags` (single- or multi-word).
+ */
+export function splitTrailingHashtags(text: string): { body: string; hashtags: string[] } {
+  const trimmed = text.trim();
+  if (!trimmed) return { body: '', hashtags: [] };
+
+  const parts = trimmed.split(/\n\s*\n/);
+  const last = parts[parts.length - 1]!.trim();
+  const tagParts = last
+    .split(/(?=#)/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const allHashtags =
+    tagParts.length > 0 && tagParts.every((p) => /^#[^\n#]+$/.test(p));
+  if (allHashtags && parts.length >= 1) {
+    return {
+      body: parts.slice(0, -1).join('\n\n').trim(),
+      hashtags: tagParts,
+    };
+  }
+
+  // Same-line trailing `#a #b #c` (no blank line).
+  const sameLine = trimmed.match(/^(.*?)(?:\s+)((?:#[^\s#]+(?:\s+[^\s#]+)*\s*)+)$/s);
+  if (sameLine) {
+    const block = sameLine[2]!.trim();
+    const tags = block
+      .split(/(?=#)/)
+      .map((p) => p.trim())
+      .filter((p) => p.startsWith('#'));
+    if (tags.length > 0 && tags.every((t) => /^#[^\n#]+$/.test(t))) {
+      return { body: sameLine[1]!.trim(), hashtags: tags };
+    }
+  }
+
+  return { body: trimmed, hashtags: [] };
+}
+
+/**
+ * Build the Facebook video/Reel caption: title + description, with ≤5 hashtags
+ * merged from trailing description tags and `meta.tags` (Facebook has no separate tags API).
+ */
+export function buildFacebookCaption(meta: ResolvedMetadata): string {
+  const title = meta.title?.trim() ?? '';
+  const rawDescription = meta.description?.trim() ?? '';
+  const { body, hashtags: trailing } = splitTrailingHashtags(rawDescription);
+  const merged = normalizeFacebookHashtags([...trailing, ...(meta.tags ?? [])], FACEBOOK_CAPTION_MAX_HASHTAGS);
+
+  // Skip tags already present in the prose body (not counting the trailing block we rewrote).
+  const bodyLower = body.toLowerCase();
+  const finalTags = merged.filter((h) => !bodyLower.includes(h.toLowerCase()));
+
+  const description =
+    finalTags.length === 0
+      ? body
+      : body
+        ? `${body}\n\n${finalTags.join(' ')}`
+        : finalTags.join(' ');
+
+  return [title, description].filter((p) => p.length > 0).join('\n\n');
+}
 
 export class FacebookAdapter implements PublishAdapter {
   readonly platform = 'FACEBOOK' as const;
@@ -82,9 +170,7 @@ export class FacebookAdapter implements PublishAdapter {
   }
 
   private static caption(meta: ResolvedMetadata): string {
-    return [meta.title?.trim(), meta.description?.trim()]
-      .filter((p): p is string => !!p && p.length > 0)
-      .join('\n\n');
+    return buildFacebookCaption(meta);
   }
 
   /** Prefer Reels for short clips; Page Videos when duration exceeds the Reels cap. */
@@ -455,6 +541,7 @@ export class FacebookAdapter implements PublishAdapter {
       maxDurationSec: FACEBOOK_PAGE_VIDEO_MAX_DURATION_SEC,
       maxBytes: 4 * 1024 * 1024 * 1024,
       maxTitleLength: 255,
+      // Tag list may be longer for UI; publish embeds at most FACEBOOK_CAPTION_MAX_HASHTAGS.
       maxTags: 30,
       allowedFormats: ['mp4', 'mov'],
     };

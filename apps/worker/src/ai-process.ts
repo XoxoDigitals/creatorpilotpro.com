@@ -627,9 +627,20 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       console.log(`[worker:ai] narration done for ${contentItemId} — awaiting script approval`);
     } else {
       updatedStep.metadata = result.output;
+      const metaOut =
+        result.output && typeof result.output === 'object' && !Array.isArray(result.output)
+          ? (result.output as Record<string, unknown>)
+          : {};
+      const aiTitle =
+        typeof metaOut.title === 'string' && metaOut.title.trim() ? metaOut.title.trim() : '';
+      const placeholderTitle = !item.title?.trim() || /^untitled(\s+source)?(\s+video)?$/i.test(item.title.trim());
       await prisma.contentItem.update({
         where: { id: contentItemId },
-        data: { currentStep: updatedStep as any, status: 'METADATA_READY' },
+        data: {
+          currentStep: updatedStep as any,
+          status: 'METADATA_READY',
+          ...(aiTitle && placeholderTitle ? { title: aiTitle } : {}),
+        },
       });
       // Chain A/B suggestions (Phase 7 #10) — non-blocking, uses cached input.
       await boss.send(QUEUE.AI, { kind: 'ab_suggestions', contentItemId }, {
