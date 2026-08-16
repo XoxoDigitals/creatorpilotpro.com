@@ -492,7 +492,7 @@ export class AccountsService {
         contentType: params.contentType,
         dramasEnabled: params.dramasEnabled,
         addedById: params.addedById,
-        ...(params.timezone ? { timezone: params.timezone } : {}),
+        timezone: params.timezone?.trim() || 'Asia/Karachi',
         profile: {
           create: {
             schedulingPrefs: scheduling,
@@ -514,7 +514,7 @@ export class AccountsService {
         contentType: params.contentType,
         dramasEnabled: params.dramasEnabled,
         addedById: params.addedById,
-        ...(params.timezone ? { timezone: params.timezone } : {}),
+        ...(params.timezone?.trim() ? { timezone: params.timezone.trim() } : {}),
       },
       include: { profile: true },
     });

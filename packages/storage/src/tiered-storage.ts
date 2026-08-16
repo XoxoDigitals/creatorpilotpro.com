@@ -174,7 +174,8 @@ export class TieredStorage implements StorageTier {
         const stats = await stat(obj.localPath);
         if (stats.isFile()) {
           const { md5, bytes } = await md5File(obj.localPath);
-          if (md5 === obj.md5) {
+          // Prefer exact md5 match; if Drive is unavailable, still use the local file.
+          if (!obj.md5 || md5 === obj.md5 || !obj.driveFileId) {
             return { ...obj, localPath: obj.localPath, md5, bytes, state: 'LOCAL' };
           }
         }

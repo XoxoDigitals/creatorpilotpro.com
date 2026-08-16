@@ -190,7 +190,7 @@ model SocialAccount {
   paused           Boolean            @default(false)
   pausedReason     String?            // set when the strike counter auto-pauses
   copyrightStrikeCount Int            @default(0)
-  timezone         String             @default("UTC")
+  timezone         String             @default("Asia/Karachi")
 
   addedById String?
   addedBy   User?   @relation(fields: [addedById], references: [id], onDelete: SetNull)

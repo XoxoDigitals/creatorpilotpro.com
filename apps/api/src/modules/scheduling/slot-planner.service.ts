@@ -97,7 +97,7 @@ export class SlotPlannerService {
     if (!account) throw new NotFoundException('Account not found.');
 
     const prefs = (account.profile?.schedulingPrefs ?? {}) as SchedulingPrefs;
-    const tz = account.timezone || 'UTC';
+    const tz = account.timezone || 'Asia/Karachi';
     const times = (prefs.times ?? DEFAULT_TIMES)
       .map((t) => t.trim())
       .filter((t) => HHMM_RE.test(t))

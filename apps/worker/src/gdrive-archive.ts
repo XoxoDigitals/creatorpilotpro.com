@@ -8,7 +8,7 @@
  * TODO(gdrive): also archive ORIGINAL source downloads + VOICEOVER/BG_AUDIO/
  * SUBTITLE intermediates once finals/thumbnails are stable in production.
  */
-import { unlink } from 'node:fs/promises';
+import { access, constants, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   GoogleDriveClient,
@@ -21,6 +21,15 @@ import {
 } from '@scp/storage';
 import { getPrisma } from '@scp/db';
 import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
+
+async function localFileExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function loadGDriveSettingsFromDb(): Promise<GDriveSettingsPartial | null> {
   const prisma = getPrisma();
@@ -85,7 +94,8 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
 
 /**
  * Ensure a FINAL asset has a local file for platform upload. Restores from
- * Drive into STORAGE_ROOT when needed.
+ * Drive into STORAGE_ROOT when needed. Verifies on-disk presence — a stale
+ * localPath with a missing file used to skip Drive restore and fail publish.
  */
 export async function ensureLocalFinalAsset(asset: {
   id: string;
@@ -95,16 +105,22 @@ export async function ensureLocalFinalAsset(asset: {
   md5: string | null;
   bytes: bigint | null;
 }): Promise<{ localPath: string; bytes: number; md5: string }> {
-  if (asset.localPath) {
+  if (asset.localPath && (await localFileExists(asset.localPath))) {
     return {
       localPath: asset.localPath,
       bytes: asset.bytes ? Number(asset.bytes) : 0,
       md5: asset.md5 ?? '',
     };
   }
+
   if (!asset.driveFileId) {
-    throw new Error('Asset has no local path and no driveFileId to restore.');
+    throw new Error(
+      asset.localPath
+        ? `Media file missing on disk (${asset.localPath}) and not archived to Google Drive. Re-upload the video, then Retry.`
+        : 'No media file on disk and no Google Drive copy to restore. Re-upload the video, then Retry.',
+    );
   }
+
   const settings = await loadGDriveSettingsFromDb();
   requireGDriveConfig(process.env, settings);
   const root = process.env.STORAGE_ROOT;

@@ -131,9 +131,7 @@ export default function AccountSettingsPage() {
   const [defaultScheduleMode, setDefaultScheduleMode] =
     useState<ChannelScheduleMode>('QUEUE_SLOT');
   const [defaultCrosspostIds, setDefaultCrosspostIds] = useState<string[]>([]);
-  const [timezone, setTimezone] = useState(
-    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-  );
+  const [timezone, setTimezone] = useState('Asia/Karachi');
   const [randomizeMinutes, setRandomizeMinutes] = useState('0');
   const [defaultVisibility, setDefaultVisibility] = useState<'PUBLIC' | 'UNLISTED' | 'PRIVATE'>(
     'PUBLIC',
@@ -275,11 +273,10 @@ export default function AccountSettingsPage() {
         setDefaultCrosspostIds(publishDefaults.crosspostAccountIds);
         if (fromProfile.masterPromptOverridden || p.masterPrompt.trim()) setShowAdvancedStyles(true);
       }
-      const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
       setTimezone(
         apiAccount.timezone && apiAccount.timezone !== 'UTC'
           ? apiAccount.timezone
-          : browserTz,
+          : 'Asia/Karachi',
       );
     } else {
       setReal(null);
@@ -659,10 +656,11 @@ export default function AccountSettingsPage() {
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
                 list="scp-timezones"
-                placeholder="America/Los_Angeles"
+                placeholder="Asia/Karachi"
               />
               <datalist id="scp-timezones">
                 {[
+                  'Asia/Karachi',
                   'UTC',
                   'America/Los_Angeles',
                   'America/Denver',
@@ -670,7 +668,6 @@ export default function AccountSettingsPage() {
                   'America/New_York',
                   'Europe/London',
                   'Europe/Paris',
-                  'Asia/Karachi',
                   'Asia/Dubai',
                   'Asia/Kolkata',
                   'Asia/Singapore',
@@ -680,8 +677,7 @@ export default function AccountSettingsPage() {
                 ))}
               </datalist>
               <p className="mt-1 text-[11px] text-zinc-500">
-                Post times below are wall-clock in this timezone (not UTC). Wrong TZ is why 5:30 PM
-                can show as morning.
+                Default is Asia/Karachi. Post times below are wall-clock in this timezone (not UTC).
               </p>
             </Field>
             <Field label="Randomize slot (± minutes)">

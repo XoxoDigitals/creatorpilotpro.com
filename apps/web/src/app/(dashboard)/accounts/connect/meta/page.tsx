@@ -100,7 +100,7 @@ export default function MetaConnectPage() {
         {
           session,
           pageIds,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone: 'Asia/Karachi',
         },
       );
       const accounts = result.accounts ?? [];

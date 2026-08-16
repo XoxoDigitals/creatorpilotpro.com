@@ -16,6 +16,8 @@ import {
   getPostMetricsView,
   getPublishTargetDetail,
   publishTargetNow,
+  retryPublishTarget,
+  updatePublishTargetSchedule,
   type PostMetrics,
   type PublishTargetDetail,
 } from '@/lib/api-data';
@@ -45,6 +47,15 @@ const STATUS_LABEL: Record<PublishTargetDetail['status'], string> = {
   DRAFT: 'Draft',
 };
 
+/** Format an ISO instant for `<input type="datetime-local">` in local browser time. */
+function toDatetimeLocalValue(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function PostDetailModal({
   open,
   onClose,
@@ -67,6 +78,9 @@ export function PostDetailModal({
   const [videoEmbedUrl, setVideoEmbedUrl] = useState<string | null>(null);
   const [thumbEmbedUrl, setThumbEmbedUrl] = useState<string | null>(null);
   const [publishingNow, setPublishingNow] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [scheduleDraft, setScheduleDraft] = useState('');
+  const [savingSchedule, setSavingSchedule] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -76,6 +90,7 @@ export function PostDetailModal({
       setThumbBroken(false);
       setVideoEmbedUrl(null);
       setThumbEmbedUrl(null);
+      setScheduleDraft('');
       return;
     }
     let cancelled = false;
@@ -86,12 +101,14 @@ export function PostDetailModal({
     setMetrics(null);
     setVideoEmbedUrl(null);
     setThumbEmbedUrl(null);
+    setScheduleDraft('');
 
     void (async () => {
       try {
         const t = await getPublishTargetDetail(publishTargetId);
         if (cancelled) return;
         setDetail(t);
+        setScheduleDraft(toDatetimeLocalValue(t.scheduledAt));
         if (t.hasVideo) {
           try {
             const info = await getContentMediaInfo(t.contentItemId);
@@ -136,6 +153,20 @@ export function PostDetailModal({
     metrics && metrics.snapshots.length > 0
       ? metrics.snapshots[metrics.snapshots.length - 1]!
       : null;
+
+  const canEditSchedule =
+    detail != null &&
+    (detail.status === 'SCHEDULED' ||
+      detail.status === 'PENDING' ||
+      detail.status === 'DRAFT' ||
+      detail.status === 'FAILED');
+  const canPublishNow =
+    detail != null &&
+    (detail.status === 'SCHEDULED' ||
+      detail.status === 'PENDING' ||
+      detail.status === 'FAILED' ||
+      detail.status === 'DRAFT');
+  const canRetry = detail != null && (detail.status === 'DRAFT' || detail.status === 'FAILED');
 
   return (
     <Modal
@@ -260,39 +291,117 @@ export function PostDetailModal({
                     : JSON.stringify(detail.lastError)}
                 </p>
               )}
-              {(detail.status === 'SCHEDULED' || detail.status === 'PENDING' || detail.status === 'FAILED') && (
-                <div className="mt-3">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    disabled={publishingNow}
-                    onClick={() => {
-                      void (async () => {
-                        setPublishingNow(true);
-                        try {
-                          await publishTargetNow(detail.id);
-                          toast(
-                            detail.status === 'PENDING'
-                              ? 'Set to publish now after Review Approve'
-                              : 'Publishing now',
-                            'success',
-                          );
-                          const next = await getPublishTargetDetail(detail.id);
-                          setDetail(next);
-                          onChanged?.();
-                        } catch (err) {
-                          toast(
-                            err instanceof ApiError ? err.message : 'Could not publish now',
-                            'error',
-                          );
-                        } finally {
-                          setPublishingNow(false);
-                        }
-                      })();
-                    }}
-                  >
-                    {publishingNow ? 'Starting…' : 'Publish now'}
-                  </Button>
+
+              {canEditSchedule && (
+                <div className="mt-3 space-y-2">
+                  <label className="block text-xs font-medium text-zinc-600" htmlFor="post-schedule-at">
+                    Change schedule time
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      id="post-schedule-at"
+                      type="datetime-local"
+                      value={scheduleDraft}
+                      onChange={(e) => setScheduleDraft(e.target.value)}
+                      className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={savingSchedule || !scheduleDraft}
+                      onClick={() => {
+                        void (async () => {
+                          setSavingSchedule(true);
+                          try {
+                            const iso = new Date(scheduleDraft).toISOString();
+                            await updatePublishTargetSchedule(detail.id, iso);
+                            toast('Schedule updated', 'success');
+                            const next = await getPublishTargetDetail(detail.id);
+                            setDetail(next);
+                            setScheduleDraft(toDatetimeLocalValue(next.scheduledAt));
+                            onChanged?.();
+                          } catch (err) {
+                            toast(
+                              err instanceof ApiError ? err.message : 'Could not update schedule',
+                              'error',
+                            );
+                          } finally {
+                            setSavingSchedule(false);
+                          }
+                        })();
+                      }}
+                    >
+                      {savingSchedule ? 'Saving…' : 'Save time'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {(canPublishNow || canRetry) && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {canRetry && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={retrying || publishingNow}
+                      onClick={() => {
+                        void (async () => {
+                          setRetrying(true);
+                          try {
+                            await retryPublishTarget(detail.id);
+                            toast('Retry queued', 'success');
+                            const next = await getPublishTargetDetail(detail.id);
+                            setDetail(next);
+                            setScheduleDraft(toDatetimeLocalValue(next.scheduledAt));
+                            onChanged?.();
+                          } catch (err) {
+                            toast(
+                              err instanceof ApiError ? err.message : 'Could not retry publish',
+                              'error',
+                            );
+                          } finally {
+                            setRetrying(false);
+                          }
+                        })();
+                      }}
+                    >
+                      {retrying ? 'Retrying…' : 'Retry'}
+                    </Button>
+                  )}
+                  {canPublishNow && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={publishingNow || retrying}
+                      onClick={() => {
+                        void (async () => {
+                          setPublishingNow(true);
+                          try {
+                            await publishTargetNow(detail.id);
+                            toast(
+                              detail.status === 'PENDING'
+                                ? 'Set to publish now after Review Approve'
+                                : 'Publishing now',
+                              'success',
+                            );
+                            const next = await getPublishTargetDetail(detail.id);
+                            setDetail(next);
+                            setScheduleDraft(toDatetimeLocalValue(next.scheduledAt));
+                            onChanged?.();
+                          } catch (err) {
+                            toast(
+                              err instanceof ApiError ? err.message : 'Could not publish now',
+                              'error',
+                            );
+                          } finally {
+                            setPublishingNow(false);
+                          }
+                        })();
+                      }}
+                    >
+                      {publishingNow ? 'Starting…' : 'Publish now'}
+                    </Button>
+                  )}
                 </div>
               )}
             </section>

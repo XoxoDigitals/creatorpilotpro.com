@@ -636,9 +636,22 @@ export async function schedulePublish(
   });
 }
 
-/** Force a pending/scheduled target to publish as soon as possible. */
+/** Force a pending/scheduled/draft/failed target to publish as soon as possible. */
 export async function publishTargetNow(publishTargetId: string): Promise<void> {
   await api.patch(`/publish/target/${encodeURIComponent(publishTargetId)}`, { publishNow: true });
+}
+
+/** Re-queue a draft/failed publish target. */
+export async function retryPublishTarget(publishTargetId: string): Promise<void> {
+  await api.patch(`/publish/target/${encodeURIComponent(publishTargetId)}`, { retry: true });
+}
+
+/** Change the scheduled publish time for a target (ISO datetime). */
+export async function updatePublishTargetSchedule(
+  publishTargetId: string,
+  scheduledAt: string,
+): Promise<void> {
+  await api.patch(`/publish/target/${encodeURIComponent(publishTargetId)}`, { scheduledAt });
 }
 
 /** Ask the API to translate an item's title to English (best-effort). */

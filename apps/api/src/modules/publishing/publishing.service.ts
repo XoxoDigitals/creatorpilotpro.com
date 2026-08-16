@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import type { Platform, Prisma } from '@scp/db';
+import { Prisma, type Platform } from '@scp/db';
 import {
   FacebookAdapter,
   TikTokAdapter,
@@ -364,6 +364,26 @@ export class PublishingService {
           scheduleMode: 'NOW',
           scheduledAt: now,
           status: awaitingReview ? 'PENDING' : 'SCHEDULED',
+          lastError: Prisma.DbNull,
+        },
+        include: TARGET_INCLUDE,
+      });
+      if (!awaitingReview) {
+        await this.queue.enqueuePublish(id);
+      }
+      return toPublishTargetView(row);
+    }
+
+    if (dto.retry) {
+      const awaitingReview =
+        existing.contentItem.status === 'REVIEW_PENDING' || existing.status === 'PENDING';
+      const row = await this.prisma.client.publishTarget.update({
+        where: { id },
+        data: {
+          scheduleMode: 'NOW',
+          scheduledAt: new Date(),
+          status: awaitingReview ? 'PENDING' : 'SCHEDULED',
+          lastError: Prisma.DbNull,
         },
         include: TARGET_INCLUDE,
       });
@@ -377,6 +397,8 @@ export class PublishingService {
     if (dto.cancel) data.status = 'DRAFT';
     if (dto.scheduledAt) {
       data.scheduledAt = new Date(dto.scheduledAt);
+      data.scheduleMode = 'FIXED';
+      data.lastError = Prisma.DbNull;
       // Never promote to SCHEDULED while content is still awaiting Review.
       data.status =
         existing.contentItem.status === 'REVIEW_PENDING' || existing.status === 'PENDING'
@@ -389,6 +411,18 @@ export class PublishingService {
       data,
       include: TARGET_INCLUDE,
     });
+
+    // Changing the schedule time should re-queue only when the new time is due
+    // now; future slots are picked up by the worker dispatcher.
+    if (
+      dto.scheduledAt &&
+      target.status === 'SCHEDULED' &&
+      existing.contentItem.status !== 'REVIEW_PENDING' &&
+      new Date(dto.scheduledAt).getTime() <= Date.now()
+    ) {
+      await this.queue.enqueuePublish(id);
+    }
+
     return toPublishTargetView(target);
   }
 }
