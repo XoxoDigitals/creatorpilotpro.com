@@ -243,7 +243,7 @@ export default function AccountAnalyticsPage() {
           <div className="p-4">
             <EmptyState
               title="No published videos yet"
-              hint="Sync the account or publish something first."
+              hint="Click Sync now to import channel uploads (YouTube/Facebook), or publish from CreatorPilot first."
             />
           </div>
         ) : (

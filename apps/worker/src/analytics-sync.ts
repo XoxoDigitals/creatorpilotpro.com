@@ -503,13 +503,31 @@ async function syncFacebookAccount(
 
 // ── YouTube analytics ──────────────────────────────────────────────────────
 
-async function fetchYouTubeSubscriberCount(
-  accessToken: string,
-): Promise<number | null> {
+interface YtChannelStats {
+  channelId: string;
+  subscribers: number | null;
+  /** Lifetime channel viewCount from Data API (not daily). */
+  lifetimeViews: number | null;
+  uploadsPlaylistId: string | null;
+}
+
+interface YtVideoRow {
+  id: string;
+  title: string;
+  publishedAt: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+}
+
+async function fetchYouTubeChannelStats(accessToken: string): Promise<YtChannelStats | null> {
   try {
     const url =
       `${YT_DATA}/channels?` +
-      new URLSearchParams({ part: 'statistics', mine: 'true' }).toString();
+      new URLSearchParams({
+        part: 'statistics,contentDetails',
+        mine: 'true',
+      }).toString();
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' },
     });
@@ -518,26 +536,178 @@ async function fetchYouTubeSubscriberCount(
       return null;
     }
     const data = (await res.json()) as {
-      items?: Array<{ statistics?: { subscriberCount?: string } }>;
+      items?: Array<{
+        id?: string;
+        statistics?: {
+          subscriberCount?: string;
+          viewCount?: string;
+        };
+        contentDetails?: { relatedPlaylists?: { uploads?: string } };
+      }>;
     };
-    const raw = data.items?.[0]?.statistics?.subscriberCount;
-    const n = raw != null ? Number(raw) : NaN;
-    return Number.isFinite(n) ? n : null;
+    const item = data.items?.[0];
+    if (!item?.id) return null;
+    const subRaw = item.statistics?.subscriberCount;
+    const viewRaw = item.statistics?.viewCount;
+    const sub = subRaw != null ? Number(subRaw) : NaN;
+    const views = viewRaw != null ? Number(viewRaw) : NaN;
+    return {
+      channelId: item.id,
+      subscribers: Number.isFinite(sub) ? sub : null,
+      lifetimeViews: Number.isFinite(views) ? views : null,
+      uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads ?? null,
+    };
   } catch (err) {
     console.warn(`[analytics:account-sync] YouTube channels error:`, err);
     return null;
   }
 }
 
+/** List recent channel uploads (includes videos not published via CreatorPilot). */
+async function listYouTubeChannelVideos(
+  accessToken: string,
+  uploadsPlaylistId: string,
+  limit = 40,
+): Promise<YtVideoRow[]> {
+  const rows: YtVideoRow[] = [];
+  const videoIds: string[] = [];
+  const meta = new Map<string, { title: string; publishedAt: string | null }>();
+  let pageToken: string | undefined;
+
+  try {
+    while (videoIds.length < limit) {
+      const params = new URLSearchParams({
+        part: 'snippet',
+        playlistId: uploadsPlaylistId,
+        maxResults: String(Math.min(50, limit - videoIds.length)),
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const res = await fetch(`${YT_DATA}/playlistItems?${params}`, {
+        headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(
+          `[analytics:account-sync] YouTube playlistItems HTTP ${res.status}: ${body.slice(0, 200)}`,
+        );
+        break;
+      }
+      const data = (await res.json()) as {
+        items?: Array<{
+          snippet?: {
+            title?: string;
+            publishedAt?: string;
+            resourceId?: { videoId?: string };
+          };
+        }>;
+        nextPageToken?: string;
+      };
+      for (const item of data.items ?? []) {
+        const id = item.snippet?.resourceId?.videoId;
+        if (!id) continue;
+        videoIds.push(id);
+        meta.set(id, {
+          title: (item.snippet?.title || `YouTube video ${id}`).slice(0, 200),
+          publishedAt: item.snippet?.publishedAt ?? null,
+        });
+        if (videoIds.length >= limit) break;
+      }
+      if (!data.nextPageToken || videoIds.length >= limit) break;
+      pageToken = data.nextPageToken;
+    }
+
+    for (let i = 0; i < videoIds.length; i += 50) {
+      const batch = videoIds.slice(i, i + 50);
+      const res = await fetch(
+        `${YT_DATA}/videos?` +
+          new URLSearchParams({
+            part: 'statistics',
+            id: batch.join(','),
+          }).toString(),
+        { headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' } },
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(
+          `[analytics:account-sync] YouTube videos HTTP ${res.status}: ${body.slice(0, 200)}`,
+        );
+        continue;
+      }
+      const data = (await res.json()) as {
+        items?: Array<{
+          id: string;
+          statistics?: {
+            viewCount?: string;
+            likeCount?: string;
+            commentCount?: string;
+          };
+        }>;
+      };
+      for (const v of data.items ?? []) {
+        const m = meta.get(v.id);
+        rows.push({
+          id: v.id,
+          title: m?.title ?? `YouTube video ${v.id}`,
+          publishedAt: m?.publishedAt ?? null,
+          views: Number(v.statistics?.viewCount ?? 0) || 0,
+          likes: Number(v.statistics?.likeCount ?? 0) || 0,
+          comments: Number(v.statistics?.commentCount ?? 0) || 0,
+        });
+      }
+    }
+  } catch (err) {
+    console.warn(`[analytics:account-sync] YouTube uploads list error:`, err);
+  }
+  return rows;
+}
+
+/** Ensure a PublishTarget exists for an external YouTube video (for analytics UI). */
+async function ensureImportedYouTubeVideo(
+  prisma: PrismaClient,
+  accountId: string,
+  video: YtVideoRow,
+): Promise<string> {
+  const existing = await prisma.publishTarget.findFirst({
+    where: { accountId, platformPostId: video.id },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+
+  const content = await prisma.contentItem.create({
+    data: {
+      type: 'MANUAL_UPLOAD',
+      title: video.title,
+      status: 'PUBLISHED',
+      statusReason: 'Imported from YouTube for analytics (not created in CreatorPilot)',
+      currentStep: { importedFrom: 'youtube', externalVideoId: video.id },
+      publishTargets: {
+        create: {
+          accountId,
+          status: 'PUBLISHED',
+          platformPostId: video.id,
+          publishedAt: video.publishedAt ? new Date(video.publishedAt) : new Date(),
+          scheduleMode: 'NOW',
+          metadataOverride: { source: 'youtube_import' },
+        },
+      },
+    },
+    include: { publishTargets: { select: { id: true } } },
+  });
+  return content.publishTargets[0]!.id;
+}
+
+type YtDayBucket = DayBucket & { watchTimeMin: number; revenue: number };
+
 /** Daily channel reports via YouTube Analytics API (requires yt-analytics scopes). */
 async function fetchYouTubeAnalyticsDays(
   accessToken: string,
-): Promise<Map<string, DayBucket & { watchTimeMin: number; revenue: number }>> {
-  const out = new Map<string, DayBucket & { watchTimeMin: number; revenue: number }>();
+): Promise<{ days: Map<string, YtDayBucket>; lastError: string | null }> {
+  const out = new Map<string, YtDayBucket>();
   const end = new Date();
   const start = new Date();
   start.setUTCDate(start.getUTCDate() - 90);
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  let lastError: string | null = null;
 
   const metricSets = [
     'views,estimatedMinutesWatched,likes,comments,estimatedRevenue',
@@ -563,9 +733,13 @@ async function fetchYouTubeAnalyticsDays(
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');
+        lastError = `HTTP ${res.status}: ${body.slice(0, 240)}`;
         console.warn(
           `[analytics:account-sync] YouTube Analytics HTTP ${res.status} (${metrics}): ${body.slice(0, 180)}`,
         );
+        // 401/403 usually mean missing scopes / Analytics API disabled — no point retrying
+        // narrower metric sets with the same token.
+        if (res.status === 401 || res.status === 403) break;
         continue;
       }
       const data = (await res.json()) as {
@@ -598,12 +772,50 @@ async function fetchYouTubeAnalyticsDays(
           revenue,
         });
       }
-      if (out.size > 0) break;
+      if (out.size > 0) {
+        lastError = null;
+        break;
+      }
+      // Empty rows with 200 = valid but no activity in range (not an auth failure).
+      lastError = null;
+      break;
     } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
       console.warn(`[analytics:account-sync] YouTube Analytics error:`, err);
     }
   }
-  return out;
+  return { days: out, lastError };
+}
+
+async function maybeRaiseYouTubeAnalyticsIncident(
+  prisma: PrismaClient,
+  accountId: string,
+  lastError: string,
+): Promise<void> {
+  const since = new Date(Date.now() - 24 * 86_400_000);
+  const existing = await prisma.incident.findFirst({
+    where: {
+      accountId,
+      status: 'OPEN',
+      kind: 'AUTH',
+      createdAt: { gte: since },
+      title: { contains: 'YouTube Analytics' },
+    },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  await raiseIncident(prisma, {
+    kind: 'AUTH',
+    severity: 'MEDIUM',
+    accountId,
+    title: 'YouTube Analytics sync failed — reconnect channel',
+    detail: {
+      error: lastError,
+      hint:
+        'Enable YouTube Analytics API in Google Cloud, ensure OAuth consent includes yt-analytics.readonly (+ monetary), then reconnect this YouTube account. Subscriber count can still work via Data API alone.',
+    },
+  });
 }
 
 async function syncYouTubeAccount(
@@ -615,10 +827,37 @@ async function syncYouTubeAccount(
   today.setUTCHours(0, 0, 0, 0);
   const todayStr = today.toISOString().slice(0, 10);
 
-  const followers = await fetchYouTubeSubscriberCount(accessToken);
-  const days = await fetchYouTubeAnalyticsDays(accessToken);
+  const channel = await fetchYouTubeChannelStats(accessToken);
+  const followers = channel?.subscribers ?? null;
+  const { days, lastError } = await fetchYouTubeAnalyticsDays(accessToken);
+
+  if (lastError) {
+    await maybeRaiseYouTubeAnalyticsIncident(prisma, accountId, lastError);
+  }
+
+  // Import recent uploads so the per-video table is not empty for channels that
+  // never published through CreatorPilot (mirrors Facebook analytics import).
+  let videos: YtVideoRow[] = [];
+  if (channel?.uploadsPlaylistId) {
+    videos = await listYouTubeChannelVideos(accessToken, channel.uploadsPlaylistId, 200);
+    for (const video of videos) {
+      try {
+        const publishTargetId = await ensureImportedYouTubeVideo(prisma, accountId, video);
+        await upsertPostSnapshot(prisma, publishTargetId, accountId, today, {
+          views: video.views,
+          likes: video.likes,
+          comments: video.comments,
+        });
+      } catch (err) {
+        console.warn(`[analytics:account-sync] import YT video ${video.id} failed:`, err);
+      }
+    }
+  }
 
   if (days.size === 0) {
+    // Keep followers on today's account snapshot. Do NOT write lifetime channel
+    // viewCount here — that would inflate Last 7D/30D ranges. KPI views come from
+    // the API's per-video fallback once uploads are imported below.
     await prisma.metricSnapshotAccount.upsert({
       where: { accountId_date: { accountId, date: today } },
       create: {
@@ -640,8 +879,58 @@ async function syncYouTubeAccount(
         syncedAt: new Date(),
       },
     });
+
+    // Seed day buckets from video publish dates (same pattern as Facebook Insights
+    // fallback) so charts have shape when Analytics API is unavailable.
+    if (videos.length > 0) {
+      const byDay = new Map<string, DayBucket>();
+      for (const video of videos) {
+        const day = (video.publishedAt ?? today.toISOString()).slice(0, 10);
+        const b = byDay.get(day) ?? {
+          views: 0,
+          uniqueViewers: 0,
+          impressions: 0,
+          engagements: 0,
+        };
+        b.views += video.views;
+        b.engagements += video.likes + video.comments;
+        byDay.set(day, b);
+      }
+      for (const [dayStr, bucket] of byDay) {
+        const date = new Date(`${dayStr}T00:00:00.000Z`);
+        const isToday = dayStr === todayStr;
+        await prisma.metricSnapshotAccount.upsert({
+          where: { accountId_date: { accountId, date } },
+          create: {
+            accountId,
+            date,
+            followers: isToday ? (followers ?? 0) : 0,
+            views: bucket.views,
+            uniqueViewers: 0,
+            impressions: 0,
+            engagements: bucket.engagements,
+            watchTimeMin: 0,
+            ctr: 0,
+            revenue: 0,
+            rpm: 0,
+            syncedAt: new Date(),
+          },
+          update: {
+            views: bucket.views,
+            engagements: bucket.engagements,
+            ...(isToday && followers !== null ? { followers } : {}),
+            syncedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    const videoViews = videos.reduce((s, v) => s + v.views, 0);
     console.log(
-      `[analytics:account-sync] YouTube ${accountId}: followers=${followers ?? 'n/a'} (no daily rows)`,
+      `[analytics:account-sync] YouTube ${accountId}: followers=${followers ?? 'n/a'} ` +
+        `videos=${videos.length} videoViews=${videoViews}` +
+        (channel?.lifetimeViews != null ? ` lifetimeViews=${channel.lifetimeViews}` : '') +
+        (lastError ? ` analyticsError=${lastError.slice(0, 120)}` : ' (no daily Analytics rows)'),
     );
     return;
   }
@@ -678,7 +967,8 @@ async function syncYouTubeAccount(
   }
 
   console.log(
-    `[analytics:account-sync] YouTube ${accountId}: followers=${followers ?? 'n/a'} days=${days.size}`,
+    `[analytics:account-sync] YouTube ${accountId}: followers=${followers ?? 'n/a'} ` +
+      `days=${days.size} videos=${videos.length}`,
   );
 }
 
