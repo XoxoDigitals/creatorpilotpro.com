@@ -343,34 +343,30 @@ export class AccountsService {
     }
 
     const accounts: AccountView[] = [];
-    try {
-      for (const page of pagesToConnect) {
-        const view = await this.createAccountWithProfile({
-          platform: 'FACEBOOK',
-          kind: 'FB_PAGE',
-          externalId: page.id,
-          name: page.name,
-          handle: null,
-          avatarUrl: page.avatarUrl,
-          connectionMethod: 'OWN_APP',
-          authPayload: { provider: 'meta', pageId: page.id, pageAccessToken: page.accessToken },
-          tokenExpiresAt: null, // Page tokens from a long-lived user token don't expire
-          contentType: resolved.wizard.contentType,
-          dramasEnabled: resolved.wizard.dramasEnabled,
-          schedulingPrefs: resolved.wizard.schedulingPrefs,
-          addedById: userId,
-          timezone: dto.timezone,
-        });
-        if (page.fanCount > 0) {
-          await this.upsertFollowersSnapshot(view.id, page.fanCount);
-        }
-        void this.queue.enqueueAccountSync(view.id);
-        accounts.push({ ...view, followers: page.fanCount });
+    for (const page of pagesToConnect) {
+      const view = await this.createAccountWithProfile({
+        platform: 'FACEBOOK',
+        kind: 'FB_PAGE',
+        externalId: page.id,
+        name: page.name,
+        handle: null,
+        avatarUrl: page.avatarUrl,
+        connectionMethod: 'OWN_APP',
+        authPayload: { provider: 'meta', pageId: page.id, pageAccessToken: page.accessToken },
+        tokenExpiresAt: null, // Page tokens from a long-lived user token don't expire
+        contentType: resolved.wizard.contentType,
+        dramasEnabled: resolved.wizard.dramasEnabled,
+        schedulingPrefs: resolved.wizard.schedulingPrefs,
+        addedById: userId,
+        timezone: dto.timezone,
+      });
+      if (page.fanCount > 0) {
+        await this.upsertFollowersSnapshot(view.id, page.fanCount);
       }
-    } catch (err) {
-      // Keep the pending session so the user can retry without re-OAuth.
-      throw err;
+      void this.queue.enqueueAccountSync(view.id);
+      accounts.push({ ...view, followers: page.fanCount });
     }
+    // Only consume the picker session after all pages connect successfully.
     await this.meta.deletePendingSession(dto.session);
     return { accounts };
   }
