@@ -163,6 +163,7 @@ export const renderSettingsSchema = z.object({
    * Corner reaction / talking-head PiP. Upload a silent face image/clip and/or
    * a lip-sync (talking-head) video; ffmpeg overlays it (no ML lip-sync).
    * Prefer lipSyncAssetPath when present, else assetPath.
+   * Worker removes background via rembg before overlay when available.
    */
   reactionAvatar: z
     .object({

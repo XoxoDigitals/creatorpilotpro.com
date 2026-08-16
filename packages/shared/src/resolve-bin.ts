@@ -132,6 +132,11 @@ export function resolveDemucsBinary(): string {
   return resolveCliBinary({ envVar: 'DEMUCS_PATH', names: ['demucs'] });
 }
 
+/** Background removal CLI (`pip install rembg[cli]` → `rembg`). */
+export function resolveRembgBinary(): string {
+  return resolveCliBinary({ envVar: 'REMBG_PATH', names: ['rembg'] });
+}
+
 export function resolveEdgeTtsCliPath(): string {
   return resolveCliBinary({ envVar: 'EDGE_TTS_BIN', names: ['edge-tts'] });
 }

@@ -866,13 +866,16 @@ export class Ffmpeg {
       ? `:enable='${opts.enableExpr.trim()}'`
       : '';
 
+    // Preserve source alpha (rembg / WebM-with-alpha) inside the shape mask —
+    // do not force opaque 255 inside the circle/rounded region.
     let pipChain: string;
     if (opts.shape === 'circle') {
+      const r = Math.floor(sizePx / 2) - 1;
       pipChain =
         `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
         `crop=${sizePx}:${sizePx},format=rgba,` +
         `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':` +
-        `a='if(lte(hypot(X-W/2\\,Y-H/2)\\,${Math.floor(sizePx / 2) - 1})\\,255\\,0)'[pip]`;
+        `a='if(lte(hypot(X-W/2\\,Y-H/2)\\,${r})\\,alpha(X\\,Y)\\,0)'[pip]`;
     } else if (opts.shape === 'rounded') {
       const r = Math.max(8, Math.floor(sizePx * 0.12));
       const half = Math.floor(sizePx / 2);
@@ -882,12 +885,12 @@ export class Ffmpeg {
         `crop=${sizePx}:${sizePx},format=rgba,` +
         `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':` +
         `a='if(gt(abs(X-W/2)\\,${inner})*gt(abs(Y-H/2)\\,${inner})*` +
-        `gt(hypot(abs(X-W/2)-${inner}\\,abs(Y-H/2)-${inner})\\,${r})\\,0\\,255)'[pip]`;
+        `gt(hypot(abs(X-W/2)-${inner}\\,abs(Y-H/2)-${inner})\\,${r})\\,0\\,alpha(X\\,Y))'[pip]`;
     } else {
       pipChain =
         `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
-        `crop=${sizePx}:${sizePx},` +
-        `pad=${sizePx + 8}:${sizePx + 8}:4:4:white[pip]`;
+        `crop=${sizePx}:${sizePx},format=rgba,` +
+        `pad=${sizePx + 8}:${sizePx + 8}:4:4:black@0[pip]`;
     }
 
     const filterComplex =

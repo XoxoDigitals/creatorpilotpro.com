@@ -52,6 +52,7 @@ import {
 } from './media/ffmpeg.js';
 import { loadSrtCues, writeOverlayAssFile } from './media/overlay-ass.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
+import { prepareReactionAvatarNobg } from './media/rembg-avatar.js';
 import type { AiJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident } from './publish-support.js';
 import { archiveAssetToDriveIfConfigured } from './gdrive-archive.js';
@@ -713,10 +714,17 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           avatar.showDuring === 'dialogue'
             ? dialogueOverlayEnableExpr(dialogueRanges)
             : null;
-        const isVideo = /\.(mp4|webm|mov|m4v)$/i.test(avatarAbs);
+        const nobg = await prepareReactionAvatarNobg(avatarAbs, { ffmpeg });
+        if (!nobg.removedBg && nobg.reason) {
+          console.warn(
+            `[worker:render] reaction avatar rembg skipped for ${contentItemId}: ${nobg.reason}`,
+          );
+        }
+        const overlayAbs = nobg.path;
+        const isVideo = /\.(mp4|webm|mov|m4v)$/i.test(overlayAbs);
         const pipOut = join(renderDir, 'final-with-avatar.mp4');
         await unlink(pipOut).catch(() => {});
-        await ffmpeg.applyReactionAvatarOverlay(finalPath, avatarAbs, pipOut, {
+        await ffmpeg.applyReactionAvatarOverlay(finalPath, overlayAbs, pipOut, {
           shape: avatar.shape ?? 'circle',
           corner: avatar.corner ?? 'br',
           sizePx,
@@ -729,6 +737,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           `[worker:render] reaction avatar applied for ${contentItemId}` +
             ` [${avatar.lipSyncAssetPath?.trim() ? 'lip-sync' : 'silent'}/${avatar.shape}/${avatar.corner}/${sizePx}px` +
             (enableExpr ? ', dialogue-only' : ', always') +
+            (nobg.removedBg ? ', rembg' : '') +
             ']',
         );
       } catch (err) {

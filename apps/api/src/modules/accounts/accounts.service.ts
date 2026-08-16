@@ -210,8 +210,9 @@ export class AccountsService {
       if (kind === 'lipSync') {
         if (/\.(mp4|webm|mov|m4v)$/i.test(fromName)) return fromName;
         const mt = (input.mimeType ?? '').toLowerCase();
-        if (mt.includes('mp4')) return '.mp4';
+        if (mt.includes('mp4') || mt.includes('m4v')) return '.mp4';
         if (mt.includes('webm')) return '.webm';
+        if (mt.includes('quicktime') || mt.includes('mov')) return '.mov';
         throw new BadRequestException('Lip-sync upload must be a short MP4/WebM/MOV clip.');
       }
       if (/\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v)$/i.test(fromName)) return fromName;
@@ -219,9 +220,13 @@ export class AccountsService {
       if (mt.includes('png')) return '.png';
       if (mt.includes('jpeg') || mt.includes('jpg')) return '.jpg';
       if (mt.includes('webp')) return '.webp';
-      if (mt.includes('mp4')) return '.mp4';
+      if (mt.includes('gif')) return '.gif';
+      if (mt.includes('mp4') || mt.includes('m4v')) return '.mp4';
       if (mt.includes('webm')) return '.webm';
-      throw new BadRequestException('Use a PNG/JPG/WebP image or a short MP4/WebM clip.');
+      if (mt.includes('quicktime') || mt.includes('mov')) return '.mov';
+      throw new BadRequestException(
+        'Use a PNG/JPG/WebP image or a short MP4/WebM/MOV clip (keep reaction clips short).',
+      );
     })();
 
     const { mkdir, unlink, readdir } = await import('node:fs/promises');
@@ -330,7 +335,13 @@ export class AccountsService {
     const { join } = await import('node:path');
     const clearPath = async (assetPath: unknown) => {
       if (!root || typeof assetPath !== 'string' || !assetPath) return;
-      await unlink(join(root, assetPath.replace(/^[/\\]+/, ''))).catch(() => {});
+      const abs = join(root, assetPath.replace(/^[/\\]+/, ''));
+      await unlink(abs).catch(() => {});
+      // Cached rembg outputs written beside the upload (*.nobg.png / *.nobg.webm).
+      const nobgPng = abs.replace(/\.[^.]+$/i, '.nobg.png');
+      const nobgWebm = abs.replace(/\.[^.]+$/i, '.nobg.webm');
+      if (nobgPng !== abs) await unlink(nobgPng).catch(() => {});
+      if (nobgWebm !== abs) await unlink(nobgWebm).catch(() => {});
     };
     if (kind === 'silent' || kind === 'all') {
       await clearPath(prevAvatar.assetPath);

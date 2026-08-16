@@ -1260,9 +1260,9 @@ function NarrationScriptPanel({
       <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50/60 px-2 py-1.5">
         <p className="text-[11px] font-medium text-zinc-600">Reaction avatar</p>
         <p className="text-[10px] text-zinc-500">
-          Upload a silent face/image and optional lip-sync talking-head clip under Account →
+          Upload a silent face image/clip and optional lip-sync talking-head video under Account →
           Settings → Render effects. ffmpeg PiP prefers the lip-sync clip during dialogue (not ML
-          lip-sync).
+          lip-sync). Background is removed with rembg on render when installed on the worker.
         </p>
       </div>
 

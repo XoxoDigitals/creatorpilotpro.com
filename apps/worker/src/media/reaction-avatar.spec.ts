@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dialogueOverlayEnableExpr, reactionAvatarOverlayXy } from './ffmpeg.js';
+import { reactionAvatarNobgCachePath } from './rembg-avatar.js';
 
 describe('dialogueOverlayEnableExpr', () => {
   it('builds OR of between() windows', () => {
@@ -22,5 +23,14 @@ describe('reactionAvatarOverlayXy', () => {
   it('maps corners to overlay expressions', () => {
     expect(reactionAvatarOverlayXy('br')).toEqual({ x: 'W-w-36', y: 'H-h-36' });
     expect(reactionAvatarOverlayXy('tl', 20)).toEqual({ x: '20', y: '20' });
+  });
+});
+
+describe('reactionAvatarNobgCachePath', () => {
+  it('maps images to .nobg.png and videos to .nobg.webm', () => {
+    expect(reactionAvatarNobgCachePath('/a/reaction-avatar.jpg')).toBe('/a/reaction-avatar.nobg.png');
+    expect(reactionAvatarNobgCachePath('/a/reaction-avatar-lipsync.mp4')).toBe(
+      '/a/reaction-avatar-lipsync.nobg.webm',
+    );
   });
 });

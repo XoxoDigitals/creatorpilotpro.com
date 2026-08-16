@@ -90,6 +90,11 @@ function normalizeDayId(raw: string): string | null {
   return WEEKDAYS.some((d) => d.id === key) ? key : null;
 }
 
+function isReactionVideoAsset(mimeType?: string | null, assetPath?: string | null): boolean {
+  if (mimeType && mimeType.toLowerCase().startsWith('video/')) return true;
+  return /\.(mp4|webm|mov|m4v)$/i.test(assetPath ?? '');
+}
+
 interface ComposeMasterPromptResponse {
   masterPrompt: string;
   writingStyle: string;
@@ -1278,20 +1283,35 @@ export default function AccountSettingsPage() {
               label="Reaction avatar (corner PiP)"
             />
             <p className="text-[11px] text-zinc-500">
-              Upload a silent face photo/clip and an optional lip-sync talking-head video. ffmpeg
-              overlays the lip-sync clip when present (else the silent asset) in the corner during
-              dialogue — not ML lip-sync, just PiP of your uploaded clip.
+              Upload a silent face photo/clip and an optional lip-sync talking-head video (MP4 / WebM
+              / MOV). ffmpeg overlays the lip-sync clip when present (else the silent asset) in the
+              corner during dialogue — not ML lip-sync, just PiP. Background is removed with rembg
+              on render (cached beside the upload).
             </p>
             {renderSettings.reactionAvatar?.enabled && (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-start gap-3">
                   {renderSettings.reactionAvatar.assetPath ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={`/api/v1/accounts/${id}/reaction-avatar?t=${encodeURIComponent(renderSettings.reactionAvatar.assetPath)}`}
-                      alt="Silent reaction avatar"
-                      className="h-20 w-20 rounded-full border border-zinc-200 object-cover bg-zinc-100"
-                    />
+                    isReactionVideoAsset(
+                      renderSettings.reactionAvatar.mimeType,
+                      renderSettings.reactionAvatar.assetPath,
+                    ) ? (
+                      <video
+                        src={`/api/v1/accounts/${id}/reaction-avatar?t=${encodeURIComponent(renderSettings.reactionAvatar.assetPath)}`}
+                        className="h-20 w-20 rounded-full border border-zinc-200 object-cover bg-zinc-100"
+                        muted
+                        loop
+                        playsInline
+                        autoPlay
+                      />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={`/api/v1/accounts/${id}/reaction-avatar?t=${encodeURIComponent(renderSettings.reactionAvatar.assetPath)}`}
+                        alt="Silent reaction avatar"
+                        className="h-20 w-20 rounded-full border border-zinc-200 object-cover bg-zinc-100"
+                      />
+                    )
                   ) : (
                     <div className="flex h-20 w-20 items-center justify-center rounded-full border border-dashed border-zinc-300 bg-white text-[10px] text-zinc-400">
                       No silent
@@ -1301,7 +1321,7 @@ export default function AccountSettingsPage() {
                     <p className="text-[11px] font-medium text-zinc-600">Silent face / clip</p>
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
+                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.m4v"
                       className="block w-full text-xs text-zinc-600"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
@@ -1354,16 +1374,27 @@ export default function AccountSettingsPage() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-start gap-3 border-t border-zinc-200 pt-3">
-                  <div className="flex h-20 w-20 items-center justify-center rounded-full border border-dashed border-zinc-300 bg-white text-center text-[10px] text-zinc-400">
-                    {renderSettings.reactionAvatar.lipSyncAssetPath ? 'Lip-sync set' : 'No lip-sync'}
-                  </div>
+                  {renderSettings.reactionAvatar.lipSyncAssetPath ? (
+                    <video
+                      src={`/api/v1/accounts/${id}/reaction-avatar/lip-sync?t=${encodeURIComponent(renderSettings.reactionAvatar.lipSyncAssetPath)}`}
+                      className="h-20 w-20 rounded-full border border-zinc-200 object-cover bg-zinc-100"
+                      muted
+                      loop
+                      playsInline
+                      autoPlay
+                    />
+                  ) : (
+                    <div className="flex h-20 w-20 items-center justify-center rounded-full border border-dashed border-zinc-300 bg-white text-center text-[10px] text-zinc-400">
+                      No lip-sync
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1 space-y-2">
                     <p className="text-[11px] font-medium text-zinc-600">
                       Lip-sync / talking-head video
                     </p>
                     <input
                       type="file"
-                      accept="video/mp4,video/webm,video/quicktime"
+                      accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.m4v"
                       className="block w-full text-xs text-zinc-600"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
@@ -1414,10 +1445,15 @@ export default function AccountSettingsPage() {
                       </Button>
                     )}
                     <p className="text-[10px] text-zinc-500">
-                      Preferred during dialogue when set. Falls back to the silent asset.
+                      Preferred during dialogue when set. Falls back to the silent asset. Keep clips
+                      short (rembg processes up to ~8s @ 12fps on the worker).
                     </p>
                   </div>
                 </div>
+                <p className="text-[10px] text-zinc-500">
+                  Background removed on render (requires <code className="text-[10px]">rembg</code>{' '}
+                  on the worker host). Preview shows the original upload.
+                </p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Shape">
                     <Select
