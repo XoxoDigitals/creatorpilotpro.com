@@ -19,6 +19,7 @@ import {
   getUpcomingView,
   publishDefaultsFromProfile,
   publishTargetNow,
+  retryPublishTarget,
   schedulePublish,
   type PublishTargetDetail,
   type UpcomingResult,
@@ -53,12 +54,28 @@ function statusLabel(status?: PublishTargetDetail['status']): string {
   }
 }
 
+function errorText(err: unknown): string {
+  if (err == null) return '';
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
 export default function AccountSchedulePage() {
   const { id } = useParams<{ id: string }>();
   const search = useSearchParams();
   const router = useRouter();
   const toast = useToast();
-  const [data, setData] = useState<UpcomingResult>({ scheduled: [], freeSlots: [], demo: false });
+  const [data, setData] = useState<UpcomingResult>({
+    scheduled: [],
+    failed: [],
+    published: [],
+    freeSlots: [],
+    demo: false,
+  });
   const [loading, setLoading] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -69,6 +86,7 @@ export default function AccountSchedulePage() {
   const [schedBusy, setSchedBusy] = useState(false);
   const [customDate, setCustomDate] = useState('');
   const [crosspostIds, setCrosspostIds] = useState<string[]>([]);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -336,6 +354,154 @@ export default function AccountSchedulePage() {
         onChanged={() => void load()}
       />
       </div>
+
+      <Card>
+        <CardHeader
+          title="Failed publishes"
+          description="Drafts and failures that need a retry (includes media or platform errors)"
+        />
+        {loading ? (
+          <p className="p-4 text-sm text-zinc-500">Loading…</p>
+        ) : data.failed.length === 0 ? (
+          <div className="p-4">
+            <EmptyState title="No failed publishes" hint="Failed or blocked posts will show up here with a Retry action." />
+          </div>
+        ) : (
+          <Table className="rounded-t-none border-0">
+            <THead>
+              <TR>
+                <TH>Title</TH>
+                <TH>Status</TH>
+                <TH>Error</TH>
+                <TH>Updated</TH>
+                <TH>Actions</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {data.failed.map((p) => (
+                <TR key={p.publishTargetId}>
+                  <TD className="font-medium text-zinc-900">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(p.publishTargetId);
+                        setSelectedTitle(p.title);
+                      }}
+                      className="text-left text-indigo-700 underline-offset-2 hover:underline"
+                    >
+                      {p.title}
+                    </button>
+                  </TD>
+                  <TD>
+                    <Badge tone={QUEUE_STATUS_TONE[p.status]}>{statusLabel(p.status)}</Badge>
+                  </TD>
+                  <TD className="max-w-xs truncate text-xs text-red-700" title={errorText(p.lastError)}>
+                    {errorText(p.lastError) || '—'}
+                  </TD>
+                  <TD title={absoluteTime(p.updatedAt)}>{relativeTime(p.updatedAt)}</TD>
+                  <TD>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={schedBusy || data.demo || retryingId === p.publishTargetId}
+                        onClick={() => {
+                          void (async () => {
+                            setRetryingId(p.publishTargetId);
+                            try {
+                              await retryPublishTarget(p.publishTargetId);
+                              toast('Retry queued', 'success');
+                              await load();
+                            } catch (err) {
+                              toast(
+                                err instanceof ApiError ? err.message : 'Retry failed',
+                                'error',
+                              );
+                            } finally {
+                              setRetryingId(null);
+                            }
+                          })();
+                        }}
+                      >
+                        {retryingId === p.publishTargetId ? 'Retrying…' : 'Retry'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={schedBusy || data.demo || retryingId === p.publishTargetId}
+                        onClick={() => {
+                          void (async () => {
+                            setSchedBusy(true);
+                            try {
+                              await publishTargetNow(p.publishTargetId);
+                              toast('Set to publish now', 'success');
+                              await load();
+                            } catch (err) {
+                              toast(
+                                err instanceof ApiError ? err.message : 'Publish now failed',
+                                'error',
+                              );
+                            } finally {
+                              setSchedBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        Publish now
+                      </Button>
+                    </div>
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader title="Last 10 published" description="Most recently published posts on this account" />
+        {loading ? (
+          <p className="p-4 text-sm text-zinc-500">Loading…</p>
+        ) : data.published.length === 0 ? (
+          <div className="p-4">
+            <EmptyState title="Nothing published yet" hint="Published videos will appear here." />
+          </div>
+        ) : (
+          <Table className="rounded-t-none border-0">
+            <THead>
+              <TR>
+                <TH>Title</TH>
+                <TH>Status</TH>
+                <TH>Published</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {data.published.map((p) => (
+                <TR key={p.publishTargetId}>
+                  <TD className="font-medium text-zinc-900">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(p.publishTargetId);
+                        setSelectedTitle(p.title);
+                      }}
+                      className="text-left text-indigo-700 underline-offset-2 hover:underline"
+                    >
+                      {p.title}
+                    </button>
+                  </TD>
+                  <TD>
+                    <Badge tone="green">Published</Badge>
+                  </TD>
+                  <TD title={p.publishedAt ? absoluteTime(p.publishedAt) : ''}>
+                    {p.publishedAt ? relativeTime(p.publishedAt) : '—'}
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        )}
+      </Card>
     </div>
   );
 }

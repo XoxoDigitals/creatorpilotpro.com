@@ -176,6 +176,47 @@ describe('FacebookAdapter (Reels)', () => {
     expect(calls[1]!.headers).toHaveProperty('Authorization', 'OAuth TKN');
   });
 
+  it('publishes videos longer than 90s via Page Videos (not Reels)', async () => {
+    const calls: Call[] = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, method: init?.method ?? 'GET', headers: (init?.headers ?? {}) as Record<string, string> });
+      if (u.includes('graph-video.facebook.com') && u.endsWith('/videos')) {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        if (body.includes('upload_phase=start') || (init?.body instanceof FormData) === false && body.includes('start')) {
+          if (body.includes('upload_phase=start')) {
+            return jsonResponse(200, {
+              upload_session_id: 'sess_1',
+              video_id: 'vid_long',
+              start_offset: '0',
+              end_offset: '14',
+            });
+          }
+          if (body.includes('upload_phase=finish')) {
+            return jsonResponse(200, { success: true });
+          }
+        }
+        if (init?.body instanceof FormData) {
+          return jsonResponse(200, { start_offset: '14', end_offset: '14' });
+        }
+        if (body.includes('upload_phase=finish')) {
+          return jsonResponse(200, { success: true });
+        }
+      }
+      return jsonResponse(404, { error: { message: `unexpected ${u}` } });
+    }) as unknown as typeof fetch;
+
+    const adapter = new FacebookAdapter({ graphVersion: 'v21.0', fetchImpl });
+    const long = { ...media(), durationSec: 170.56 };
+    const res = await adapter.publish(fbTarget(), long, meta());
+    expect(res.platformPostId).toBe('vid_long');
+    expect(calls.some((c) => c.url.includes('/video_reels'))).toBe(false);
+    expect(calls.some((c) => c.url.includes('graph-video.facebook.com') && c.url.endsWith('/videos'))).toBe(
+      true,
+    );
+    expect(adapter.getConstraints().maxDurationSec).toBeGreaterThan(90);
+  });
+
   it('verify() maps ready → live and error → BLOCK (after primeVerifyAuth)', async () => {
     let statusValue = 'ready';
     const fetchImpl = (async () => jsonResponse(200, { status: { video_status: statusValue } })) as unknown as typeof fetch;

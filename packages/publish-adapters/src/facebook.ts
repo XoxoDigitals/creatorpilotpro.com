@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type {
   PublishAdapter,
@@ -10,23 +11,19 @@ import type {
 } from './types.js';
 
 /**
- * Facebook adapter — Reels only (Owner decision 2026-07-14, docs/06 §2).
- * Direct Meta Graph API (does NOT use PostQued):
+ * Facebook adapter — Reels for ≤90s, Page Videos for longer clips.
+ *
+ * Reels (≤90s):
  *   POST /{page-id}/video_reels?upload_phase=start  → { video_id, upload_url }
  *   POST <upload_url> (rupload.facebook.com) with the file bytes
- *   POST /{page-id}/video_reels?upload_phase=finish  (video_id, description, video_state=PUBLISHED)
+ *   POST /{page-id}/video_reels?upload_phase=finish
  *
- * Credentials: read from `target.auth`:
- *   `{ pageId: string, pageAccessToken: string }`
- * (system-user page token preferred — non-expiring). Tokens are sent in the
- * `Authorization` header, never in the URL query string.
+ * Page Videos (>90s), chunked upload on graph-video.facebook.com:
+ *   POST /{page-id}/videos upload_phase=start
+ *   POST /{page-id}/videos upload_phase=transfer (chunks)
+ *   POST /{page-id}/videos upload_phase=finish
  *
- * publish() returns the real Graph `video_id` as `platformPostId`.
- *
- * verify() note: the frozen PublishAdapter.verify(platformPostId) signature carries no
- * auth, but Graph status GET needs the page token. publish() caches the credentials by
- * video id in-process; for a fresh worker process the caller must re-seed them via
- * {@link FacebookAdapter.primeVerifyAuth} before calling verify().
+ * Credentials: `target.auth` = `{ pageId, pageAccessToken }`.
  */
 
 export interface FacebookAdapterConfig {
@@ -42,6 +39,12 @@ interface FacebookAuth {
 }
 
 const GRAPH_BASE = 'https://graph.facebook.com';
+const GRAPH_VIDEO_BASE = 'https://graph-video.facebook.com';
+
+/** Meta Reels hard max (docs). Longer clips must use Page Videos. */
+export const FACEBOOK_REEL_MAX_DURATION_SEC = 90;
+/** Meta Page Video max length (docs error 1363026). */
+export const FACEBOOK_PAGE_VIDEO_MAX_DURATION_SEC = 40 * 60;
 
 export class FacebookAdapter implements PublishAdapter {
   readonly platform = 'FACEBOOK' as const;
@@ -64,6 +67,10 @@ export class FacebookAdapter implements PublishAdapter {
     return `${GRAPH_BASE}/${this.graphVersion}/${path.replace(/^\//, '')}`;
   }
 
+  private graphVideoUrl(path: string): string {
+    return `${GRAPH_VIDEO_BASE}/${this.graphVersion}/${path.replace(/^\//, '')}`;
+  }
+
   private static readAuth(target: PublishTarget): FacebookAuth {
     const auth = target.auth as Partial<FacebookAuth>;
     if (!auth.pageId || !auth.pageAccessToken) {
@@ -74,17 +81,40 @@ export class FacebookAdapter implements PublishAdapter {
     return { pageId: auth.pageId, pageAccessToken: auth.pageAccessToken };
   }
 
+  private static caption(meta: ResolvedMetadata): string {
+    return [meta.title?.trim(), meta.description?.trim()]
+      .filter((p): p is string => !!p && p.length > 0)
+      .join('\n\n');
+  }
+
+  /** Prefer Reels for short clips; Page Videos when duration exceeds the Reels cap. */
+  static shouldPublishAsReel(durationSec: number | undefined): boolean {
+    if (durationSec == null || !Number.isFinite(durationSec) || durationSec <= 0) {
+      return true;
+    }
+    return durationSec <= FACEBOOK_REEL_MAX_DURATION_SEC;
+  }
+
   async publish(
     target: PublishTarget,
     media: LocalFile,
     meta: ResolvedMetadata,
   ): Promise<{ platformPostId: string }> {
-    const { pageId, pageAccessToken } = FacebookAdapter.readAuth(target);
-    const description = [meta.title?.trim(), meta.description?.trim()]
-      .filter((p): p is string => !!p && p.length > 0)
-      .join('\n\n');
+    const auth = FacebookAdapter.readAuth(target);
+    if (FacebookAdapter.shouldPublishAsReel(media.durationSec)) {
+      return this.publishReel(auth, media, meta);
+    }
+    return this.publishPageVideo(auth, media, meta);
+  }
 
-    // Phase 1 — start: reserve a video id + upload url.
+  private async publishReel(
+    auth: FacebookAuth,
+    media: LocalFile,
+    meta: ResolvedMetadata,
+  ): Promise<{ platformPostId: string }> {
+    const { pageId, pageAccessToken } = auth;
+    const description = FacebookAdapter.caption(meta);
+
     const startRes = await this.fetchImpl(
       this.graphUrl(`${pageId}/video_reels?upload_phase=start`),
       {
@@ -104,8 +134,6 @@ export class FacebookAdapter implements PublishAdapter {
     }
     const videoId = start.video_id;
 
-    // Phase 2 — upload: POST the raw bytes to the rupload host.
-    // rupload uses `Authorization: OAuth <token>` plus offset/file_size headers.
     const body = Readable.toWeb(createReadStream(media.path)) as unknown as ReadableStream<Uint8Array>;
     const uploadInit = {
       method: 'POST',
@@ -125,7 +153,6 @@ export class FacebookAdapter implements PublishAdapter {
       throw new Error(`Facebook Reels upload failed (${uploadRes.status}): ${raw.slice(0, 300)}`);
     }
 
-    // Phase 3 — finish: publish the reel.
     const finishParams = new URLSearchParams({
       upload_phase: 'finish',
       video_id: videoId,
@@ -146,7 +173,123 @@ export class FacebookAdapter implements PublishAdapter {
       throw new Error(`Facebook Reels finish failed (${finishRes.status}): ${raw.slice(0, 300)}`);
     }
 
-    this.authByVideoId.set(videoId, { pageId, pageAccessToken });
+    this.authByVideoId.set(videoId, auth);
+    return { platformPostId: videoId };
+  }
+
+  /**
+   * Chunked Page Video upload (graph-video host). Used when duration > Reels max.
+   */
+  private async publishPageVideo(
+    auth: FacebookAuth,
+    media: LocalFile,
+    meta: ResolvedMetadata,
+  ): Promise<{ platformPostId: string }> {
+    const { pageId, pageAccessToken } = auth;
+    const description = FacebookAdapter.caption(meta);
+    const title = meta.title?.trim() || 'Video';
+    const videosUrl = this.graphVideoUrl(`${pageId}/videos`);
+    const authHeader = { Authorization: `Bearer ${pageAccessToken}`, accept: 'application/json' };
+
+    const startParams = new URLSearchParams({
+      upload_phase: 'start',
+      file_size: String(media.bytes),
+    });
+    const startRes = await this.fetchImpl(videosUrl, {
+      method: 'POST',
+      headers: {
+        ...authHeader,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: startParams.toString(),
+    });
+    const start = (await startRes.json().catch(() => ({}))) as {
+      upload_session_id?: string;
+      video_id?: string;
+      start_offset?: string | number;
+      end_offset?: string | number;
+      error?: { message?: string };
+    };
+    if (!startRes.ok || !start.upload_session_id || !start.video_id) {
+      throw new Error(
+        `Facebook Page Video start failed (${startRes.status}): ${start.error?.message ?? JSON.stringify(start)}`,
+      );
+    }
+
+    const sessionId = start.upload_session_id;
+    const videoId = start.video_id;
+    let startOffset = Number(start.start_offset ?? 0);
+    let endOffset = Number(start.end_offset ?? 0);
+
+    const fh = await open(media.path, 'r');
+    try {
+      while (startOffset !== endOffset) {
+        const chunkSize = endOffset - startOffset;
+        if (chunkSize <= 0) break;
+        const buf = Buffer.alloc(chunkSize);
+        const { bytesRead } = await fh.read(buf, 0, chunkSize, startOffset);
+        const chunk = bytesRead === chunkSize ? buf : buf.subarray(0, bytesRead);
+
+        const form = new FormData();
+        form.append('upload_phase', 'transfer');
+        form.append('upload_session_id', sessionId);
+        form.append('start_offset', String(startOffset));
+        form.append('video_file_chunk', new Blob([new Uint8Array(chunk)]), 'chunk.mp4');
+
+        const transferRes = await this.fetchImpl(videosUrl, {
+          method: 'POST',
+          headers: authHeader,
+          body: form,
+        });
+        const transfer = (await transferRes.json().catch(() => ({}))) as {
+          start_offset?: string | number;
+          end_offset?: string | number;
+          error?: { message?: string };
+        };
+        if (!transferRes.ok) {
+          throw new Error(
+            `Facebook Page Video transfer failed (${transferRes.status}): ${transfer.error?.message ?? JSON.stringify(transfer)}`,
+          );
+        }
+        const nextStart = Number(transfer.start_offset ?? endOffset);
+        const nextEnd = Number(transfer.end_offset ?? endOffset);
+        if (nextStart === startOffset && nextEnd === endOffset) {
+          throw new Error('Facebook Page Video transfer made no progress.');
+        }
+        startOffset = nextStart;
+        endOffset = nextEnd;
+      }
+    } finally {
+      await fh.close();
+    }
+
+    const finishParams = new URLSearchParams({
+      upload_phase: 'finish',
+      upload_session_id: sessionId,
+      title,
+      description,
+      published: 'true',
+    });
+    const finishRes = await this.fetchImpl(videosUrl, {
+      method: 'POST',
+      headers: {
+        ...authHeader,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: finishParams.toString(),
+    });
+    const finish = (await finishRes.json().catch(() => ({}))) as {
+      success?: boolean;
+      id?: string;
+      error?: { message?: string };
+    };
+    if (!finishRes.ok) {
+      throw new Error(
+        `Facebook Page Video finish failed (${finishRes.status}): ${finish.error?.message ?? JSON.stringify(finish)}`,
+      );
+    }
+
+    this.authByVideoId.set(videoId, auth);
     return { platformPostId: videoId };
   }
 
@@ -173,7 +316,6 @@ export class FacebookAdapter implements PublishAdapter {
       );
     }
 
-    // `status` is `{ video_status }` on newer Graph versions, or a bare string on older ones.
     const videoStatus = (
       typeof data.status === 'string' ? data.status : (data.status?.video_status ?? 'unknown')
     ).toLowerCase();
@@ -189,7 +331,6 @@ export class FacebookAdapter implements PublishAdapter {
         severity: 'BLOCK',
       });
     } else {
-      // processing / uploading / unknown — not live yet, not a failure.
       issues.push({
         code: 'processing',
         message: `Facebook video_status "${videoStatus}".`,
@@ -202,7 +343,8 @@ export class FacebookAdapter implements PublishAdapter {
 
   getConstraints(): PlatformConstraints {
     return {
-      maxDurationSec: 90,
+      // Page Videos allow up to 40 minutes; Reels path is chosen when ≤90s.
+      maxDurationSec: FACEBOOK_PAGE_VIDEO_MAX_DURATION_SEC,
       maxBytes: 4 * 1024 * 1024 * 1024,
       maxTitleLength: 255,
       maxTags: 30,

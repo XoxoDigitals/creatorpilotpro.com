@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { Prisma, ScheduleSlot } from '@scp/db';
+import { Prisma, type ScheduleSlot } from '@scp/db';
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveTargetCopy } from '../publishing/publish-target.view';
 import { SlotPlannerService } from './slot-planner.service';
@@ -32,6 +32,25 @@ export interface UpcomingView {
     title: string;
     scheduledAt: string;
     status: 'PENDING' | 'SCHEDULED' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | 'DRAFT';
+  }>;
+  /** Failed / draft-with-error targets (publish moved failures to DRAFT). */
+  failed: Array<{
+    publishTargetId: string;
+    contentItemId: string;
+    title: string;
+    scheduledAt: string | null;
+    status: 'PENDING' | 'SCHEDULED' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | 'DRAFT';
+    lastError: unknown;
+    updatedAt: string;
+  }>;
+  /** Most recent published posts for this account. */
+  published: Array<{
+    publishTargetId: string;
+    contentItemId: string;
+    title: string;
+    publishedAt: string | null;
+    scheduledAt: string | null;
+    status: 'PUBLISHED';
   }>;
   freeSlots: string[];
 }
@@ -86,30 +105,79 @@ export class SchedulingService {
     return { id };
   }
 
-  /** Upcoming scheduled targets + the next generated free slots for an account. */
+  /** Upcoming scheduled targets + failed + recent published + next free slots. */
   async upcoming(accountId: string): Promise<UpcomingView> {
-    const targets = await this.prisma.client.publishTarget.findMany({
-      where: { accountId, status: 'SCHEDULED', scheduledAt: { not: null } },
-      include: {
-        contentItem: { select: { title: true, currentStep: true } },
-      },
-      orderBy: { scheduledAt: 'asc' },
-      take: 100,
-    });
-    const freeSlots = await this.planner.nextSlots(accountId, 10);
+    const [targets, failedRows, publishedRows, freeSlots] = await Promise.all([
+      this.prisma.client.publishTarget.findMany({
+        where: { accountId, status: 'SCHEDULED', scheduledAt: { not: null } },
+        include: {
+          contentItem: { select: { title: true, currentStep: true } },
+        },
+        orderBy: { scheduledAt: 'asc' },
+        take: 100,
+      }),
+      this.prisma.client.publishTarget.findMany({
+        where: {
+          accountId,
+          OR: [
+            { status: 'FAILED' },
+            { status: 'DRAFT', lastError: { not: Prisma.DbNull } },
+          ],
+        },
+        include: {
+          contentItem: { select: { title: true, currentStep: true } },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 20,
+      }),
+      this.prisma.client.publishTarget.findMany({
+        where: { accountId, status: 'PUBLISHED' },
+        include: {
+          contentItem: { select: { title: true, currentStep: true } },
+        },
+        orderBy: { publishedAt: 'desc' },
+        take: 10,
+      }),
+      this.planner.nextSlots(accountId, 10),
+    ]);
+
+    const mapCopy = (
+      t: (typeof targets)[number],
+    ): { title: string } =>
+      resolveTargetCopy(t.metadataOverride, t.contentItem.currentStep, t.contentItem.title);
+
     return {
       scheduled: targets.map((t) => {
-        const copy = resolveTargetCopy(
-          t.metadataOverride,
-          t.contentItem.currentStep,
-          t.contentItem.title,
-        );
+        const copy = mapCopy(t);
         return {
           publishTargetId: t.id,
           contentItemId: t.contentItemId,
           title: copy.title,
           scheduledAt: (t.scheduledAt as Date).toISOString(),
           status: t.status,
+        };
+      }),
+      failed: failedRows.map((t) => {
+        const copy = mapCopy(t);
+        return {
+          publishTargetId: t.id,
+          contentItemId: t.contentItemId,
+          title: copy.title,
+          scheduledAt: t.scheduledAt ? t.scheduledAt.toISOString() : null,
+          status: t.status,
+          lastError: t.lastError ?? null,
+          updatedAt: t.updatedAt.toISOString(),
+        };
+      }),
+      published: publishedRows.map((t) => {
+        const copy = mapCopy(t);
+        return {
+          publishTargetId: t.id,
+          contentItemId: t.contentItemId,
+          title: copy.title,
+          publishedAt: t.publishedAt ? t.publishedAt.toISOString() : null,
+          scheduledAt: t.scheduledAt ? t.scheduledAt.toISOString() : null,
+          status: 'PUBLISHED' as const,
         };
       }),
       freeSlots: freeSlots.map((d) => d.toISOString()),

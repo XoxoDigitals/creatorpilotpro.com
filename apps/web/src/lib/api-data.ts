@@ -834,6 +834,23 @@ export interface UpcomingResult {
     scheduledAt: string;
     status?: PublishTargetDetail['status'];
   }>;
+  failed: Array<{
+    publishTargetId: string;
+    contentItemId: string;
+    title: string;
+    scheduledAt: string | null;
+    status: PublishTargetDetail['status'];
+    lastError: unknown;
+    updatedAt: string;
+  }>;
+  published: Array<{
+    publishTargetId: string;
+    contentItemId: string;
+    title: string;
+    publishedAt: string | null;
+    scheduledAt: string | null;
+    status: 'PUBLISHED';
+  }>;
   freeSlots: string[];
   demo: boolean;
 }
@@ -843,6 +860,10 @@ export async function getUpcomingView(accountId: string): Promise<UpcomingResult
     const posts = mockPosts(accountId)
       .filter((p) => p.scheduledAt && p.status !== 'PUBLISHED')
       .sort((a, b) => Date.parse(a.scheduledAt!) - Date.parse(b.scheduledAt!));
+    const published = mockPosts(accountId)
+      .filter((p) => p.status === 'PUBLISHED')
+      .sort((a, b) => Date.parse(b.publishedAt ?? '') - Date.parse(a.publishedAt ?? ''))
+      .slice(0, 10);
     return {
       scheduled: posts.map((p) => ({
         publishTargetId: p.id,
@@ -851,6 +872,15 @@ export async function getUpcomingView(accountId: string): Promise<UpcomingResult
         scheduledAt: p.scheduledAt!,
         status: 'SCHEDULED' as const,
       })),
+      failed: [],
+      published: published.map((p) => ({
+        publishTargetId: p.id,
+        contentItemId: p.contentItemId,
+        title: p.title,
+        publishedAt: p.publishedAt ?? null,
+        scheduledAt: p.scheduledAt ?? null,
+        status: 'PUBLISHED' as const,
+      })),
       freeSlots: [],
       demo: true,
     };
@@ -858,7 +888,13 @@ export async function getUpcomingView(accountId: string): Promise<UpcomingResult
   const data = await api.get<Omit<UpcomingResult, 'demo'>>(
     `/schedule/upcoming?accountId=${encodeURIComponent(accountId)}`,
   );
-  return { ...data, demo: false };
+  return {
+    scheduled: data.scheduled ?? [],
+    failed: data.failed ?? [],
+    published: data.published ?? [],
+    freeSlots: data.freeSlots ?? [],
+    demo: false,
+  };
 }
 
 // --- Manual upload → publish flow ------------------------------------------
