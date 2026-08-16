@@ -22,6 +22,10 @@ export const schedulingPrefsSchema = z.object({
   defaultScheduleMode: z.enum(['NOW', 'QUEUE_SLOT']).optional(),
   /** Sibling SocialAccount ids to always include as crosspost destinations. */
   defaultCrosspostAccountIds: z.array(z.string().min(1)).optional(),
+  /** Default visibility for YouTube / TikTok / Facebook publishes. */
+  defaultVisibility: z.enum(['PUBLIC', 'UNLISTED', 'PRIVATE']).optional(),
+  /** YouTube category id (string) when publishing to YouTube. */
+  defaultCategory: z.string().max(32).optional(),
 });
 export type SchedulingPrefs = z.infer<typeof schedulingPrefsSchema>;
 
@@ -87,6 +91,8 @@ export const metaConnectSchema = z
     session: z.string().min(1),
     pageId: z.string().min(1).optional(),
     pageIds: z.array(z.string().min(1)).min(1).max(50).optional(),
+    /** IANA timezone from the browser (e.g. America/Los_Angeles). */
+    timezone: z.string().min(1).max(64).optional(),
   })
   .superRefine((val, ctx) => {
     if (!val.pageIds?.length && !val.pageId) {

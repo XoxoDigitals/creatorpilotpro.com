@@ -3,22 +3,26 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { StatCard } from '@/components/ui/stat-card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PlatformIcon } from '@/components/ui/platform-icon';
+import { useToast } from '@/components/ui/toast';
 import {
   contentMediaUrl,
   contentThumbnailUrl,
   getContentMediaInfo,
   getPostMetricsView,
   getPublishTargetDetail,
+  publishTargetNow,
   type PostMetrics,
   type PublishTargetDetail,
 } from '@/lib/api-data';
 import { MediaEmbed } from '@/components/media-embed';
 import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
 import type { Platform } from '@/lib/domain-types';
+import { ApiError } from '@/lib/api';
 
 const STATUS_TONE: Record<
   PublishTargetDetail['status'],
@@ -47,11 +51,13 @@ export function PostDetailModal({
   publishTargetId,
   /** Optional seed so the header paints before the detail fetch returns. */
   seedTitle,
+  onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   publishTargetId: string | null;
   seedTitle?: string;
+  onChanged?: () => void;
 }) {
   const [detail, setDetail] = useState<PublishTargetDetail | null>(null);
   const [metrics, setMetrics] = useState<PostMetrics | null>(null);
@@ -60,6 +66,8 @@ export function PostDetailModal({
   const [thumbBroken, setThumbBroken] = useState(false);
   const [videoEmbedUrl, setVideoEmbedUrl] = useState<string | null>(null);
   const [thumbEmbedUrl, setThumbEmbedUrl] = useState<string | null>(null);
+  const [publishingNow, setPublishingNow] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     if (!open || !publishTargetId) {
@@ -251,6 +259,41 @@ export function PostDetailModal({
                     ? detail.lastError
                     : JSON.stringify(detail.lastError)}
                 </p>
+              )}
+              {(detail.status === 'SCHEDULED' || detail.status === 'PENDING' || detail.status === 'FAILED') && (
+                <div className="mt-3">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={publishingNow}
+                    onClick={() => {
+                      void (async () => {
+                        setPublishingNow(true);
+                        try {
+                          await publishTargetNow(detail.id);
+                          toast(
+                            detail.status === 'PENDING'
+                              ? 'Set to publish now after Review Approve'
+                              : 'Publishing now',
+                            'success',
+                          );
+                          const next = await getPublishTargetDetail(detail.id);
+                          setDetail(next);
+                          onChanged?.();
+                        } catch (err) {
+                          toast(
+                            err instanceof ApiError ? err.message : 'Could not publish now',
+                            'error',
+                          );
+                        } finally {
+                          setPublishingNow(false);
+                        }
+                      })();
+                    }}
+                  >
+                    {publishingNow ? 'Starting…' : 'Publish now'}
+                  </Button>
+                </div>
               )}
             </section>
 

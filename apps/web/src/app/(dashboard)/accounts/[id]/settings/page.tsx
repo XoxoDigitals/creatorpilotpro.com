@@ -131,6 +131,14 @@ export default function AccountSettingsPage() {
   const [defaultScheduleMode, setDefaultScheduleMode] =
     useState<ChannelScheduleMode>('QUEUE_SLOT');
   const [defaultCrosspostIds, setDefaultCrosspostIds] = useState<string[]>([]);
+  const [timezone, setTimezone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  );
+  const [randomizeMinutes, setRandomizeMinutes] = useState('0');
+  const [defaultVisibility, setDefaultVisibility] = useState<'PUBLIC' | 'UNLISTED' | 'PRIVATE'>(
+    'PUBLIC',
+  );
+  const [defaultCategory, setDefaultCategory] = useState('22');
 
   const localeOptions = useMemo(() => {
     const set = new Set(voices.map((v) => v.locale).filter(Boolean));
@@ -231,6 +239,9 @@ export default function AccountSettingsPage() {
           minGapMin?: number;
           times?: string[];
           days?: string[];
+          randomizeMinutes?: number;
+          defaultVisibility?: 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
+          defaultCategory?: string;
         } | null;
         const posts =
           typeof sched?.maxPerDay === 'number'
@@ -243,6 +254,13 @@ export default function AccountSettingsPage() {
         setMaxPerDay(String(posts));
         setPostTimes(normalizeTimes(posts, Array.isArray(sched?.times) ? sched.times : []));
         if (typeof sched?.minGapMin === 'number') setMinGap(String(Math.round(sched.minGapMin / 60)));
+        if (typeof sched?.randomizeMinutes === 'number') {
+          setRandomizeMinutes(String(sched.randomizeMinutes));
+        } else {
+          setRandomizeMinutes('0');
+        }
+        if (sched?.defaultVisibility) setDefaultVisibility(sched.defaultVisibility);
+        if (sched?.defaultCategory) setDefaultCategory(sched.defaultCategory);
         if (sched?.cadence === 'SPECIFIC_DAYS') {
           setScheduleCadence('SPECIFIC_DAYS');
           const loaded = (sched.days ?? [])
@@ -257,6 +275,12 @@ export default function AccountSettingsPage() {
         setDefaultCrosspostIds(publishDefaults.crosspostAccountIds);
         if (fromProfile.masterPromptOverridden || p.masterPrompt.trim()) setShowAdvancedStyles(true);
       }
+      const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      setTimezone(
+        apiAccount.timezone && apiAccount.timezone !== 'UTC'
+          ? apiAccount.timezone
+          : browserTz,
+      );
     } else {
       setReal(null);
       const { account } = await getAccountView(id);
@@ -411,7 +435,7 @@ export default function AccountSettingsPage() {
     try {
       const existingSched = (real.profile?.schedulingPrefs ?? {}) as Record<string, unknown>;
       const styleProfile = styleProfileFromState(styleAnswers, masterPromptOverridden);
-      await api.patch(`/accounts/${id}`, { contentType, dramasEnabled });
+      await api.patch(`/accounts/${id}`, { contentType, dramasEnabled, timezone });
       await api.patch(`/accounts/${id}/profile`, {
         masterPrompt,
         writingStyle,
@@ -445,11 +469,14 @@ export default function AccountSettingsPage() {
           maxPerDay: posts,
           times,
           minGapMin: (Number(minGap) || 0) * 60,
+          randomizeMinutes: Math.max(0, Math.min(720, Number(randomizeMinutes) || 0)),
           ...(scheduleCadence === 'SPECIFIC_DAYS'
             ? { days: scheduleDays }
             : { days: [] }),
           defaultScheduleMode,
           defaultCrosspostAccountIds: defaultCrosspostIds,
+          defaultVisibility,
+          defaultCategory: defaultCategory.trim() || undefined,
         },
       });
       toast('Channel profile saved', 'success');
@@ -626,6 +653,51 @@ export default function AccountSettingsPage() {
           description="Posts per day, weekdays, and time slots used for “next free slot”"
         />
         <div className="space-y-4 p-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Account timezone">
+              <Input
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                list="scp-timezones"
+                placeholder="America/Los_Angeles"
+              />
+              <datalist id="scp-timezones">
+                {[
+                  'UTC',
+                  'America/Los_Angeles',
+                  'America/Denver',
+                  'America/Chicago',
+                  'America/New_York',
+                  'Europe/London',
+                  'Europe/Paris',
+                  'Asia/Karachi',
+                  'Asia/Dubai',
+                  'Asia/Kolkata',
+                  'Asia/Singapore',
+                  'Australia/Sydney',
+                ].map((tz) => (
+                  <option key={tz} value={tz} />
+                ))}
+              </datalist>
+              <p className="mt-1 text-[11px] text-zinc-500">
+                Post times below are wall-clock in this timezone (not UTC). Wrong TZ is why 5:30 PM
+                can show as morning.
+              </p>
+            </Field>
+            <Field label="Randomize slot (± minutes)">
+              <Input
+                type="number"
+                min={0}
+                max={720}
+                value={randomizeMinutes}
+                onChange={(e) => setRandomizeMinutes(e.target.value)}
+              />
+              <p className="mt-1 text-[11px] text-zinc-500">
+                0 = exact time. Use a small value (e.g. 10) to vary slightly around each slot.
+              </p>
+            </Field>
+          </div>
+
           <Field label="Cadence">
             <Select
               value={scheduleCadence}
@@ -825,7 +897,7 @@ export default function AccountSettingsPage() {
             {(
               [
                 ['QUEUE_SLOT', 'Next free slot', "Uses this account's schedule rules above"],
-                ['NOW', 'Immediately', 'Dispatches after Review Approve'],
+                ['NOW', 'Publish now (immediately)', 'Dispatches after Review Approve'],
               ] as const
             ).map(([value, label, hint]) => (
               <label
@@ -846,6 +918,47 @@ export default function AccountSettingsPage() {
               </label>
             ))}
           </fieldset>
+
+          <div className="rounded-md border border-zinc-200 bg-zinc-50/80 p-3 space-y-3">
+            <p className="text-xs font-medium text-zinc-800">
+              {real?.platform === 'YOUTUBE'
+                ? 'YouTube publish defaults'
+                : real?.platform === 'TIKTOK'
+                  ? 'TikTok publish defaults'
+                  : real?.platform === 'FACEBOOK'
+                    ? 'Facebook publish defaults'
+                    : 'Platform publish defaults'}
+            </p>
+            <p className="text-[11px] text-zinc-500">
+              Same controls on every channel — mapped to each platform’s native options at publish
+              time (YouTube privacy/category, TikTok privacy, Facebook Reel visibility).
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Visibility">
+                <Select
+                  value={defaultVisibility}
+                  onChange={(e) =>
+                    setDefaultVisibility(e.target.value as 'PUBLIC' | 'UNLISTED' | 'PRIVATE')
+                  }
+                >
+                  <option value="PUBLIC">Public</option>
+                  <option value="UNLISTED">Unlisted</option>
+                  <option value="PRIVATE">Private / friends</option>
+                </Select>
+              </Field>
+              <Field label="YouTube category ID">
+                <Input
+                  value={defaultCategory}
+                  onChange={(e) => setDefaultCategory(e.target.value)}
+                  placeholder="22"
+                  disabled={real?.platform === 'FACEBOOK' || real?.platform === 'TIKTOK'}
+                />
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  Used for YouTube (22 = People & Blogs). Ignored on Facebook/TikTok.
+                </p>
+              </Field>
+            </div>
+          </div>
 
           <CrosspostAccountPicker
             primaryAccountId={id}

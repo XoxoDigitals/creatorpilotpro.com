@@ -636,6 +636,11 @@ export async function schedulePublish(
   });
 }
 
+/** Force a pending/scheduled target to publish as soon as possible. */
+export async function publishTargetNow(publishTargetId: string): Promise<void> {
+  await api.patch(`/publish/target/${encodeURIComponent(publishTargetId)}`, { publishNow: true });
+}
+
 /** Ask the API to translate an item's title to English (best-effort). */
 export async function translateTitle(
   id: string,
@@ -859,6 +864,8 @@ export interface ManualPublishInput {
   /** Extra sibling accounts to also create PublishTargets for. */
   additionalAccountIds?: string[];
   scheduleMode: 'NOW' | 'QUEUE_SLOT';
+  /** Optional per-target metadata (visibility, description, etc.). */
+  metadataOverride?: Record<string, unknown>;
 }
 
 /**
@@ -884,6 +891,7 @@ export async function manualPublish(input: ManualPublishInput): Promise<{ conten
     targets: accountIds.map((accountId) => ({
       accountId,
       scheduleMode: input.scheduleMode,
+      ...(input.metadataOverride ? { metadataOverride: input.metadataOverride } : {}),
     })),
   });
   return { contentItemId: content.id };

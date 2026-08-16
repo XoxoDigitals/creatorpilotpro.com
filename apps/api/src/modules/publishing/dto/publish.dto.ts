@@ -19,8 +19,11 @@ export const patchTargetSchema = z
   .object({
     scheduledAt: z.string().datetime().optional(),
     cancel: z.boolean().optional(),
+    /** Force immediate publish (sets NOW + scheduledAt=now and enqueues when ready). */
+    publishNow: z.boolean().optional(),
   })
-  .refine((v) => v.scheduledAt !== undefined || v.cancel !== undefined, {
-    message: 'Provide scheduledAt or cancel.',
-  });
+  .refine(
+    (v) => v.scheduledAt !== undefined || v.cancel !== undefined || v.publishNow === true,
+    { message: 'Provide scheduledAt, cancel, or publishNow.' },
+  );
 export type PatchTargetDto = z.infer<typeof patchTargetSchema>;

@@ -48,6 +48,23 @@ function zonedWallTimeToUtc(y: number, m: number, d: number, hh: number, mm: num
   return new Date(guess - offset);
 }
 
+/** Calendar Y/M/D (month 0-based) of an instant as seen in `timeZone`. */
+function localYmd(at: Date, timeZone: string): { y: number; m: number; d: number } {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts: Record<string, string> = {};
+  for (const p of dtf.formatToParts(at)) parts[p.type] = p.value;
+  return {
+    y: Number(parts.year),
+    m: Number(parts.month) - 1,
+    d: Number(parts.day),
+  };
+}
+
 /** Weekday index (0=Sun..6=Sat) of an instant as seen in `timeZone`. */
 function localWeekday(at: Date, timeZone: string): number {
   const short = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' })
@@ -55,6 +72,11 @@ function localWeekday(at: Date, timeZone: string): number {
     .slice(0, 3)
     .toLowerCase();
   return WEEKDAY_INDEX[short] ?? at.getUTCDay();
+}
+
+function addCalendarDays(y: number, m: number, d: number, add: number): { y: number; m: number; d: number } {
+  const utc = new Date(Date.UTC(y, m, d + add));
+  return { y: utc.getUTCFullYear(), m: utc.getUTCMonth(), d: utc.getUTCDate() };
 }
 
 @Injectable()
@@ -65,7 +87,7 @@ export class SlotPlannerService {
    * Expand an account's schedulingPrefs into the next `count` concrete future
    * publish instants (docs/06 §3 Layer 1). Randomized windows are fixed at
    * generation time so a slot doesn't drift. Respects perDay/maxPerDay, minGapMin,
-   * cadence (daily vs specific weekdays), and the account timezone.
+   * cadence (daily vs specific weekdays), account timezone, and already-booked targets.
    */
   async nextSlots(accountId: string, count: number): Promise<Date[]> {
     const account = await this.prisma.client.socialAccount.findFirst({
@@ -84,6 +106,7 @@ export class SlotPlannerService {
 
     const perDayCap = Math.min(prefs.perDay ?? effectiveTimes.length, prefs.maxPerDay ?? 50);
     const minGapMs = (prefs.minGapMin ?? 0) * 60_000;
+    // Default 0 — old wizard default of 45 made 17:30 look like ~10:42 in US timezones.
     const jitterMax = Math.max(0, prefs.randomizeMinutes ?? 0);
     const useWeekdays = prefs.cadence === 'SPECIFIC_DAYS';
     const allowedDays = new Set(
@@ -93,13 +116,25 @@ export class SlotPlannerService {
     );
 
     const now = Date.now();
+    const occupied = await this.prisma.client.publishTarget.findMany({
+      where: {
+        accountId,
+        status: { in: ['PENDING', 'SCHEDULED', 'PUBLISHING'] },
+        scheduledAt: { not: null, gte: new Date(now - 60_000) },
+      },
+      select: { scheduledAt: true },
+    });
+    const occupiedMs = occupied
+      .map((o) => o.scheduledAt?.getTime())
+      .filter((t): t is number => typeof t === 'number');
+
     const slots: Date[] = [];
-    const cursor = new Date();
+    const todayLocal = localYmd(new Date(), tz);
 
     for (let dayOffset = 0; dayOffset < PLAN_HORIZON_DAYS && slots.length < count; dayOffset += 1) {
-      const day = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + dayOffset);
-      // Weekday check is done against the account timezone's local day.
-      if (useWeekdays && allowedDays.size > 0 && !allowedDays.has(localWeekday(day, tz))) {
+      const day = addCalendarDays(todayLocal.y, todayLocal.m, todayLocal.d, dayOffset);
+      const noonProbe = zonedWallTimeToUtc(day.y, day.m, day.d, 12, 0, tz);
+      if (useWeekdays && allowedDays.size > 0 && !allowedDays.has(localWeekday(noonProbe, tz))) {
         continue;
       }
 
@@ -108,14 +143,24 @@ export class SlotPlannerService {
         if (placedToday >= perDayCap || slots.length >= count) break;
         const hh = Number(time.slice(0, 2));
         const mm = Number(time.slice(3, 5));
-        let instant = zonedWallTimeToUtc(day.getFullYear(), day.getMonth(), day.getDate(), hh, mm, tz);
+        let instant = zonedWallTimeToUtc(day.y, day.m, day.d, hh, mm, tz);
         if (jitterMax > 0) {
-          instant = new Date(instant.getTime() + Math.floor(Math.random() * jitterMax) * 60_000);
+          // Centered ±jitter (wizard copy said ±N), not forward-only.
+          const delta = Math.floor(Math.random() * (jitterMax * 2 + 1)) - jitterMax;
+          instant = new Date(instant.getTime() + delta * 60_000);
         }
-        if (instant.getTime() <= now) continue; // strictly future
+        if (instant.getTime() <= now) continue;
+
+        const conflictsOccupied = occupiedMs.some(
+          (t) => Math.abs(t - instant.getTime()) < Math.max(minGapMs, 60_000),
+        );
+        if (conflictsOccupied) continue;
+
         const prev = slots[slots.length - 1];
         if (prev && instant.getTime() - prev.getTime() < minGapMs) continue;
+
         slots.push(instant);
+        occupiedMs.push(instant.getTime());
         placedToday += 1;
       }
     }

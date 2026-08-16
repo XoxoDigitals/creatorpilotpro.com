@@ -43,7 +43,7 @@ const DEFAULT_SCHEDULING: SchedulingPrefs = {
   cadence: 'PER_DAY',
   perDay: 1,
   times: [],
-  randomizeMinutes: 45,
+  randomizeMinutes: 0,
 };
 
 interface CreateAccountParams {
@@ -62,6 +62,7 @@ interface CreateAccountParams {
   addedById: string;
   /** When true, refresh tokens on an already-connected account instead of 409. */
   allowReconnect?: boolean;
+  timezone?: string;
 }
 
 @Injectable()
@@ -358,6 +359,7 @@ export class AccountsService {
           dramasEnabled: resolved.wizard.dramasEnabled,
           schedulingPrefs: resolved.wizard.schedulingPrefs,
           addedById: userId,
+          timezone: dto.timezone,
         });
         if (page.fanCount > 0) {
           await this.upsertFollowersSnapshot(view.id, page.fanCount);
@@ -494,6 +496,7 @@ export class AccountsService {
         contentType: params.contentType,
         dramasEnabled: params.dramasEnabled,
         addedById: params.addedById,
+        ...(params.timezone ? { timezone: params.timezone } : {}),
         profile: {
           create: {
             schedulingPrefs: scheduling,
@@ -515,6 +518,7 @@ export class AccountsService {
         contentType: params.contentType,
         dramasEnabled: params.dramasEnabled,
         addedById: params.addedById,
+        ...(params.timezone ? { timezone: params.timezone } : {}),
       },
       include: { profile: true },
     });

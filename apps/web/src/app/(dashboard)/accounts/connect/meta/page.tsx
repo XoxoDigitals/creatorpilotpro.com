@@ -97,7 +97,11 @@ export default function MetaConnectPage() {
       }
       const result = await api.post<{ accounts: Array<{ id: string; contentType?: string }> }>(
         '/accounts/connect/meta',
-        { session, pageIds },
+        {
+          session,
+          pageIds,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
       );
       const accounts = result.accounts ?? [];
       const n = accounts.length;

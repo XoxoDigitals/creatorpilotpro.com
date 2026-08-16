@@ -11,6 +11,7 @@ import {
   isPublishReviewApproved,
 } from '@scp/shared';
 import { PrismaService } from '../../prisma/prisma.service';
+import { QueueProducer } from '../../common/queue/queue.producer';
 import { SlotPlannerService } from '../scheduling/slot-planner.service';
 import { canTransition } from '../content/content-state';
 import {
@@ -53,6 +54,7 @@ export class PublishingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly planner: SlotPlannerService,
+    private readonly queue: QueueProducer,
   ) {}
 
   /** Fail-fast metadata guard (docs/06 §1). Full media validation runs in the worker. */
@@ -350,6 +352,25 @@ export class PublishingService {
     if (!existing) throw new NotFoundException('Publish target not found.');
     if (existing.status === 'PUBLISHING' || existing.status === 'PUBLISHED') {
       throw new BadRequestException(`Cannot modify a ${existing.status.toLowerCase()} target.`);
+    }
+
+    if (dto.publishNow) {
+      const now = new Date();
+      const awaitingReview =
+        existing.contentItem.status === 'REVIEW_PENDING' || existing.status === 'PENDING';
+      const row = await this.prisma.client.publishTarget.update({
+        where: { id },
+        data: {
+          scheduleMode: 'NOW',
+          scheduledAt: now,
+          status: awaitingReview ? 'PENDING' : 'SCHEDULED',
+        },
+        include: TARGET_INCLUDE,
+      });
+      if (!awaitingReview) {
+        await this.queue.enqueuePublish(id);
+      }
+      return toPublishTargetView(row);
     }
 
     const data: Prisma.PublishTargetUpdateInput = {};

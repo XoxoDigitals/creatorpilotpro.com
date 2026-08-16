@@ -114,13 +114,14 @@ interface ProfileLike {
   descriptionTemplate: string;
   defaultTags: string[];
   aiLabelDefault: boolean;
+  schedulingPrefs?: unknown;
 }
 
 /**
  * Resolve final per-target metadata (docs/06 §5):
  *   1. target.metadataOverride
  *   2. AI `currentStep.metadata` (title / description / tags / category)
- *   3. ChannelProfile templates / defaultTags
+ *   3. ChannelProfile templates / defaultTags / schedulingPrefs publish defaults
  *   4. content item title
  */
 export function resolveMetadata(
@@ -131,6 +132,10 @@ export function resolveMetadata(
 ): ResolvedMetadata {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
   const ai = aiMetadata ?? {};
+  const sched =
+    profile?.schedulingPrefs && typeof profile.schedulingPrefs === 'object'
+      ? (profile.schedulingPrefs as Record<string, unknown>)
+      : {};
   const aiTags = Array.isArray(ai.tags)
     ? (ai.tags as unknown[]).filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
     : [];
@@ -146,18 +151,21 @@ export function resolveMetadata(
     : aiTags.length > 0
       ? aiTags
       : (profile?.defaultTags ?? []);
-  const visibility = (str(override.visibility) as ResolvedMetadata['visibility']) ?? 'PUBLIC';
+  const visibility =
+    (str(override.visibility) as ResolvedMetadata['visibility']) ??
+    (str(sched.defaultVisibility) as ResolvedMetadata['visibility']) ??
+    'PUBLIC';
   const aiLabel =
     typeof override.aiLabel === 'boolean' ? override.aiLabel : (profile?.aiLabelDefault ?? true);
+  const category =
+    str(override.category) ?? str(ai.category) ?? str(sched.defaultCategory);
   return {
     title,
     description,
     tags,
     visibility,
     aiLabel,
-    ...(str(override.category) ?? str(ai.category)
-      ? { category: str(override.category) ?? str(ai.category) }
-      : {}),
+    ...(category ? { category } : {}),
   };
 }
 

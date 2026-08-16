@@ -18,6 +18,7 @@ import {
   getApiAccount,
   getUpcomingView,
   publishDefaultsFromProfile,
+  publishTargetNow,
   schedulePublish,
   type PublishTargetDetail,
   type UpcomingResult,
@@ -235,6 +236,7 @@ export default function AccountSchedulePage() {
                 <TH>Title</TH>
                 <TH>Status</TH>
                 <TH>Publishes</TH>
+                <TH>Actions</TH>
               </TR>
             </THead>
             <TBody>
@@ -258,6 +260,34 @@ export default function AccountSchedulePage() {
                     </Badge>
                   </TD>
                   <TD title={absoluteTime(p.scheduledAt)}>{relativeTime(p.scheduledAt)}</TD>
+                  <TD>
+                    {(p.status === 'SCHEDULED' || p.status === 'PENDING' || p.status === 'FAILED') && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={schedBusy || data.demo}
+                        onClick={() => {
+                          void (async () => {
+                            setSchedBusy(true);
+                            try {
+                              await publishTargetNow(p.publishTargetId);
+                              toast('Set to publish now', 'success');
+                              await load();
+                            } catch (err) {
+                              toast(
+                                err instanceof ApiError ? err.message : 'Publish now failed',
+                                'error',
+                              );
+                            } finally {
+                              setSchedBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        Publish now
+                      </Button>
+                    )}
+                  </TD>
                 </TR>
               ))}
             </TBody>
@@ -303,6 +333,7 @@ export default function AccountSchedulePage() {
         onClose={() => setSelectedId(null)}
         publishTargetId={selectedId}
         seedTitle={selectedTitle}
+        onChanged={() => void load()}
       />
       </div>
     </div>

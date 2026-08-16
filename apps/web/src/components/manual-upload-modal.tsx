@@ -33,9 +33,12 @@ export function ManualUploadModal({
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<ChannelScheduleMode>('QUEUE_SLOT');
+  const [visibility, setVisibility] = useState<'PUBLIC' | 'UNLISTED' | 'PRIVATE'>('PUBLIC');
   const [crosspostIds, setCrosspostIds] = useState<string[]>([]);
+  const [platformLabel, setPlatformLabel] = useState('channel');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -46,6 +49,19 @@ export function ManualUploadModal({
       const defaults = publishDefaultsFromProfile(account.profile);
       setMode(defaults.scheduleMode);
       setCrosspostIds(defaults.crosspostAccountIds.filter((id) => id !== accountId));
+      setPlatformLabel(
+        account.platform === 'YOUTUBE'
+          ? 'YouTube'
+          : account.platform === 'TIKTOK'
+            ? 'TikTok'
+            : account.platform === 'FACEBOOK'
+              ? 'Facebook'
+              : 'channel',
+      );
+      const sched = (account.profile?.schedulingPrefs ?? {}) as {
+        defaultVisibility?: 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
+      };
+      if (sched.defaultVisibility) setVisibility(sched.defaultVisibility);
     });
     return () => {
       cancelled = true;
@@ -54,6 +70,7 @@ export function ManualUploadModal({
 
   const reset = () => {
     setTitle('');
+    setDescription('');
     setFile(null);
     if (fileRef.current) fileRef.current.value = '';
   };
@@ -75,12 +92,16 @@ export function ManualUploadModal({
         accountId,
         additionalAccountIds: crosspostIds,
         scheduleMode: mode,
+        metadataOverride: {
+          description: description.trim() || undefined,
+          visibility,
+        },
       });
       const n = 1 + crosspostIds.length;
       const dest = n > 1 ? ` to ${n} channels` : '';
       toast(
         mode === 'NOW'
-          ? `Uploaded — queued for Review, then publish${dest}`
+          ? `Uploaded — queued for Review, then publish now${dest}`
           : `Uploaded — queued for Review, then next free slot${dest}`,
         'success',
       );
@@ -98,15 +119,15 @@ export function ManualUploadModal({
     <Modal
       open={open}
       onClose={close}
-      title="Upload a video"
-      description="Publishes using this channel’s timing and crosspost defaults from Settings. Goes through Review before publish."
+      title={`Upload to ${platformLabel}`}
+      description="Manual publish like the native apps — title, visibility, and when to post. Goes through Review before going live."
       footer={
         <div className="flex justify-end gap-2">
           <Button size="sm" onClick={close} disabled={busy}>
             Cancel
           </Button>
           <Button size="sm" variant="primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? 'Uploading…' : 'Upload & schedule'}
+            {busy ? 'Uploading…' : mode === 'NOW' ? 'Upload & publish now' : 'Upload & schedule'}
           </Button>
         </div>
       }
@@ -124,6 +145,57 @@ export function ManualUploadModal({
         </label>
 
         <label className="block">
+          <span className="mb-1 block font-medium text-zinc-700">Description / caption</span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            placeholder="Optional caption (same field on YouTube, Facebook, and TikTok)"
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 outline-none focus:border-indigo-500"
+          />
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block font-medium text-zinc-700">Visibility</span>
+          <select
+            value={visibility}
+            onChange={(e) => setVisibility(e.target.value as 'PUBLIC' | 'UNLISTED' | 'PRIVATE')}
+            className="w-full rounded-md border border-zinc-300 px-3 py-2 outline-none focus:border-indigo-500"
+          >
+            <option value="PUBLIC">Public</option>
+            <option value="UNLISTED">Unlisted</option>
+            <option value="PRIVATE">Private / friends</option>
+          </select>
+        </label>
+
+        <fieldset className="space-y-1.5">
+          <legend className="mb-1 block font-medium text-zinc-700">When to publish</legend>
+          {(
+            [
+              ['NOW', 'Publish now', 'After Review Approve, post immediately'],
+              ['QUEUE_SLOT', 'Next free slot', "Uses this account's daily schedule times"],
+            ] as const
+          ).map(([value, label, hint]) => (
+            <label
+              key={value}
+              className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 px-3 py-2 hover:bg-zinc-50"
+            >
+              <input
+                type="radio"
+                name="manual-upload-mode"
+                checked={mode === value}
+                onChange={() => setMode(value)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block font-medium text-zinc-800">{label}</span>
+                <span className="block text-[11px] text-zinc-500">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        <label className="block">
           <span className="mb-1 block font-medium text-zinc-700">Video file</span>
           <input
             ref={fileRef}
@@ -135,7 +207,7 @@ export function ManualUploadModal({
         </label>
 
         <p className="text-xs text-zinc-500">
-          Timing and crosspost destinations come from{' '}
+          Crosspost destinations come from{' '}
           <Link
             href={`/accounts/${accountId}/settings` as Route}
             className="font-medium text-indigo-700 underline-offset-2 hover:underline"
@@ -145,7 +217,6 @@ export function ManualUploadModal({
           {crosspostIds.length > 0
             ? ` · also posting to ${crosspostIds.length} other channel${crosspostIds.length === 1 ? '' : 's'}`
             : ''}
-          {` · ${mode === 'NOW' ? 'immediately after Review Approve' : 'next free slot'}`}
           .
         </p>
       </div>
