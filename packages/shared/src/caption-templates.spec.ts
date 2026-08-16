@@ -4,6 +4,10 @@ import {
   pickHighlightIndices,
   previewCaptionSpans,
   normalizeCaptionTemplateId,
+  buildKaraokeAssCueEvents,
+  resolveCaptionColors,
+  captionTemplateMeta,
+  normalizeCaptionColorMode,
 } from './caption-templates.js';
 
 describe('impact caption formatting', () => {
@@ -34,5 +38,24 @@ describe('impact caption formatting', () => {
     const spans = previewCaptionSpans('Easier to make money fast', 'impact_yellow');
     expect(spans.length).toBeGreaterThan(1);
     expect(spans.some((s) => s.color === '#FFE566')).toBe(true);
+  });
+
+  it('switches to dark text in light color mode', () => {
+    const colors = resolveCaptionColors(captionTemplateMeta('impact_center'), 'light');
+    expect(colors.color).toBe('#111111');
+    expect(colors.outline).toBe('#FFFFFF');
+    expect(normalizeCaptionColorMode('light')).toBe('light');
+  });
+
+  it('builds karaoke word frames timed across the cue', () => {
+    const frames = buildKaraokeAssCueEvents(
+      { startMs: 0, endMs: 1000, text: 'one two three four' },
+      'karaoke_word',
+      'dark',
+    );
+    expect(frames.length).toBe(4);
+    expect(frames[0]?.startMs).toBe(0);
+    expect(frames[3]?.endMs).toBe(1000);
+    expect(frames.some((f) => f.text.includes('\\c&H'))).toBe(true);
   });
 });

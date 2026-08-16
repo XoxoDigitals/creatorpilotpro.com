@@ -6,7 +6,11 @@ import { z } from 'zod';
 import {
   CAPTION_TEMPLATE_IDS,
   LEGACY_CAPTION_PRESETS,
+  OVERLAY_POSITIONS,
+  CAPTION_COLOR_MODES,
   normalizeCaptionTemplateId,
+  normalizeOverlayPosition,
+  normalizeCaptionColorMode,
   captionAssStyleFields,
 } from './caption-templates.js';
 
@@ -15,18 +19,30 @@ export {
   CAPTION_TEMPLATES,
   CAPTION_TEMPLATE_PICKER,
   LEGACY_CAPTION_PRESETS,
+  OVERLAY_POSITIONS,
+  OVERLAY_POSITION_LABELS,
+  CAPTION_COLOR_MODES,
+  CAPTION_COLOR_MODE_LABELS,
   normalizeCaptionTemplateId,
+  normalizeOverlayPosition,
+  normalizeCaptionColorMode,
+  resolveCaptionColors,
   captionTemplateMeta,
   captionAssStyleFields,
   hookAssStyleFields,
   formatImpactAssText,
+  buildKaraokeAssCueEvents,
   previewCaptionSpans,
+  previewCaptionLines,
   pickHighlightIndices,
+  wrapWordsToLines,
   assColor,
   type CaptionTemplateId,
   type CaptionPreset,
   type CaptionTemplateMeta,
   type PreviewCaptionSpan,
+  type OverlayPosition,
+  type CaptionColorMode,
 } from './caption-templates.js';
 
 /** @deprecated Prefer CaptionTemplateId — kept for older imports. */
@@ -49,29 +65,48 @@ const captionPresetSchema = z
   .default('bottom_white')
   .transform((v) => normalizeCaptionTemplateId(v));
 
+const overlayPositionSchema = z
+  .enum(OVERLAY_POSITIONS)
+  .or(z.string())
+  .transform((v) => normalizeOverlayPosition(v, 'center'));
+
 export const renderSettingsSchema = z.object({
   trimStartMs: z.number().int().min(0).max(60_000).default(DEFAULT_TRIM_START_MS),
-  /** Full dialogue / VO captions burned from SRT/ASS (usually bottom). */
+  /** Full dialogue / VO captions burned from SRT/ASS (max 2 lines). */
   burnCaptions: z
     .object({
       enabled: z.boolean().default(false),
       preset: captionPresetSchema,
+      /** Vertical placement override (upper / center / lower / …). */
+      position: overlayPositionSchema.default('center'),
+      /** Light text (dark mode) vs dark text (light mode). */
+      colorMode: z
+        .enum(CAPTION_COLOR_MODES)
+        .or(z.string())
+        .transform((v) => normalizeCaptionColorMode(v))
+        .default('dark'),
       fontSize: z.number().int().min(12).max(72).optional(),
       primaryColor: z.string().optional(),
       outlineColor: z.string().optional(),
     })
-    .default({ enabled: false, preset: 'impact_hormozi' }),
-  /** Short 2–3 word attention hook at top-center (separate from captions). */
+    .default({ enabled: false, preset: 'impact_hormozi', position: 'center', colorMode: 'dark' }),
+  /** Short attention hook at top (1–2 lines, up to ~8–12 words). */
   hookText: z
     .object({
       enabled: z.boolean().default(false),
       source: z.enum(HOOK_TEXT_SOURCES).default('options'),
-      /** Used when source=custom; otherwise derived from the video title. */
-      customText: z.string().max(48).optional(),
-      maxWords: z.number().int().min(1).max(5).default(3),
+      customText: z.string().max(96).optional(),
+      /** Soft cap when auto-deriving; selected options may be longer. */
+      maxWords: z.number().int().min(1).max(12).default(8),
+      maxLines: z.number().int().min(1).max(3).default(2),
+      position: z
+        .enum(OVERLAY_POSITIONS)
+        .or(z.string())
+        .transform((v) => normalizeOverlayPosition(v, 'top'))
+        .default('top'),
       fontSize: z.number().int().min(24).max(96).optional(),
     })
-    .default({ enabled: false, source: 'options', maxWords: 3 }),
+    .default({ enabled: false, source: 'options', maxWords: 8, maxLines: 2, position: 'top' }),
   flipHorizontal: z
     .object({
       enabled: z.boolean().default(false),
@@ -84,25 +119,46 @@ export const renderSettingsSchema = z.object({
     })
     .default({ enabled: false, preset: 'none' }),
   /**
-   * Talking / reaction avatar PiP (lip-sync). Stored for future use; render ignores
-   * until the avatar pipeline ships.
+   * Corner reaction / talking-head PiP. Upload a face image or short clip;
+   * ffmpeg overlays it (no lip-sync ML). Prefer dialogue windows when available.
    */
   reactionAvatar: z
     .object({
       enabled: z.boolean().default(false),
+      /** Path relative to STORAGE_ROOT, e.g. accounts/{id}/reaction-avatar.png */
+      assetPath: z.string().max(500).optional(),
+      fileName: z.string().max(200).optional(),
+      mimeType: z.string().max(100).optional(),
+      shape: z.enum(['circle', 'square', 'rounded']).default('circle'),
+      corner: z.enum(['br', 'bl', 'tr', 'tl']).default('br'),
+      /** Width as % of video width (12–40). */
+      sizePercent: z.number().int().min(12).max(40).default(22),
+      showDuring: z.enum(['dialogue', 'always']).default('dialogue'),
     })
-    .default({ enabled: false }),
+    .default({
+      enabled: false,
+      shape: 'circle',
+      corner: 'br',
+      sizePercent: 22,
+      showDuring: 'dialogue',
+    }),
 });
 
 export type RenderSettings = z.infer<typeof renderSettingsSchema>;
 
 export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
   trimStartMs: DEFAULT_TRIM_START_MS,
-  burnCaptions: { enabled: false, preset: 'impact_hormozi' },
-  hookText: { enabled: false, source: 'options', maxWords: 3 },
+  burnCaptions: { enabled: false, preset: 'impact_hormozi', position: 'center', colorMode: 'dark' },
+  hookText: { enabled: false, source: 'options', maxWords: 8, maxLines: 2, position: 'top' },
   flipHorizontal: { enabled: false },
   colorFilter: { enabled: false, preset: 'none' },
-  reactionAvatar: { enabled: false },
+  reactionAvatar: {
+    enabled: false,
+    shape: 'circle',
+    corner: 'br',
+    sizePercent: 22,
+    showDuring: 'dialogue',
+  },
 };
 
 export function parseRenderSettings(raw: unknown): RenderSettings {
@@ -164,22 +220,49 @@ export function escapeFfmpegDrawtext(text: string): string {
 }
 
 /**
- * Turn a title into a short attention hook (default 2–3 words, uppercase).
+ * Turn text into an on-screen hook (uppercase). Supports 1–2 lines and longer phrases.
  */
-export function shortenToHookWords(raw: string, maxWords = 3): string {
+export function shortenToHookWords(raw: string, maxWords = 8, maxLines = 2): string {
   const cleaned = raw
     .replace(/[#@]/g, ' ')
-    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .replace(/\|/g, '\n')
+    .replace(/[^\p{L}\p{N}\s'\-\n]/gu, ' ')
     .trim();
   if (!cleaned) return '';
+  // Preserve explicit multi-line input.
+  if (cleaned.includes('\n')) {
+    const lines = cleaned
+      .split(/\n+/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .slice(0, Math.max(1, Math.min(3, maxLines)));
+    return lines
+      .map((l) =>
+        l
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, maxWords)
+          .join(' ')
+          .toUpperCase(),
+      )
+      .filter(Boolean)
+      .join('\n');
+  }
   const words = cleaned.split(/\s+/).filter(Boolean);
-  const n = Math.max(1, Math.min(5, maxWords));
-  return words.slice(0, n).join(' ').toUpperCase();
+  const n = Math.max(1, Math.min(12, maxWords));
+  const limited = words.slice(0, n);
+  if (maxLines <= 1 || limited.length <= 4) {
+    return limited.join(' ').toUpperCase();
+  }
+  const mid = Math.ceil(limited.length / 2);
+  return [limited.slice(0, mid).join(' '), limited.slice(mid).join(' ')]
+    .filter(Boolean)
+    .join('\n')
+    .toUpperCase();
 }
 
 /**
- * Build 3–4 unique short hook phrases for the script-approval picker.
- * Prefers AI `overlayHooks`, then narration variant hooks, then the title.
+ * Build hook options for script approval: short, medium, long, and 2-line variants.
  */
 export function buildHookTextVariants(input: {
   title?: string | null;
@@ -188,32 +271,35 @@ export function buildHookTextVariants(input: {
   maxWords?: number;
   maxOptions?: number;
 }): HookTextVariant[] {
-  const maxWords = input.maxWords ?? 3;
-  const maxOptions = Math.max(2, Math.min(6, input.maxOptions ?? 4));
+  const maxWords = Math.max(3, Math.min(12, input.maxWords ?? 8));
+  const maxOptions = Math.max(3, Math.min(8, input.maxOptions ?? 6));
   const seen = new Set<string>();
   const out: HookTextVariant[] = [];
 
-  const push = (raw: string | null | undefined) => {
+  const push = (raw: string | null | undefined, words = maxWords, lines = 2) => {
     if (out.length >= maxOptions) return;
-    const text = shortenToHookWords(raw ?? '', maxWords);
+    const text = shortenToHookWords(raw ?? '', words, lines);
     if (!text || seen.has(text)) return;
     seen.add(text);
     out.push({ id: `hook-${out.length + 1}`, text });
   };
 
-  for (const h of input.overlayHooks ?? []) push(h);
-  for (const h of input.variantHooks ?? []) push(h);
-  push(input.title);
+  for (const h of input.overlayHooks ?? []) push(h, maxWords, 2);
+  for (const h of input.variantHooks ?? []) push(h, Math.min(6, maxWords), 2);
 
-  // If we still need fillers, take alternate word windows from the title.
+  // Title windows: short / medium / long / 2-line.
+  push(input.title, 3, 1);
+  push(input.title, 5, 1);
+  push(input.title, maxWords, 2);
+
   const titleWords = (input.title ?? '')
     .replace(/[#@]/g, ' ')
     .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
     .trim()
     .split(/\s+/)
     .filter(Boolean);
-  for (let start = 1; out.length < maxOptions && start + 1 < titleWords.length; start++) {
-    push(titleWords.slice(start, start + maxWords).join(' '));
+  for (let start = 1; out.length < maxOptions && start + 2 < titleWords.length; start++) {
+    push(titleWords.slice(start, start + Math.min(6, maxWords)).join(' '), 6, 2);
   }
 
   return out;
@@ -226,27 +312,32 @@ export function resolveHookOverlayText(
   selectedText?: string | null,
 ): string | null {
   if (!settings.enabled) return null;
+  const maxWords = settings.maxWords ?? 8;
+  const maxLines = settings.maxLines ?? 2;
   if (settings.source === 'custom') {
     const custom = (settings.customText ?? '').trim();
     if (!custom) return null;
-    return shortenToHookWords(custom, settings.maxWords ?? 3) || custom.toUpperCase().slice(0, 48);
+    return (
+      shortenToHookWords(custom, maxWords, maxLines) || custom.toUpperCase().slice(0, 96)
+    );
   }
   if (settings.source === 'options') {
     const picked = (selectedText ?? '').trim();
     if (picked) {
+      // Keep the owner's pick nearly as-is (still uppercase / light wrap).
       return (
-        shortenToHookWords(picked, settings.maxWords ?? 3) ||
-        picked.toUpperCase().slice(0, 48)
+        shortenToHookWords(picked, Math.max(maxWords, 12), maxLines) ||
+        picked.toUpperCase().slice(0, 96)
       );
     }
   }
-  const fromTitle = shortenToHookWords(contentTitle ?? '', settings.maxWords ?? 3);
+  const fromTitle = shortenToHookWords(contentTitle ?? '', maxWords, maxLines);
   return fromTitle || null;
 }
 
 /** ASS force_style fragment for burned captions (legacy subtitles= path). */
 export function captionForceStyle(settings: RenderSettings['burnCaptions']): string {
-  const style = captionAssStyleFields(settings.preset);
+  const style = captionAssStyleFields(settings.preset, settings.position, settings.colorMode);
   const fontSize = settings.fontSize ?? style.fontSize;
   const primary = settings.primaryColor?.trim() || style.primary;
   const outline = settings.outlineColor?.trim() || style.outline;

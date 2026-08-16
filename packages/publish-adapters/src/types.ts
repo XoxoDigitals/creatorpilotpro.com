@@ -26,10 +26,20 @@ export interface ResolvedMetadata {
   description: string;
   tags: string[];
   keywords?: string[];
+  /** YouTube categoryId (e.g. "22" People & Blogs). */
   category?: string;
   visibility?: 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
   aiLabel?: boolean;
+  /** Local path to a custom thumbnail image (YouTube thumbnails.set). */
   thumbnailPath?: string;
+  /** YouTube status.selfDeclaredMadeForKids. */
+  madeForKids?: boolean;
+  /** YouTube snippet.defaultLanguage (BCP-47 / ISO 639-1). */
+  defaultLanguage?: string;
+  /** YouTube snippet.defaultAudioLanguage. */
+  defaultAudioLanguage?: string;
+  /** Recording / video location country (ISO 3166-1 alpha-2) → recordingDetails. */
+  recordingCountry?: string;
 }
 
 export interface PlatformIssue {

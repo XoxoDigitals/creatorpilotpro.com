@@ -13,5 +13,6 @@ export * from './publish-review.js';
 export * from './documentary-collage.js';
 export * from './extract-video-urls.js';
 export * from './download-drip.js';
+export * from './youtube-options.js';
 // Node crypto helpers: import from '@scp/shared/crypto' (server-only).
 // CLI binary resolution: import from '@scp/shared/bin' (server-only).

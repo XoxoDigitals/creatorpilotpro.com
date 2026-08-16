@@ -114,6 +114,7 @@ interface ProfileLike {
   descriptionTemplate: string;
   defaultTags: string[];
   aiLabelDefault: boolean;
+  language?: string | null;
   schedulingPrefs?: unknown;
 }
 
@@ -159,13 +160,34 @@ export function resolveMetadata(
     typeof override.aiLabel === 'boolean' ? override.aiLabel : (profile?.aiLabelDefault ?? true);
   const category =
     str(override.category) ?? str(ai.category) ?? str(sched.defaultCategory);
+  const madeForKids =
+    typeof override.madeForKids === 'boolean'
+      ? override.madeForKids
+      : typeof sched.defaultMadeForKids === 'boolean'
+        ? sched.defaultMadeForKids
+        : false;
+  const defaultLanguage =
+    str(override.defaultLanguage) ??
+    str(sched.defaultLanguage) ??
+    str(profile?.language) ??
+    'en';
+  const defaultAudioLanguage =
+    str(override.defaultAudioLanguage) ?? str(sched.defaultAudioLanguage) ?? defaultLanguage;
+  const recordingCountry =
+    str(override.recordingCountry) ?? str(sched.defaultRecordingCountry) ?? undefined;
+  const thumbnailPath = str(override.thumbnailPath);
   return {
     title,
     description,
     tags,
     visibility,
     aiLabel,
+    madeForKids,
+    defaultLanguage,
+    defaultAudioLanguage,
     ...(category ? { category } : {}),
+    ...(recordingCountry ? { recordingCountry } : {}),
+    ...(thumbnailPath ? { thumbnailPath } : {}),
   };
 }
 

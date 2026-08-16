@@ -27,6 +27,8 @@ import {
   finalVideoEffectsEnabled,
   resolveHookOverlayText,
   normalizeCaptionTemplateId,
+  normalizeOverlayPosition,
+  normalizeCaptionColorMode,
   type RenderSettings,
 } from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
@@ -44,6 +46,7 @@ import {
   VO_MIX_DIALOGUE_BED_GAIN,
   VO_MIX_SIDECHAIN,
   bedGainForPercent,
+  dialogueOverlayEnableExpr,
 } from './media/ffmpeg.js';
 import { loadSrtCues, writeOverlayAssFile } from './media/overlay-ass.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
@@ -516,12 +519,31 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     );
     const burnCaptions =
       renderSettings.burnCaptions.enabled || !!selectedTemplateRaw?.trim();
+    const captionPosition = normalizeOverlayPosition(
+      typeof step.selectedCaptionPosition === 'string'
+        ? step.selectedCaptionPosition
+        : renderSettings.burnCaptions.position,
+      'center',
+    );
+    const captionColorMode = normalizeCaptionColorMode(
+      typeof step.selectedCaptionColorMode === 'string'
+        ? step.selectedCaptionColorMode
+        : renderSettings.burnCaptions.colorMode,
+    );
+    const hookPosition = normalizeOverlayPosition(
+      typeof step.selectedHookPosition === 'string'
+        ? step.selectedHookPosition
+        : renderSettings.hookText.position,
+      'top',
+    );
     const effectiveSettings: RenderSettings = {
       ...renderSettings,
       burnCaptions: {
         ...renderSettings.burnCaptions,
         enabled: burnCaptions,
         preset: captionTemplateId,
+        position: captionPosition,
+        colorMode: captionColorMode,
       },
       hookText: {
         ...renderSettings.hookText,
@@ -529,6 +551,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         enabled:
           renderSettings.hookText.enabled ||
           !!(typeof step.selectedHookText === 'string' && step.selectedHookText.trim()),
+        position: hookPosition,
       },
     };
 
@@ -554,6 +577,9 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           templateId: captionTemplateId,
           cues: effectiveSettings.burnCaptions.enabled ? cues : [],
           hookText: effectiveSettings.hookText.enabled ? hookOverlayText : null,
+          captionPosition,
+          hookPosition,
+          colorMode: captionColorMode,
         });
         assPath = outAss;
         console.log(
@@ -637,6 +663,48 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
       }
     } else {
       await rename(loudnormPath, finalPath);
+    }
+
+    // Step 3c: Reaction avatar PiP (corner face) — after trim/captions so it sits on top.
+    const avatar = effectiveSettings.reactionAvatar;
+    if (avatar.enabled && avatar.assetPath?.trim() && STORAGE_ROOT) {
+      const avatarAbs = join(STORAGE_ROOT, avatar.assetPath.replace(/^[/\\]+/, ''));
+      try {
+        await access(avatarAbs);
+        const width = (await ffmpeg.probeVideoWidth(finalPath)) ?? 1080;
+        const sizePx = Math.round((width * (avatar.sizePercent ?? 22)) / 100);
+        const enableExpr =
+          avatar.showDuring === 'dialogue'
+            ? dialogueOverlayEnableExpr(dialogueRanges)
+            : null;
+        const isVideo = /\.(mp4|webm|mov|m4v)$/i.test(avatarAbs);
+        const pipOut = join(renderDir, 'final-with-avatar.mp4');
+        await unlink(pipOut).catch(() => {});
+        await ffmpeg.applyReactionAvatarOverlay(finalPath, avatarAbs, pipOut, {
+          shape: avatar.shape ?? 'circle',
+          corner: avatar.corner ?? 'br',
+          sizePx,
+          enableExpr,
+          isVideo,
+        });
+        await unlink(finalPath).catch(() => {});
+        await rename(pipOut, finalPath);
+        console.log(
+          `[worker:render] reaction avatar applied for ${contentItemId}` +
+            ` [${avatar.shape}/${avatar.corner}/${sizePx}px` +
+            (enableExpr ? ', dialogue-only' : ', always') +
+            ']',
+        );
+      } catch (err) {
+        console.warn(
+          `[worker:render] reaction avatar skipped for ${contentItemId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    } else if (avatar.enabled && !avatar.assetPath?.trim()) {
+      console.warn(
+        `[worker:render] reaction avatar enabled but no asset uploaded for ${contentItemId}`,
+      );
     }
 
     // Step 4: Create/update FINAL asset

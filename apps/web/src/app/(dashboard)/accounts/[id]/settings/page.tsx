@@ -17,9 +17,18 @@ import {
   type CaptionTemplateId,
   type ColorFilterPreset,
   type HookTextSource,
+  type OverlayPosition,
   type RenderSettings,
   CAPTION_TEMPLATES,
   CAPTION_TEMPLATE_PICKER,
+  OVERLAY_POSITIONS,
+  OVERLAY_POSITION_LABELS,
+  CAPTION_COLOR_MODES,
+  CAPTION_COLOR_MODE_LABELS,
+  YOUTUBE_CATEGORIES,
+  YOUTUBE_COUNTRIES,
+  CONTENT_LANGUAGES,
+  type CaptionColorMode,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -32,7 +41,7 @@ import {
   styleProfileFromState,
 } from '@/components/style-questionnaire';
 import { CrosspostAccountPicker } from '@/components/crosspost-account-picker';
-import { api, ApiError } from '@/lib/api';
+import { api, apiUpload, ApiError } from '@/lib/api';
 import {
   getApiAccount,
   getAccountView,
@@ -147,6 +156,9 @@ export default function AccountSettingsPage() {
     'PUBLIC',
   );
   const [defaultCategory, setDefaultCategory] = useState('22');
+  const [defaultMadeForKids, setDefaultMadeForKids] = useState(false);
+  const [defaultPublishLanguage, setDefaultPublishLanguage] = useState('en');
+  const [defaultRecordingCountry, setDefaultRecordingCountry] = useState('');
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({ ...DEFAULT_RENDER_SETTINGS });
   const [settingsSection, setSettingsSection] = useState<
     | 'pipeline'
@@ -275,6 +287,9 @@ export default function AccountSettingsPage() {
           randomizeMinutes?: number;
           defaultVisibility?: 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
           defaultCategory?: string;
+          defaultMadeForKids?: boolean;
+          defaultLanguage?: string;
+          defaultRecordingCountry?: string;
         } | null;
         const posts =
           typeof sched?.maxPerDay === 'number'
@@ -294,6 +309,11 @@ export default function AccountSettingsPage() {
         }
         if (sched?.defaultVisibility) setDefaultVisibility(sched.defaultVisibility);
         if (sched?.defaultCategory) setDefaultCategory(sched.defaultCategory);
+        if (typeof sched?.defaultMadeForKids === 'boolean') {
+          setDefaultMadeForKids(sched.defaultMadeForKids);
+        }
+        setDefaultPublishLanguage(sched?.defaultLanguage || p.language || 'en');
+        setDefaultRecordingCountry(sched?.defaultRecordingCountry ?? '');
         if (sched?.cadence === 'SPECIFIC_DAYS') {
           setScheduleCadence('SPECIFIC_DAYS');
           const loaded = (sched.days ?? [])
@@ -488,6 +508,8 @@ export default function AccountSettingsPage() {
             burnCaptions: {
               enabled: renderSettings.burnCaptions.enabled,
               preset: renderSettings.burnCaptions.preset,
+              position: renderSettings.burnCaptions.position ?? 'center',
+              colorMode: renderSettings.burnCaptions.colorMode ?? 'dark',
               ...(renderSettings.burnCaptions.fontSize != null
                 ? { fontSize: renderSettings.burnCaptions.fontSize }
                 : {}),
@@ -495,7 +517,9 @@ export default function AccountSettingsPage() {
             hookText: {
               enabled: renderSettings.hookText.enabled,
               source: renderSettings.hookText.source,
-              maxWords: renderSettings.hookText.maxWords ?? 3,
+              maxWords: renderSettings.hookText.maxWords ?? 8,
+              maxLines: renderSettings.hookText.maxLines ?? 2,
+              position: renderSettings.hookText.position ?? 'top',
               ...(renderSettings.hookText.customText?.trim()
                 ? { customText: renderSettings.hookText.customText.trim() }
                 : {}),
@@ -510,6 +534,19 @@ export default function AccountSettingsPage() {
             },
             reactionAvatar: {
               enabled: renderSettings.reactionAvatar?.enabled ?? false,
+              shape: renderSettings.reactionAvatar?.shape ?? 'circle',
+              corner: renderSettings.reactionAvatar?.corner ?? 'br',
+              sizePercent: renderSettings.reactionAvatar?.sizePercent ?? 22,
+              showDuring: renderSettings.reactionAvatar?.showDuring ?? 'dialogue',
+              ...(renderSettings.reactionAvatar?.assetPath
+                ? { assetPath: renderSettings.reactionAvatar.assetPath }
+                : {}),
+              ...(renderSettings.reactionAvatar?.fileName
+                ? { fileName: renderSettings.reactionAvatar.fileName }
+                : {}),
+              ...(renderSettings.reactionAvatar?.mimeType
+                ? { mimeType: renderSettings.reactionAvatar.mimeType }
+                : {}),
             },
           },
         },
@@ -538,6 +575,9 @@ export default function AccountSettingsPage() {
           defaultCrosspostAccountIds: defaultCrosspostIds,
           defaultVisibility,
           defaultCategory: defaultCategory.trim() || undefined,
+          defaultMadeForKids,
+          defaultLanguage: defaultPublishLanguage || undefined,
+          defaultRecordingCountry: defaultRecordingCountry.trim() || undefined,
         },
       });
       toast('Channel profile saved', 'success');
@@ -1018,38 +1058,84 @@ export default function AccountSettingsPage() {
               label="Burn captions (dialogue / voiceover lines)"
             />
             {renderSettings.burnCaptions.enabled && (
-              <Field label="Default caption template">
-                <Select
-                  value={renderSettings.burnCaptions.preset}
-                  onChange={(e) =>
-                    setRenderSettings((s) => ({
-                      ...s,
-                      burnCaptions: {
-                        ...s.burnCaptions,
-                        preset: e.target.value as CaptionTemplateId,
-                      },
-                    }))
-                  }
-                >
-                  {CAPTION_TEMPLATE_PICKER.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.label}
-                    </option>
-                  ))}
-                  {/* Keep legacy values selectable if already saved */}
-                  {!CAPTION_TEMPLATE_PICKER.some((t) => t.id === renderSettings.burnCaptions.preset) &&
-                    CAPTION_TEMPLATES.filter(
-                      (t) => t.id === renderSettings.burnCaptions.preset,
-                    ).map((t) => (
+              <>
+                <Field label="Default caption template">
+                  <Select
+                    value={renderSettings.burnCaptions.preset}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        burnCaptions: {
+                          ...s.burnCaptions,
+                          preset: e.target.value as CaptionTemplateId,
+                        },
+                      }))
+                    }
+                  >
+                    {CAPTION_TEMPLATE_PICKER.map((t) => (
                       <option key={t.id} value={t.id}>
-                        {t.label} (legacy)
+                        {t.label}
                       </option>
                     ))}
-                </Select>
-                <p className="mt-1 text-[11px] text-zinc-500">
-                  Per-video choice on the AI tab overrides this. Burned with ffmpeg after approve.
-                </p>
-              </Field>
+                    {/* Keep legacy values selectable if already saved */}
+                    {!CAPTION_TEMPLATE_PICKER.some((t) => t.id === renderSettings.burnCaptions.preset) &&
+                      CAPTION_TEMPLATES.filter(
+                        (t) => t.id === renderSettings.burnCaptions.preset,
+                      ).map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.label} (legacy)
+                        </option>
+                      ))}
+                  </Select>
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Per-video choice on the AI tab overrides this. Always burned as max 2 lines.
+                  </p>
+                </Field>
+                <Field label="Caption position">
+                  <Select
+                    value={renderSettings.burnCaptions.position ?? 'center'}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        burnCaptions: {
+                          ...s.burnCaptions,
+                          position: e.target.value as OverlayPosition,
+                        },
+                      }))
+                    }
+                  >
+                    {OVERLAY_POSITIONS.map((p) => (
+                      <option key={p} value={p}>
+                        {OVERLAY_POSITION_LABELS[p]}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Caption text color">
+                  <Select
+                    value={renderSettings.burnCaptions.colorMode ?? 'dark'}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        burnCaptions: {
+                          ...s.burnCaptions,
+                          colorMode: e.target.value as CaptionColorMode,
+                        },
+                      }))
+                    }
+                  >
+                    {CAPTION_COLOR_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {CAPTION_COLOR_MODE_LABELS[m]}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Light text for dark footage; dark text for bright footage. Per-video override on
+                    the AI tab.
+                  </p>
+                </Field>
+              </>
             )}
           </div>
 
@@ -1062,7 +1148,7 @@ export default function AccountSettingsPage() {
                   hookText: { ...s.hookText, enabled: v },
                 }))
               }
-              label="Hook text (2–3 words, top center)"
+              label="Hook text (1–2 lines, top attention phrase)"
             />
             {renderSettings.hookText.enabled && (
               <div className="space-y-3">
@@ -1079,13 +1165,13 @@ export default function AccountSettingsPage() {
                       }))
                     }
                   >
-                    <option value="options">Pick at script approval (3–4 options)</option>
+                    <option value="options">Pick at script approval (short + longer options)</option>
                     <option value="title">Always from video title</option>
                     <option value="custom">Fixed custom hook text</option>
                   </Select>
                 </Field>
                 {renderSettings.hookText.source === 'custom' && (
-                  <Field label="Custom hook (2–3 words)">
+                  <Field label="Custom hook (use Enter for a 2nd line)">
                     <Input
                       value={renderSettings.hookText.customText ?? ''}
                       onChange={(e) =>
@@ -1094,53 +1180,246 @@ export default function AccountSettingsPage() {
                           hookText: { ...s.hookText, customText: e.target.value },
                         }))
                       }
-                      placeholder="e.g. HIDDEN SAFE"
-                      maxLength={48}
+                      placeholder="e.g. TRASH TO TREASURE"
+                      maxLength={96}
                     />
                   </Field>
                 )}
                 <Field label="Max words">
                   <Select
-                    value={String(renderSettings.hookText.maxWords ?? 3)}
+                    value={String(renderSettings.hookText.maxWords ?? 8)}
                     onChange={(e) =>
                       setRenderSettings((s) => ({
                         ...s,
                         hookText: {
                           ...s.hookText,
-                          maxWords: Math.max(1, Math.min(5, Number(e.target.value) || 3)),
+                          maxWords: Math.max(2, Math.min(12, Number(e.target.value) || 8)),
                         },
                       }))
                     }
                   >
-                    <option value="2">2 words</option>
                     <option value="3">3 words</option>
                     <option value="4">4 words</option>
+                    <option value="5">5 words</option>
+                    <option value="6">6 words</option>
+                    <option value="8">8 words</option>
+                    <option value="10">10 words</option>
+                    <option value="12">12 words</option>
+                  </Select>
+                </Field>
+                <Field label="Max lines">
+                  <Select
+                    value={String(renderSettings.hookText.maxLines ?? 2)}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        hookText: {
+                          ...s.hookText,
+                          maxLines: Math.max(1, Math.min(3, Number(e.target.value) || 2)),
+                        },
+                      }))
+                    }
+                  >
+                    <option value="1">1 line</option>
+                    <option value="2">2 lines</option>
+                    <option value="3">3 lines</option>
+                  </Select>
+                </Field>
+                <Field label="Hook position">
+                  <Select
+                    value={renderSettings.hookText.position ?? 'top'}
+                    onChange={(e) =>
+                      setRenderSettings((s) => ({
+                        ...s,
+                        hookText: {
+                          ...s.hookText,
+                          position: e.target.value as OverlayPosition,
+                        },
+                      }))
+                    }
+                  >
+                    {OVERLAY_POSITIONS.map((p) => (
+                      <option key={p} value={p}>
+                        {OVERLAY_POSITION_LABELS[p]}
+                      </option>
+                    ))}
                   </Select>
                 </Field>
                 <p className="text-[11px] text-zinc-500">
                   {renderSettings.hookText.source === 'options'
-                    ? 'On the AI tab at script approval, pick one of 3–4 short phrases. That choice is burned top-center — separate from captions.'
-                    : 'Big bold text at the top center to grab attention — not the same as captions.'}
+                    ? 'On the AI tab, pick a short or longer (4+ words / 2-line) phrase. Separate from captions.'
+                    : 'Big bold attention text — separate from dialogue captions.'}
                 </p>
               </div>
             )}
           </div>
 
-          <div className="rounded-md border border-zinc-200 bg-zinc-50/80 p-3 opacity-80">
+          <div className="space-y-3 rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
             <Toggle
               checked={renderSettings.reactionAvatar?.enabled ?? false}
               onChange={(v) =>
                 setRenderSettings((s) => ({
                   ...s,
-                  reactionAvatar: { enabled: v },
+                  reactionAvatar: {
+                    ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                    enabled: v,
+                  },
                 }))
               }
-              label="Reaction avatar (coming soon)"
+              label="Reaction avatar (corner PiP)"
             />
-            <p className="mt-1 text-[11px] text-zinc-500">
-              Lip-sync reaction face in the corner during dialogue only. Saved for later — not
-              rendered yet.
+            <p className="text-[11px] text-zinc-500">
+              Upload a face photo or short clip. ffmpeg overlays it in the corner during dialogue
+              (or always). Not lip-synced — reaction / talking-head style.
             </p>
+            {renderSettings.reactionAvatar?.enabled && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-start gap-3">
+                  {renderSettings.reactionAvatar.assetPath ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`/api/v1/accounts/${id}/reaction-avatar?t=${encodeURIComponent(renderSettings.reactionAvatar.assetPath)}`}
+                      alt="Reaction avatar"
+                      className="h-20 w-20 rounded-full border border-zinc-200 object-cover bg-zinc-100"
+                    />
+                  ) : (
+                    <div className="flex h-20 w-20 items-center justify-center rounded-full border border-dashed border-zinc-300 bg-white text-[10px] text-zinc-400">
+                      No face
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
+                      className="block w-full text-xs text-zinc-600"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!file || !id) return;
+                        void (async () => {
+                          try {
+                            const next = await apiUpload<{
+                              profile?: { voiceSettings?: unknown };
+                            }>(`/accounts/${id}/reaction-avatar`, file);
+                            const vs = next.profile?.voiceSettings;
+                            setRenderSettings(renderSettingsFromVoiceSettings(vs));
+                            toast('Reaction avatar uploaded', 'success');
+                          } catch (err) {
+                            toast(
+                              err instanceof ApiError ? err.message : 'Avatar upload failed',
+                              'error',
+                            );
+                          }
+                        })();
+                      }}
+                    />
+                    {renderSettings.reactionAvatar.assetPath && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              const next = await api.del<{
+                                profile?: { voiceSettings?: unknown };
+                              }>(`/accounts/${id}/reaction-avatar`);
+                              setRenderSettings(
+                                renderSettingsFromVoiceSettings(next.profile?.voiceSettings),
+                              );
+                              toast('Reaction avatar removed', 'success');
+                            } catch (err) {
+                              toast(
+                                err instanceof ApiError ? err.message : 'Remove failed',
+                                'error',
+                              );
+                            }
+                          })();
+                        }}
+                      >
+                        Remove face
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Shape">
+                    <Select
+                      value={renderSettings.reactionAvatar.shape ?? 'circle'}
+                      onChange={(e) =>
+                        setRenderSettings((s) => ({
+                          ...s,
+                          reactionAvatar: {
+                            ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                            shape: e.target.value as 'circle' | 'square' | 'rounded',
+                          },
+                        }))
+                      }
+                    >
+                      <option value="circle">Circle</option>
+                      <option value="rounded">Rounded</option>
+                      <option value="square">Square (border)</option>
+                    </Select>
+                  </Field>
+                  <Field label="Corner">
+                    <Select
+                      value={renderSettings.reactionAvatar.corner ?? 'br'}
+                      onChange={(e) =>
+                        setRenderSettings((s) => ({
+                          ...s,
+                          reactionAvatar: {
+                            ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                            corner: e.target.value as 'br' | 'bl' | 'tr' | 'tl',
+                          },
+                        }))
+                      }
+                    >
+                      <option value="br">Bottom right</option>
+                      <option value="bl">Bottom left</option>
+                      <option value="tr">Top right</option>
+                      <option value="tl">Top left</option>
+                    </Select>
+                  </Field>
+                  <Field label="Size (% of width)">
+                    <Select
+                      value={String(renderSettings.reactionAvatar.sizePercent ?? 22)}
+                      onChange={(e) =>
+                        setRenderSettings((s) => ({
+                          ...s,
+                          reactionAvatar: {
+                            ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                            sizePercent: Number(e.target.value) || 22,
+                          },
+                        }))
+                      }
+                    >
+                      <option value="16">16%</option>
+                      <option value="20">20%</option>
+                      <option value="22">22%</option>
+                      <option value="26">26%</option>
+                      <option value="30">30%</option>
+                    </Select>
+                  </Field>
+                  <Field label="When to show">
+                    <Select
+                      value={renderSettings.reactionAvatar.showDuring ?? 'dialogue'}
+                      onChange={(e) =>
+                        setRenderSettings((s) => ({
+                          ...s,
+                          reactionAvatar: {
+                            ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                            showDuring: e.target.value as 'dialogue' | 'always',
+                          },
+                        }))
+                      }
+                    >
+                      <option value="dialogue">During dialogue only</option>
+                      <option value="always">Entire video</option>
+                    </Select>
+                  </Field>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
@@ -1255,18 +1534,61 @@ export default function AccountSettingsPage() {
                   <option value="PRIVATE">Private / friends</option>
                 </Select>
               </Field>
-              <Field label="YouTube category ID">
-                <Input
+              <Field label="YouTube category">
+                <Select
                   value={defaultCategory}
                   onChange={(e) => setDefaultCategory(e.target.value)}
-                  placeholder="22"
                   disabled={real?.platform === 'FACEBOOK' || real?.platform === 'TIKTOK'}
-                />
+                >
+                  {YOUTUBE_CATEGORIES.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </Select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Used for YouTube (22 = People & Blogs). Ignored on Facebook/TikTok.
+                  Used for YouTube uploads. Ignored on Facebook/TikTok.
                 </p>
               </Field>
             </div>
+            {real?.platform === 'YOUTUBE' && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Made for kids (default)">
+                  <Select
+                    value={defaultMadeForKids ? 'yes' : 'no'}
+                    onChange={(e) => setDefaultMadeForKids(e.target.value === 'yes')}
+                  >
+                    <option value="no">No — not made for kids</option>
+                    <option value="yes">Yes — made for kids</option>
+                  </Select>
+                </Field>
+                <Field label="Video language (default)">
+                  <Select
+                    value={defaultPublishLanguage}
+                    onChange={(e) => setDefaultPublishLanguage(e.target.value)}
+                  >
+                    {CONTENT_LANGUAGES.map((lang) => (
+                      <option key={lang.code} value={lang.code}>
+                        {contentLanguageOptionLabel(lang)}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Recording country (default)">
+                  <Select
+                    value={defaultRecordingCountry}
+                    onChange={(e) => setDefaultRecordingCountry(e.target.value)}
+                  >
+                    <option value="">Not set</option>
+                    {YOUTUBE_COUNTRIES.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+            )}
           </div>
 
           <CrosspostAccountPicker

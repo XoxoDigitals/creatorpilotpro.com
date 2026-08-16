@@ -7,7 +7,12 @@ export const CAPTION_TEMPLATE_IDS = [
   'impact_hormozi',
   'impact_cyan',
   'impact_yellow',
+  'impact_pink',
+  'impact_red',
+  'impact_stack',
+  'karaoke_word',
   'boxed_white',
+  'boxed_yellow',
   // Legacy ids kept so old saved settings still resolve.
   'bottom_white',
   'bottom_yellow',
@@ -22,13 +27,47 @@ export const LEGACY_CAPTION_PRESETS = ['bottom', 'center', 'karaoke'] as const;
 
 export type CaptionPreset = CaptionTemplateId | (typeof LEGACY_CAPTION_PRESETS)[number];
 
-export type CaptionHighlightMode = 'none' | 'hormozi' | 'cyan_phrase' | 'yellow_pop';
+export type CaptionHighlightMode =
+  | 'none'
+  | 'hormozi'
+  | 'cyan_phrase'
+  | 'yellow_pop'
+  | 'pink_pop'
+  | 'red_pop'
+  | 'stack_two_tone'
+  /** Timed: active spoken word highlighted across a 2-line caption. */
+  | 'karaoke_word';
+
+/**
+ * Caption text appearance vs video brightness.
+ * - `dark` = light text / dark outline (default, for dark footage)
+ * - `light` = dark text / light outline (for bright footage)
+ */
+export const CAPTION_COLOR_MODES = ['dark', 'light'] as const;
+export type CaptionColorMode = (typeof CAPTION_COLOR_MODES)[number];
+
+export const CAPTION_COLOR_MODE_LABELS: Record<CaptionColorMode, string> = {
+  dark: 'Light text (dark mode)',
+  light: 'Dark text (light mode)',
+};
+
+/** Vertical placement for captions / hooks (ASS MarginV + Alignment). */
+export const OVERLAY_POSITIONS = ['top', 'upper', 'center', 'lower', 'bottom'] as const;
+export type OverlayPosition = (typeof OVERLAY_POSITIONS)[number];
+
+export const OVERLAY_POSITION_LABELS: Record<OverlayPosition, string> = {
+  top: 'Top',
+  upper: 'Upper third',
+  center: 'Center',
+  lower: 'Lower third',
+  bottom: 'Bottom',
+};
 
 export type CaptionTemplateMeta = {
   id: CaptionTemplateId;
   label: string;
   description: string;
-  /** Preview placement for the CSS mock on the original video. */
+  /** Default placement when the owner hasn't overridden position. */
   align: 'bottom' | 'center' | 'upper';
   /** Hex for base / unhighlighted text. */
   color: string;
@@ -97,11 +136,76 @@ export const CAPTION_TEMPLATES: CaptionTemplateMeta[] = [
     accents: ['#FFE566'],
   },
   {
+    id: 'impact_pink',
+    label: 'Impact pink',
+    description: 'Center bold with hot-pink word pops',
+    align: 'center',
+    color: '#FFFFFF',
+    outline: '#000000',
+    boxed: false,
+    italic: false,
+    size: 'xl',
+    highlightMode: 'pink_pop',
+    accents: ['#FF4DC4'],
+  },
+  {
+    id: 'impact_red',
+    label: 'Impact red',
+    description: 'Upper bold with red emphasis',
+    align: 'upper',
+    color: '#FFFFFF',
+    outline: '#000000',
+    boxed: false,
+    italic: false,
+    size: 'xl',
+    highlightMode: 'red_pop',
+    accents: ['#FF3B3B'],
+  },
+  {
+    id: 'impact_stack',
+    label: 'Two-tone stack',
+    description: 'Line 1 white, line 2 yellow (always 2 lines)',
+    align: 'center',
+    color: '#FFFFFF',
+    outline: '#000000',
+    boxed: false,
+    italic: false,
+    size: 'xl',
+    highlightMode: 'stack_two_tone',
+    accents: ['#FFE566'],
+  },
+  {
+    id: 'karaoke_word',
+    label: 'Karaoke highlight',
+    description: '2-line captions — each word lights up as the narrator says it',
+    align: 'center',
+    color: '#FFFFFF',
+    outline: '#000000',
+    boxed: false,
+    italic: false,
+    size: 'xl',
+    highlightMode: 'karaoke_word',
+    accents: ['#FFE566'],
+  },
+  {
     id: 'boxed_white',
     label: 'Boxed bottom',
     description: 'White text on a dark box (lower third)',
     align: 'bottom',
     color: '#FFFFFF',
+    outline: '#000000',
+    boxed: true,
+    italic: false,
+    size: 'md',
+    highlightMode: 'none',
+    accents: [],
+  },
+  {
+    id: 'boxed_yellow',
+    label: 'Boxed yellow',
+    description: 'Yellow text on a dark box',
+    align: 'bottom',
+    color: '#FFE566',
     outline: '#000000',
     boxed: true,
     italic: false,
@@ -166,10 +270,85 @@ export const CAPTION_TEMPLATES: CaptionTemplateMeta[] = [
 
 /** Templates shown in the AI script-approval picker (viral overlay set). */
 export const CAPTION_TEMPLATE_PICKER: CaptionTemplateMeta[] = CAPTION_TEMPLATES.filter((t) =>
-  ['impact_hormozi', 'impact_cyan', 'impact_center', 'impact_yellow', 'boxed_white'].includes(
-    t.id,
-  ),
+  [
+    'impact_hormozi',
+    'impact_cyan',
+    'impact_center',
+    'impact_yellow',
+    'impact_pink',
+    'impact_red',
+    'impact_stack',
+    'karaoke_word',
+    'boxed_white',
+    'boxed_yellow',
+  ].includes(t.id),
 );
+
+export function normalizeCaptionColorMode(raw: unknown): CaptionColorMode {
+  return raw === 'light' ? 'light' : 'dark';
+}
+
+/** Resolve base / outline / accent hex for a template + light/dark text mode. */
+export function resolveCaptionColors(
+  meta: CaptionTemplateMeta,
+  colorMode: CaptionColorMode = 'dark',
+): { color: string; outline: string; accents: string[] } {
+  if (colorMode === 'light') {
+    // Dark text on bright footage; keep punchy accents.
+    return {
+      color: '#111111',
+      outline: '#FFFFFF',
+      accents: meta.accents.length > 0 ? meta.accents : ['#C9A227'],
+    };
+  }
+  return {
+    color: meta.color,
+    outline: meta.outline,
+    accents: meta.accents,
+  };
+}
+
+export function normalizeOverlayPosition(
+  raw: unknown,
+  fallback: OverlayPosition = 'center',
+): OverlayPosition {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if ((OVERLAY_POSITIONS as readonly string[]).includes(s)) return s as OverlayPosition;
+  return fallback;
+}
+
+/** Map position → ASS Alignment + MarginV (1080x1920 PlayRes). */
+export function overlayPositionAss(pos: OverlayPosition): { alignment: number; marginV: number } {
+  switch (pos) {
+    case 'top':
+      return { alignment: 8, marginV: 48 };
+    case 'upper':
+      return { alignment: 8, marginV: 220 };
+    case 'center':
+      return { alignment: 5, marginV: 0 };
+    case 'lower':
+      return { alignment: 2, marginV: 320 };
+    case 'bottom':
+    default:
+      return { alignment: 2, marginV: 80 };
+  }
+}
+
+/** Split words into up to `maxLines` balanced rows (captions = 2). */
+export function wrapWordsToLines(words: string[], maxLines = 2): string[][] {
+  const clean = words.filter(Boolean);
+  if (clean.length === 0) return [];
+  const lines = Math.max(1, Math.min(4, maxLines));
+  if (lines === 1 || clean.length <= 2) return [clean];
+  if (lines === 2) {
+    const mid = Math.ceil(clean.length / 2);
+    return [clean.slice(0, mid), clean.slice(mid)].filter((r) => r.length > 0);
+  }
+  const size = Math.ceil(clean.length / lines);
+  const out: string[][] = [];
+  for (let i = 0; i < clean.length; i += size) out.push(clean.slice(i, i + size));
+  return out.filter((r) => r.length > 0);
+}
 
 export function normalizeCaptionTemplateId(raw: unknown): CaptionTemplateId {
   const s = typeof raw === 'string' ? raw.trim() : '';
@@ -289,12 +468,20 @@ export function pickHighlightIndices(words: string[], max = 3): number[] {
 
 export type PreviewCaptionSpan = { text: string; color: string };
 
-/** Split caption into colored spans for the live CSS preview. */
-export function previewCaptionSpans(
+export type PreviewCaptionOptions = {
+  colorMode?: CaptionColorMode | null;
+  /** For karaoke preview: which word index is “spoken” (defaults to mid word). */
+  activeWordIndex?: number | null;
+};
+
+/** Colored spans grouped into at most 2 lines for live preview. */
+export function previewCaptionLines(
   raw: string,
   templateId: unknown,
-): PreviewCaptionSpan[] {
+  options?: PreviewCaptionOptions,
+): PreviewCaptionSpan[][] {
   const meta = captionTemplateMeta(templateId);
+  const colors = resolveCaptionColors(meta, normalizeCaptionColorMode(options?.colorMode));
   const words = raw
     .trim()
     .toUpperCase()
@@ -302,36 +489,87 @@ export function previewCaptionSpans(
     .filter(Boolean);
   if (words.length === 0) return [];
 
+  const colorFor = (_w: string, i: number, indices: Set<number>, sortedIdx: number[]): string => {
+    if (!indices.has(i)) return colors.color;
+    const accentIdx = sortedIdx.indexOf(i);
+    return (
+      colors.accents[accentIdx % Math.max(1, colors.accents.length)] ??
+      colors.accents[0] ??
+      '#FFE566'
+    );
+  };
+
+  if (meta.highlightMode === 'karaoke_word') {
+    const active =
+      options?.activeWordIndex != null && Number.isFinite(options.activeWordIndex)
+        ? Math.max(0, Math.min(words.length - 1, Math.floor(options.activeWordIndex)))
+        : Math.min(words.length - 1, Math.floor(words.length / 2));
+    const accent = colors.accents[0] ?? '#FFE566';
+    const rows = wrapWordsToLines(words, 2);
+    let offset = 0;
+    return rows.map((row) => {
+      const spans = row.map((w, j) => {
+        const i = offset + j;
+        return { text: w, color: i === active ? accent : colors.color };
+      });
+      offset += row.length;
+      return spans;
+    });
+  }
+
+  if (meta.highlightMode === 'cyan_phrase' || meta.highlightMode === 'stack_two_tone') {
+    const rows = wrapWordsToLines(words, 2);
+    const accent = colors.accents[0] ?? '#00E5FF';
+    return rows.map((row, ri) => [
+      {
+        text: row.join(' '),
+        color: ri === 0 ? colors.color : accent,
+      },
+    ]);
+  }
+
   if (meta.highlightMode === 'none') {
-    return [{ text: words.join(' '), color: meta.color }];
+    return wrapWordsToLines(words, 2).map((row) => [{ text: row.join(' '), color: colors.color }]);
   }
 
-  if (meta.highlightMode === 'cyan_phrase') {
-    // First half white, second half cyan (like "YEAH DUDE" / "IT'S CRAZY").
-    const mid = Math.max(1, Math.ceil(words.length / 2));
-    const first = words.slice(0, mid).join(' ');
-    const second = words.slice(mid).join(' ');
-    const spans: PreviewCaptionSpan[] = [{ text: first, color: meta.color }];
-    if (second) spans.push({ text: second, color: meta.accents[0] ?? '#00E5FF' });
+  const maxHl =
+    meta.highlightMode === 'hormozi' ? 3 : meta.highlightMode === 'pink_pop' || meta.highlightMode === 'red_pop' ? 2 : 2;
+  const indices = new Set(pickHighlightIndices(words, maxHl));
+  const sortedIdx = [...indices].sort((a, b) => a - b);
+  const rows = wrapWordsToLines(words, 2);
+  let offset = 0;
+  return rows.map((row) => {
+    const spans = row.map((w, j) => {
+      const i = offset + j;
+      return { text: w, color: colorFor(w, i, indices, sortedIdx) };
+    });
+    offset += row.length;
     return spans;
-  }
-
-  const indices = new Set(pickHighlightIndices(words, meta.highlightMode === 'hormozi' ? 3 : 2));
-  return words.map((w, i) => {
-    if (!indices.has(i)) return { text: w, color: meta.color };
-    const accentIdx = [...indices].indexOf(i);
-    const accent =
-      meta.accents[accentIdx % Math.max(1, meta.accents.length)] ?? meta.accents[0] ?? '#FFE566';
-    return { text: w, color: accent };
   });
 }
 
+/** @deprecated Prefer previewCaptionLines — flat spans (single line). */
+export function previewCaptionSpans(
+  raw: string,
+  templateId: unknown,
+  options?: PreviewCaptionOptions,
+): PreviewCaptionSpan[] {
+  return previewCaptionLines(raw, templateId, options).flat();
+}
+
 /**
- * Format a cue as ASS text with inline color overrides for impact templates.
- * Output is already escaped for ASS (no raw `{` / `}` except override tags).
+ * Format a cue as ASS text with inline color overrides.
+ * Always wraps to at most 2 lines (`\\N`).
+ * For karaoke_word, prefer `buildKaraokeAssCueEvents` (timed per-word dialogues).
  */
-export function formatImpactAssText(raw: string, templateId: unknown): string {
+export function formatImpactAssText(
+  raw: string,
+  templateId: unknown,
+  colorMode: CaptionColorMode = 'dark',
+  activeWordIndex?: number | null,
+): string {
   const meta = captionTemplateMeta(templateId);
+  const colors = resolveCaptionColors(meta, normalizeCaptionColorMode(colorMode));
   const words = raw
     .trim()
     .toUpperCase()
@@ -340,37 +578,106 @@ export function formatImpactAssText(raw: string, templateId: unknown): string {
     .filter(Boolean);
   if (words.length === 0) return '';
 
-  const base = assColor(meta.color);
+  const base = assColor(colors.color);
   const reset = `{\\c${base}&}`;
+  const rows = wrapWordsToLines(words, 2);
+
+  if (meta.highlightMode === 'karaoke_word') {
+    const active =
+      activeWordIndex != null && Number.isFinite(activeWordIndex)
+        ? Math.max(0, Math.min(words.length - 1, Math.floor(activeWordIndex)))
+        : -1;
+    const accent = assColor(colors.accents[0] ?? '#FFE566');
+    let offset = 0;
+    return rows
+      .map((row) => {
+        const line = row
+          .map((w, j) => {
+            const i = offset + j;
+            return i === active ? `{\\c${accent}&}${w}${reset}` : w;
+          })
+          .join(' ');
+        offset += row.length;
+        return line;
+      })
+      .join('\\N');
+  }
+
+  if (meta.highlightMode === 'cyan_phrase' || meta.highlightMode === 'stack_two_tone') {
+    const accent = assColor(colors.accents[0] ?? '#00E5FF');
+    return rows
+      .map((row, ri) => {
+        const line = row.join(' ');
+        return ri === 0 ? line : `{\\c${accent}&}${line}${reset}`;
+      })
+      .join('\\N');
+  }
 
   if (meta.highlightMode === 'none') {
-    return words.join(' ');
+    return rows.map((row) => row.join(' ')).join('\\N');
   }
 
-  if (meta.highlightMode === 'cyan_phrase') {
-    const mid = Math.max(1, Math.ceil(words.length / 2));
-    const first = words.slice(0, mid).join(' ');
-    const second = words.slice(mid).join(' ');
-    if (!second) return first;
-    const accent = assColor(meta.accents[0] ?? '#00E5FF');
-    return `${first}\\N{\\c${accent}&}${second}${reset}`;
-  }
-
-  const indices = new Set(pickHighlightIndices(words, meta.highlightMode === 'hormozi' ? 3 : 2));
+  const maxHl = meta.highlightMode === 'hormozi' ? 3 : 2;
+  const indices = new Set(pickHighlightIndices(words, maxHl));
   const sortedIdx = [...indices].sort((a, b) => a - b);
-  return words
-    .map((w, i) => {
-      if (!indices.has(i)) return w;
-      const accentIdx = sortedIdx.indexOf(i);
-      const hex =
-        meta.accents[accentIdx % Math.max(1, meta.accents.length)] ?? meta.accents[0] ?? '#FFE566';
-      return `{\\c${assColor(hex)}&}${w}${reset}`;
+  let offset = 0;
+  return rows
+    .map((row) => {
+      const line = row
+        .map((w, j) => {
+          const i = offset + j;
+          if (!indices.has(i)) return w;
+          const accentIdx = sortedIdx.indexOf(i);
+          const hex =
+            colors.accents[accentIdx % Math.max(1, colors.accents.length)] ??
+            colors.accents[0] ??
+            '#FFE566';
+          return `{\\c${assColor(hex)}&}${w}${reset}`;
+        })
+        .join(' ');
+      offset += row.length;
+      return line;
     })
-    .join(' ');
+    .join('\\N');
+}
+
+/**
+ * Expand one SRT cue into timed ASS dialogues where each spoken word is highlighted
+ * in turn (karaoke). Returns empty when the template is not karaoke_word.
+ */
+export function buildKaraokeAssCueEvents(
+  cue: { startMs: number; endMs: number; text: string },
+  templateId: unknown,
+  colorMode: CaptionColorMode = 'dark',
+): Array<{ startMs: number; endMs: number; text: string }> {
+  const meta = captionTemplateMeta(templateId);
+  if (meta.highlightMode !== 'karaoke_word') return [];
+  const words = cue.text
+    .trim()
+    .toUpperCase()
+    .replace(/[{}]/g, '')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return [];
+  const span = Math.max(1, cue.endMs - cue.startMs);
+  const slice = Math.max(80, Math.floor(span / words.length));
+  const out: Array<{ startMs: number; endMs: number; text: string }> = [];
+  for (let i = 0; i < words.length; i++) {
+    const startMs = cue.startMs + i * slice;
+    const endMs = i === words.length - 1 ? cue.endMs : Math.min(cue.endMs, startMs + slice);
+    if (endMs <= startMs) continue;
+    const text = formatImpactAssText(cue.text, templateId, colorMode, i);
+    if (text) out.push({ startMs, endMs, text });
+  }
+  return out;
 }
 
 /** Style line fields for ffmpeg ASS burn-in. */
-export function captionAssStyleFields(id: unknown): {
+export function captionAssStyleFields(
+  id: unknown,
+  positionOverride?: OverlayPosition | null,
+  colorMode: CaptionColorMode = 'dark',
+): {
   name: string;
   fontSize: number;
   primary: string;
@@ -383,16 +690,18 @@ export function captionAssStyleFields(id: unknown): {
   shadow: number;
 } {
   const meta = captionTemplateMeta(id);
+  const colors = resolveCaptionColors(meta, normalizeCaptionColorMode(colorMode));
   const fontSize =
-    meta.size === 'xl' ? 68 : meta.size === 'lg' ? 56 : meta.size === 'sm' ? 36 : 48;
-  const alignment = meta.align === 'center' ? 5 : meta.align === 'upper' ? 8 : 2;
-  const marginV =
-    meta.align === 'center' ? 0 : meta.align === 'upper' ? 220 : meta.boxed ? 70 : 90;
+    meta.size === 'xl' ? 64 : meta.size === 'lg' ? 52 : meta.size === 'sm' ? 36 : 46;
+  const defaultPos: OverlayPosition =
+    meta.align === 'center' ? 'center' : meta.align === 'upper' ? 'upper' : 'bottom';
+  const pos = normalizeOverlayPosition(positionOverride, defaultPos);
+  const { alignment, marginV } = overlayPositionAss(pos);
   return {
     name: 'Caption',
     fontSize,
-    primary: assColor(meta.color),
-    outline: assColor(meta.outline),
+    primary: assColor(colors.color),
+    outline: assColor(colors.outline),
     borderStyle: meta.boxed ? 3 : 1,
     outlineWidth: meta.boxed ? 8 : meta.size === 'xl' ? 5 : 4,
     alignment,
@@ -402,7 +711,7 @@ export function captionAssStyleFields(id: unknown): {
   };
 }
 
-export function hookAssStyleFields(): {
+export function hookAssStyleFields(positionOverride?: OverlayPosition | null): {
   name: string;
   fontSize: number;
   primary: string;
@@ -414,15 +723,17 @@ export function hookAssStyleFields(): {
   italic: boolean;
   shadow: number;
 } {
+  const pos = normalizeOverlayPosition(positionOverride, 'top');
+  const { alignment, marginV } = overlayPositionAss(pos);
   return {
     name: 'Hook',
-    fontSize: 56,
+    fontSize: 52,
     primary: assColor('#FFFFFF'),
     outline: assColor('#000000'),
     borderStyle: 1,
     outlineWidth: 4,
-    alignment: 8, // top-center
-    marginV: 56,
+    alignment,
+    marginV,
     italic: false,
     shadow: 2,
   };

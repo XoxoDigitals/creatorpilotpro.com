@@ -2,10 +2,9 @@ import { BadRequestException, Injectable, ServiceUnavailableException } from '@n
 import { SettingsService } from '../../system/settings.service';
 
 /**
- * Google OAuth for YouTube (own-app path). Per docs/06 §2 the connection is
- * READ-ONLY (analytics + revenue + thumbnails); upload scope is added only when
- * the owner enables `directUpload` in Settings → Platform Apps. Publishing itself
- * goes through PostQued.
+ * Google OAuth for YouTube (own-app path). Requests analytics + monetary
+ * read scopes always; with `directUpload` also requests full `youtube` manage
+ * (upload, thumbnails, metadata).
  */
 
 export interface GoogleConfig {
@@ -40,6 +39,8 @@ const READONLY_SCOPES = [
   'https://www.googleapis.com/auth/yt-analytics.readonly',
   'https://www.googleapis.com/auth/yt-analytics-monetary.readonly',
 ];
+/** Full manage + upload + thumbnails (includes upload + readonly capabilities). */
+const MANAGE_SCOPE = 'https://www.googleapis.com/auth/youtube';
 const UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
 
 @Injectable()
@@ -59,7 +60,12 @@ export class GoogleOAuthService {
   }
 
   scopesFor(cfg: GoogleConfig): string[] {
-    return cfg.directUpload ? [...READONLY_SCOPES, UPLOAD_SCOPE] : READONLY_SCOPES;
+    // Always request analytics scopes so channel metrics sync works after connect.
+    // With direct upload: full `youtube` manage (upload + thumbnails + metadata).
+    if (cfg.directUpload) {
+      return [MANAGE_SCOPE, UPLOAD_SCOPE, ...READONLY_SCOPES.filter((s) => s.includes('yt-analytics'))];
+    }
+    return [...READONLY_SCOPES];
   }
 
   buildAuthUrl(params: {

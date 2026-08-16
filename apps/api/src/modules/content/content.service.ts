@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
 import type { ContentItemStatus, Prisma } from '@scp/db';
-import { withPublishReviewApproved, normalizeCaptionTemplateId } from '@scp/shared';
+import { withPublishReviewApproved, normalizeCaptionTemplateId, normalizeOverlayPosition, normalizeCaptionColorMode } from '@scp/shared';
 import { drivePreviewEmbedUrl } from '@scp/storage';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
@@ -130,6 +130,33 @@ function applySelectedCaptionTemplate(
   const id = opts.selectedCaptionTemplateId?.trim();
   if (!id) return;
   step.selectedCaptionTemplateId = normalizeCaptionTemplateId(id);
+}
+
+function applySelectedCaptionPosition(
+  step: Record<string, unknown>,
+  opts: { selectedCaptionPosition?: string },
+): void {
+  const raw = opts.selectedCaptionPosition?.trim();
+  if (!raw) return;
+  step.selectedCaptionPosition = normalizeOverlayPosition(raw, 'center');
+}
+
+function applySelectedCaptionColorMode(
+  step: Record<string, unknown>,
+  opts: { selectedCaptionColorMode?: string },
+): void {
+  const raw = opts.selectedCaptionColorMode?.trim();
+  if (!raw) return;
+  step.selectedCaptionColorMode = normalizeCaptionColorMode(raw);
+}
+
+function applySelectedHookPosition(
+  step: Record<string, unknown>,
+  opts: { selectedHookPosition?: string },
+): void {
+  const raw = opts.selectedHookPosition?.trim();
+  if (!raw) return;
+  step.selectedHookPosition = normalizeOverlayPosition(raw, 'top');
 }
 
 @Injectable()
@@ -443,6 +470,9 @@ export class ContentService {
     delete step.selectedHookTextId;
     delete step.selectedHookText;
     delete step.selectedCaptionTemplateId;
+    delete step.selectedCaptionPosition;
+    delete step.selectedCaptionColorMode;
+    delete step.selectedHookPosition;
     step.scriptNonce = Date.now();
     const updated = await this.prisma.client.contentItem.update({
       where: { id },
@@ -645,6 +675,9 @@ export class ContentService {
       selectedScriptId?: string;
       selectedHookTextId?: string;
       selectedCaptionTemplateId?: string;
+      selectedCaptionPosition?: string;
+      selectedCaptionColorMode?: string;
+      selectedHookPosition?: string;
     },
   ): Promise<AiPipelineItemView> {
     const item = await this.findPipelineItem(id);
@@ -654,6 +687,24 @@ export class ContentService {
     if (dto.selectedCaptionTemplateId?.trim()) {
       applySelectedCaptionTemplate(step, {
         selectedCaptionTemplateId: dto.selectedCaptionTemplateId,
+      });
+    }
+
+    if (dto.selectedCaptionPosition?.trim()) {
+      applySelectedCaptionPosition(step, {
+        selectedCaptionPosition: dto.selectedCaptionPosition,
+      });
+    }
+
+    if (dto.selectedCaptionColorMode?.trim()) {
+      applySelectedCaptionColorMode(step, {
+        selectedCaptionColorMode: dto.selectedCaptionColorMode,
+      });
+    }
+
+    if (dto.selectedHookPosition?.trim()) {
+      applySelectedHookPosition(step, {
+        selectedHookPosition: dto.selectedHookPosition,
       });
     }
 

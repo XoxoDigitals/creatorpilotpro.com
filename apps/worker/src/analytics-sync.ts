@@ -8,6 +8,8 @@ import { Prisma, type PrismaClient } from '@scp/db';
 import { decryptAccountAuth, getMasterKey, getPrisma, raiseIncident } from './publish-support.js';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
+const YT_DATA = 'https://www.googleapis.com/youtube/v3';
+const YT_ANALYTICS = 'https://youtubeanalytics.googleapis.com/v2/reports';
 
 type DayBucket = {
   views: number;
@@ -499,6 +501,233 @@ async function syncFacebookAccount(
   );
 }
 
+// ── YouTube analytics ──────────────────────────────────────────────────────
+
+async function fetchYouTubeSubscriberCount(
+  accessToken: string,
+): Promise<number | null> {
+  try {
+    const url =
+      `${YT_DATA}/channels?` +
+      new URLSearchParams({ part: 'statistics', mine: 'true' }).toString();
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+    });
+    if (!res.ok) {
+      console.warn(`[analytics:account-sync] YouTube channels HTTP ${res.status}`);
+      return null;
+    }
+    const data = (await res.json()) as {
+      items?: Array<{ statistics?: { subscriberCount?: string } }>;
+    };
+    const raw = data.items?.[0]?.statistics?.subscriberCount;
+    const n = raw != null ? Number(raw) : NaN;
+    return Number.isFinite(n) ? n : null;
+  } catch (err) {
+    console.warn(`[analytics:account-sync] YouTube channels error:`, err);
+    return null;
+  }
+}
+
+/** Daily channel reports via YouTube Analytics API (requires yt-analytics scopes). */
+async function fetchYouTubeAnalyticsDays(
+  accessToken: string,
+): Promise<Map<string, DayBucket & { watchTimeMin: number; revenue: number }>> {
+  const out = new Map<string, DayBucket & { watchTimeMin: number; revenue: number }>();
+  const end = new Date();
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - 90);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+  const metricSets = [
+    'views,estimatedMinutesWatched,likes,comments,estimatedRevenue',
+    'views,estimatedMinutesWatched,likes,comments',
+    'views,estimatedMinutesWatched',
+    'views',
+  ];
+
+  for (const metrics of metricSets) {
+    const url =
+      `${YT_ANALYTICS}?` +
+      new URLSearchParams({
+        ids: 'channel==MINE',
+        startDate: fmt(start),
+        endDate: fmt(end),
+        metrics,
+        dimensions: 'day',
+        sort: 'day',
+      }).toString();
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.warn(
+          `[analytics:account-sync] YouTube Analytics HTTP ${res.status} (${metrics}): ${body.slice(0, 180)}`,
+        );
+        continue;
+      }
+      const data = (await res.json()) as {
+        columnHeaders?: Array<{ name?: string }>;
+        rows?: unknown[][];
+      };
+      const cols = (data.columnHeaders ?? []).map((c) => c.name ?? '');
+      const dayIdx = cols.indexOf('day');
+      const viewsIdx = cols.indexOf('views');
+      const watchIdx = cols.indexOf('estimatedMinutesWatched');
+      const likesIdx = cols.indexOf('likes');
+      const commentsIdx = cols.indexOf('comments');
+      const revenueIdx = cols.indexOf('estimatedRevenue');
+      if (dayIdx < 0 || viewsIdx < 0) continue;
+
+      for (const row of data.rows ?? []) {
+        const day = String(row[dayIdx] ?? '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+        const views = Number(row[viewsIdx] ?? 0) || 0;
+        const watchTimeMin = watchIdx >= 0 ? Math.round(Number(row[watchIdx] ?? 0) || 0) : 0;
+        const likes = likesIdx >= 0 ? Number(row[likesIdx] ?? 0) || 0 : 0;
+        const comments = commentsIdx >= 0 ? Number(row[commentsIdx] ?? 0) || 0 : 0;
+        const revenue = revenueIdx >= 0 ? Number(row[revenueIdx] ?? 0) || 0 : 0;
+        out.set(day, {
+          views,
+          uniqueViewers: 0,
+          impressions: 0,
+          engagements: likes + comments,
+          watchTimeMin,
+          revenue,
+        });
+      }
+      if (out.size > 0) break;
+    } catch (err) {
+      console.warn(`[analytics:account-sync] YouTube Analytics error:`, err);
+    }
+  }
+  return out;
+}
+
+async function syncYouTubeAccount(
+  prisma: PrismaClient,
+  accountId: string,
+  accessToken: string,
+): Promise<void> {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().slice(0, 10);
+
+  const followers = await fetchYouTubeSubscriberCount(accessToken);
+  const days = await fetchYouTubeAnalyticsDays(accessToken);
+
+  if (days.size === 0) {
+    await prisma.metricSnapshotAccount.upsert({
+      where: { accountId_date: { accountId, date: today } },
+      create: {
+        accountId,
+        date: today,
+        followers: followers ?? 0,
+        views: 0,
+        uniqueViewers: 0,
+        impressions: 0,
+        engagements: 0,
+        watchTimeMin: 0,
+        ctr: 0,
+        revenue: 0,
+        rpm: 0,
+        syncedAt: new Date(),
+      },
+      update: {
+        ...(followers !== null ? { followers } : {}),
+        syncedAt: new Date(),
+      },
+    });
+    console.log(
+      `[analytics:account-sync] YouTube ${accountId}: followers=${followers ?? 'n/a'} (no daily rows)`,
+    );
+    return;
+  }
+
+  for (const [dayStr, bucket] of days) {
+    const date = new Date(`${dayStr}T00:00:00.000Z`);
+    const isToday = dayStr === todayStr;
+    await prisma.metricSnapshotAccount.upsert({
+      where: { accountId_date: { accountId, date } },
+      create: {
+        accountId,
+        date,
+        followers: isToday ? (followers ?? 0) : 0,
+        views: bucket.views,
+        uniqueViewers: bucket.uniqueViewers,
+        impressions: bucket.impressions,
+        engagements: bucket.engagements,
+        watchTimeMin: bucket.watchTimeMin,
+        ctr: 0,
+        revenue: bucket.revenue,
+        rpm: bucket.views > 0 ? (bucket.revenue / bucket.views) * 1000 : 0,
+        syncedAt: new Date(),
+      },
+      update: {
+        views: bucket.views,
+        engagements: bucket.engagements,
+        watchTimeMin: bucket.watchTimeMin,
+        revenue: bucket.revenue,
+        rpm: bucket.views > 0 ? (bucket.revenue / bucket.views) * 1000 : 0,
+        ...(isToday && followers !== null ? { followers } : {}),
+        syncedAt: new Date(),
+      },
+    });
+  }
+
+  console.log(
+    `[analytics:account-sync] YouTube ${accountId}: followers=${followers ?? 'n/a'} days=${days.size}`,
+  );
+}
+
+async function syncYouTubePost(
+  prisma: PrismaClient,
+  publishTargetId: string,
+  accountId: string,
+  videoId: string,
+  accessToken: string,
+  today: Date,
+): Promise<void> {
+  const url =
+    `${YT_DATA}/videos?` +
+    new URLSearchParams({
+      part: 'statistics',
+      id: videoId,
+    }).toString();
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.warn(
+      `[analytics:post-sync] YouTube videos HTTP ${res.status} for ${videoId}: ${body.slice(0, 180)}`,
+    );
+    return;
+  }
+  const data = (await res.json()) as {
+    items?: Array<{
+      statistics?: {
+        viewCount?: string;
+        likeCount?: string;
+        commentCount?: string;
+      };
+    }>;
+  };
+  const stats = data.items?.[0]?.statistics;
+  if (!stats) {
+    console.warn(`[analytics:post-sync] YouTube video ${videoId} not found`);
+    return;
+  }
+  await upsertPostSnapshot(prisma, publishTargetId, accountId, today, {
+    views: Number(stats.viewCount ?? 0) || 0,
+    likes: Number(stats.likeCount ?? 0) || 0,
+    comments: Number(stats.commentCount ?? 0) || 0,
+  });
+  console.log(`[analytics:post-sync] synced YT target ${publishTargetId}`);
+}
+
 // ── 1. Account metrics sync ────────────────────────────────────────────────
 
 export async function runAccountSync(accountId: string, _boss: PgBoss): Promise<void> {
@@ -533,6 +762,22 @@ export async function runAccountSync(accountId: string, _boss: PgBoss): Promise<
         return;
       }
       await syncFacebookAccount(prisma, accountId, pageId, token);
+      return;
+    }
+
+    if (account.platform === 'YOUTUBE') {
+      const masterKey = getMasterKey();
+      if (!masterKey) {
+        console.log(`[analytics:account-sync] MASTER_KEY missing — cannot decrypt YouTube auth`);
+        return;
+      }
+      const auth = decryptAccountAuth(account.authPayload, masterKey);
+      const token = typeof auth.accessToken === 'string' ? auth.accessToken : null;
+      if (!token) {
+        console.log(`[analytics:account-sync] YouTube account ${accountId} missing access token`);
+        return;
+      }
+      await syncYouTubeAccount(prisma, accountId, token);
       return;
     }
 
@@ -692,7 +937,24 @@ export async function runPostSync(publishTargetId: string, _boss: PgBoss): Promi
       return;
     }
 
-    // Non-Facebook: touch syncedAt without zeroing existing metrics.
+    if (target.account.platform === 'YOUTUBE' && target.platformPostId) {
+      const masterKey = getMasterKey();
+      if (!masterKey) return;
+      const auth = decryptAccountAuth(target.account.authPayload, masterKey);
+      const token = typeof auth.accessToken === 'string' ? auth.accessToken : null;
+      if (!token) return;
+      await syncYouTubePost(
+        prisma,
+        publishTargetId,
+        target.accountId,
+        target.platformPostId,
+        token,
+        today,
+      );
+      return;
+    }
+
+    // Non-Facebook/YouTube: touch syncedAt without zeroing existing metrics.
     await prisma.metricSnapshotPost.upsert({
       where: { publishTargetId_date: { publishTargetId, date: today } },
       create: {

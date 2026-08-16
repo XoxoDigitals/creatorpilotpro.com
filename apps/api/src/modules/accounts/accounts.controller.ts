@@ -7,10 +7,13 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import type { FastifyReply } from 'fastify';
+import { createReadStream } from 'node:fs';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AccountsService } from './accounts.service';
 import type { AccountView } from './account.view';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -223,6 +226,50 @@ export class AccountsController {
     @Body(new ZodBody(patchProfileSchema)) body: PatchProfileDto,
   ): Promise<AccountView> {
     return this.accounts.patchProfile(id, body);
+  }
+
+  @Post(':id/reaction-avatar')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('account.reactionAvatar.upload', 'ChannelProfile')
+  async uploadReactionAvatar(
+    @Param('id') id: string,
+    @Req() req: FastifyRequest,
+  ): Promise<AccountView> {
+    if (!req.isMultipart()) {
+      throw new BadRequestException('Expected a multipart/form-data upload.');
+    }
+    const data = await req.file();
+    if (!data) throw new BadRequestException('No file part found in the upload.');
+    return this.accounts.saveReactionAvatar(id, {
+      filename: data.filename,
+      mimeType: data.mimetype,
+      stream: data.file,
+      isTruncated: () => data.file.truncated,
+    });
+  }
+
+  @Get(':id/reaction-avatar')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  async getReactionAvatar(
+    @Param('id') id: string,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const hit = await this.accounts.reactionAvatarLocalPath(id);
+    if (!hit) {
+      void reply.status(404).send({ message: 'No reaction avatar uploaded.' });
+      return;
+    }
+    void reply
+      .header('Content-Type', hit.mimeType)
+      .header('Cache-Control', 'private, max-age=60')
+      .send(createReadStream(hit.path));
+  }
+
+  @Delete(':id/reaction-avatar')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('account.reactionAvatar.clear', 'ChannelProfile')
+  clearReactionAvatar(@Param('id') id: string): Promise<AccountView> {
+    return this.accounts.clearReactionAvatar(id);
   }
 
   @Delete(':id')

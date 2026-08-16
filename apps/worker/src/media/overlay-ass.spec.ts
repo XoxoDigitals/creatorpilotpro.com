@@ -34,5 +34,41 @@ Second line
     expect(ass).toContain('Dialogue:');
     // Impact templates inject ASS color overrides for emphasis words.
     expect(ass).toMatch(/\\c&H[0-9A-F]+&/);
+    // Captions wrap to at most 2 lines.
+    expect(ass).toContain('\\N');
+  });
+
+  it('applies caption and hook positions + multi-line hooks', () => {
+    const ass = buildOverlayAssContent({
+      templateId: 'boxed_white',
+      captionPosition: 'bottom',
+      hookPosition: 'upper',
+      hookText: 'TRASH TO\nTREASURE',
+      cues: [{ startMs: 0, endMs: 1000, text: 'One two three four five six' }],
+    });
+    expect(ass).toContain('TRASH TO\\NTREASURE');
+    // Hook upper → Alignment 8; caption bottom → Alignment 2
+    expect(ass).toMatch(/Style: Hook,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,8,/);
+    expect(ass).toMatch(/Style: Caption,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,2,/);
+  });
+
+  it('expands karaoke_word into per-word dialogues', () => {
+    const ass = buildOverlayAssContent({
+      templateId: 'karaoke_word',
+      colorMode: 'dark',
+      cues: [{ startMs: 0, endMs: 800, text: 'hello world test' }],
+    });
+    const dialogues = ass.split('\n').filter((l) => l.startsWith('Dialogue: 0,') && l.includes('Caption'));
+    expect(dialogues.length).toBe(3);
+  });
+
+  it('uses dark primary colour in light text mode', () => {
+    const ass = buildOverlayAssContent({
+      templateId: 'impact_center',
+      colorMode: 'light',
+      cues: [{ startMs: 0, endMs: 500, text: 'bright scene' }],
+    });
+    // #111111 → BGR &H00111111
+    expect(ass).toMatch(/Style: Caption,Arial,\d+,&H00111111,/);
   });
 });

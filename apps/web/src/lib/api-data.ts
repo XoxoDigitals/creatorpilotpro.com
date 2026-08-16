@@ -505,6 +505,12 @@ export interface AiPipelineItem {
   selectedHookText?: string | null;
   /** Caption template id chosen at script approval (ffmpeg burn-in). */
   selectedCaptionTemplateId?: string | null;
+  /** Caption vertical placement (top / upper / center / lower / bottom). */
+  selectedCaptionPosition?: string | null;
+  /** Caption text color: dark (light text) or light (dark text). */
+  selectedCaptionColorMode?: string | null;
+  /** Hook vertical placement. */
+  selectedHookPosition?: string | null;
   /** English summary for the active narration (non-English channels only). */
   englishSummary?: string;
   metadata: string | null;
@@ -623,6 +629,27 @@ export async function selectCaptionTemplate(
   selectedCaptionTemplateId: string,
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedCaptionTemplateId });
+}
+
+export async function selectCaptionPosition(
+  id: string,
+  selectedCaptionPosition: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedCaptionPosition });
+}
+
+export async function selectCaptionColorMode(
+  id: string,
+  selectedCaptionColorMode: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedCaptionColorMode });
+}
+
+export async function selectHookPosition(
+  id: string,
+  selectedHookPosition: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedHookPosition });
 }
 
 /** Ask AI to rewrite the narration from an instruction; caller PATCHes to save. */
@@ -939,12 +966,14 @@ interface ApiContentItem {
 export interface ManualPublishInput {
   title: string;
   file: File;
+  /** Optional custom thumbnail (YouTube thumbnails.set). */
+  thumbnail?: File | null;
   /** Primary account, or multiple destinations for crosspost. */
   accountId: string;
   /** Extra sibling accounts to also create PublishTargets for. */
   additionalAccountIds?: string[];
   scheduleMode: 'NOW' | 'QUEUE_SLOT';
-  /** Optional per-target metadata (visibility, description, etc.). */
+  /** Optional per-target metadata (visibility, tags, YouTube fields, etc.). */
   metadataOverride?: Record<string, unknown>;
 }
 
@@ -962,6 +991,12 @@ export async function manualPublish(input: ManualPublishInput): Promise<{ conten
     `/storage/upload?contentItemId=${encodeURIComponent(content.id)}&kind=FINAL&accountId=${encodeURIComponent(input.accountId)}`,
     input.file,
   );
+  if (input.thumbnail) {
+    await api.upload(
+      `/storage/upload?contentItemId=${encodeURIComponent(content.id)}&kind=THUMBNAIL&accountId=${encodeURIComponent(input.accountId)}`,
+      input.thumbnail,
+    );
+  }
   const accountIds = [
     input.accountId,
     ...(input.additionalAccountIds ?? []).filter((id) => id !== input.accountId),

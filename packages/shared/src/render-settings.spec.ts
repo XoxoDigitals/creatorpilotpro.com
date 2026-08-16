@@ -35,46 +35,55 @@ describe('resolveTrimStartMs', () => {
 
 describe('hook text', () => {
   it('shortens titles to a few uppercase words', () => {
-    expect(shortenToHookWords('Worker Finds Hidden Wall Safe During Demo', 3)).toBe(
+    expect(shortenToHookWords('Worker Finds Hidden Wall Safe During Demo', 3, 1)).toBe(
       'WORKER FINDS HIDDEN',
     );
   });
 
-  it('builds 3–4 distinct options from AI + title', () => {
+  it('wraps longer hooks onto 2 lines when maxLines allows', () => {
+    expect(shortenToHookWords('Worker Finds Hidden Wall Safe During Demo', 6, 2)).toBe(
+      'WORKER FINDS HIDDEN\nWALL SAFE DURING',
+    );
+  });
+
+  it('builds distinct short and longer options from AI + title', () => {
     const opts = buildHookTextVariants({
       title: 'Worker Finds Hidden Wall Safe During Demo',
       overlayHooks: ['HIDDEN SAFE', 'SECRET REVEALED', 'WAIT FOR IT', 'HIDDEN SAFE'],
       variantHooks: ['You will not believe this find'],
-      maxWords: 3,
-      maxOptions: 4,
+      maxWords: 8,
+      maxOptions: 6,
     });
     expect(opts.length).toBeGreaterThanOrEqual(3);
-    expect(opts.length).toBeLessThanOrEqual(4);
+    expect(opts.length).toBeLessThanOrEqual(6);
     expect(new Set(opts.map((o) => o.text)).size).toBe(opts.length);
   });
 
   it('resolves custom vs title vs selected options', () => {
     expect(
       resolveHookOverlayText(
-        { enabled: true, source: 'custom', customText: 'wait for it', maxWords: 3 },
+        { enabled: true, source: 'custom', customText: 'wait for it', maxWords: 3, maxLines: 1, position: 'top' },
         'Long Title Here',
       ),
     ).toBe('WAIT FOR IT');
     expect(
       resolveHookOverlayText(
-        { enabled: true, source: 'title', maxWords: 2 },
+        { enabled: true, source: 'title', maxWords: 2, maxLines: 1, position: 'top' },
         'Hidden Safe Revealed Live',
       ),
     ).toBe('HIDDEN SAFE');
     expect(
       resolveHookOverlayText(
-        { enabled: true, source: 'options', maxWords: 3 },
+        { enabled: true, source: 'options', maxWords: 3, maxLines: 1, position: 'top' },
         'Hidden Safe Revealed Live',
         'SECRET WALL',
       ),
     ).toBe('SECRET WALL');
     expect(
-      resolveHookOverlayText({ enabled: false, source: 'title', maxWords: 3 }, 'Anything'),
+      resolveHookOverlayText(
+        { enabled: false, source: 'title', maxWords: 3, maxLines: 1, position: 'top' },
+        'Anything',
+      ),
     ).toBeNull();
   });
 });

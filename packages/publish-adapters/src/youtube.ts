@@ -1,5 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
+import { readFile } from 'node:fs/promises';
+import { extname } from 'node:path';
 import type {
   PublishAdapter,
   PublishTarget,
@@ -12,20 +14,10 @@ import type {
 /**
  * YouTube adapter — direct YouTube Data API v3 (docs/06 §2, Phase 9).
  *
- * Publish: resumable upload flow (docs.google → YouTube):
- *   1. POST https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status
- *      (with the snippet+status metadata JSON as body) → returns a `Location` upload URL
- *   2. PUT <upload URL> with the raw video bytes (single chunk; Node streams the file) →
- *      returns the video resource including the `id`.
- *
- * Verify: GET videos.list?id=<videoId>&part=status,processingDetails,contentDetails →
- *   the `uploadStatus`, `privacyStatus`, `rejectionReason`, `processingStatus` and any
- *   `contentDetails.contentRating.ytRating` / copyright claims are mapped to PlatformIssue.
- *
- * Credentials: passed via `target.auth`:
- *   `{ accessToken: string, refreshToken?: string, clientId?: string, clientSecret?: string }`
- * The refresh flow is handled OUT of this adapter (the maintenance job refreshes tokens
- * near expiry — docs/06 §4). This adapter uses only the fresh access token supplied.
+ * Publish: resumable upload + optional custom thumbnail:
+ *   1. POST resumable init with snippet/status/(recordingDetails)
+ *   2. PUT video bytes
+ *   3. Optional thumbnails.set
  */
 
 export interface YouTubeAdapterConfig {
@@ -43,11 +35,21 @@ const UPLOAD_BASE = 'https://www.googleapis.com/upload/youtube/v3';
 /** Map our generic visibility to YouTube's privacyStatus values. */
 function toYouTubePrivacy(visibility: ResolvedMetadata['visibility']): string {
   switch (visibility) {
-    case 'PRIVATE':  return 'private';
-    case 'UNLISTED': return 'unlisted';
+    case 'PRIVATE':
+      return 'private';
+    case 'UNLISTED':
+      return 'unlisted';
     case 'PUBLIC':
-    default:         return 'public';
+    default:
+      return 'public';
   }
+}
+
+function thumbMime(path: string): string {
+  const ext = extname(path).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/jpeg';
 }
 
 /** 5xx / 429 / transport failures → retryable; other 4xx → terminal. */
@@ -90,7 +92,8 @@ export class YouTubeAdapter implements PublishAdapter {
     const auth = target.auth as Partial<YouTubeAuth>;
     if (!auth.accessToken) {
       throw new YouTubeError('YouTube target.auth.accessToken is required.', {
-        status: 0, retryable: false,
+        status: 0,
+        retryable: false,
       });
     }
     return { accessToken: auth.accessToken };
@@ -103,23 +106,33 @@ export class YouTubeAdapter implements PublishAdapter {
   ): Promise<{ platformPostId: string }> {
     const auth = YouTubeAdapter.readAuth(target);
 
-    // Step 1 — initiate the resumable upload.
+    const lang = (meta.defaultLanguage ?? 'en').trim() || 'en';
+    const audioLang = (meta.defaultAudioLanguage ?? lang).trim() || lang;
+
     const snippet: Record<string, unknown> = {
       title: meta.title,
       description: meta.description ?? '',
-      tags: meta.tags,
-      ...(meta.category ? { categoryId: meta.category } : {}),
-      // YouTube requires a language hint for closed-caption discovery on Shorts.
-      defaultLanguage: 'en',
+      tags: meta.tags ?? [],
+      ...(meta.category ? { categoryId: String(meta.category) } : {}),
+      defaultLanguage: lang,
+      defaultAudioLanguage: audioLang,
     };
     const status = {
       privacyStatus: toYouTubePrivacy(meta.visibility),
-      selfDeclaredMadeForKids: false,
+      selfDeclaredMadeForKids: meta.madeForKids === true,
       containsSyntheticMedia: meta.aiLabel ?? false,
     };
-    const initBody = { snippet, status };
+    const initBody: Record<string, unknown> = { snippet, status };
+    if (meta.recordingCountry?.trim()) {
+      initBody.recordingDetails = {
+        locationDescription: meta.recordingCountry.trim().toUpperCase(),
+      };
+    }
 
-    const initUrl = `${UPLOAD_BASE}/videos?uploadType=resumable&part=snippet,status`;
+    const parts = meta.recordingCountry?.trim()
+      ? 'snippet,status,recordingDetails'
+      : 'snippet,status';
+    const initUrl = `${UPLOAD_BASE}/videos?uploadType=resumable&part=${parts}`;
     let initRes: Response;
     try {
       initRes = await this.fetchImpl(initUrl, {
@@ -134,24 +147,28 @@ export class YouTubeAdapter implements PublishAdapter {
       });
     } catch (err) {
       throw new YouTubeError(`YouTube init failed (network): ${(err as Error).message}`, {
-        status: 0, retryable: true,
+        status: 0,
+        retryable: true,
       });
     }
     if (!initRes.ok) {
       const raw = await initRes.text().catch(() => '');
       throw new YouTubeError(`YouTube init returned ${initRes.status}: ${raw.slice(0, 400)}`, {
-        status: initRes.status, retryable: isRetryableStatus(initRes.status), body: raw,
+        status: initRes.status,
+        retryable: isRetryableStatus(initRes.status),
+        body: raw,
       });
     }
 
     const uploadUrl = initRes.headers.get('location');
     if (!uploadUrl) {
       throw new YouTubeError('YouTube init response missing Location upload URL.', {
-        status: 200, retryable: false, body: null,
+        status: 200,
+        retryable: false,
+        body: null,
       });
     }
 
-    // Step 2 — PUT the file bytes.
     const body = Readable.toWeb(createReadStream(media.path)) as unknown as ReadableStream<Uint8Array>;
     let putRes: Response;
     try {
@@ -162,18 +179,20 @@ export class YouTubeAdapter implements PublishAdapter {
           'Content-Length': String(media.bytes),
         },
         body,
-        // Node requires duplex when streaming a request body.
         duplex: 'half',
       } as unknown as RequestInit);
     } catch (err) {
       throw new YouTubeError(`YouTube upload PUT failed (network): ${(err as Error).message}`, {
-        status: 0, retryable: true,
+        status: 0,
+        retryable: true,
       });
     }
     if (!putRes.ok) {
       const raw = await putRes.text().catch(() => '');
       throw new YouTubeError(`YouTube upload PUT returned ${putRes.status}: ${raw.slice(0, 400)}`, {
-        status: putRes.status, retryable: isRetryableStatus(putRes.status), body: raw,
+        status: putRes.status,
+        retryable: isRetryableStatus(putRes.status),
+        body: raw,
       });
     }
 
@@ -181,24 +200,63 @@ export class YouTubeAdapter implements PublishAdapter {
     const videoId = uploaded.id;
     if (!videoId) {
       throw new YouTubeError('YouTube upload response missing video id.', {
-        status: 200, retryable: false, body: uploaded,
+        status: 200,
+        retryable: false,
+        body: uploaded,
       });
     }
 
-    // Cache the auth so verify() in the same process works without re-priming.
+    if (meta.thumbnailPath?.trim()) {
+      try {
+        await this.setThumbnail(auth.accessToken, videoId, meta.thumbnailPath.trim());
+      } catch (err) {
+        console.warn(
+          `[youtube] thumbnails.set failed for ${videoId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
     this.authByVideoId.set(videoId, auth);
     return { platformPostId: videoId };
+  }
+
+  private async setThumbnail(accessToken: string, videoId: string, imagePath: string): Promise<void> {
+    const bytes = await readFile(imagePath);
+    const mime = thumbMime(imagePath);
+    const url = `${UPLOAD_BASE}/thumbnails/set?videoId=${encodeURIComponent(videoId)}`;
+    const res = await this.fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': mime,
+        'Content-Length': String(bytes.byteLength),
+      },
+      body: bytes,
+    });
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '');
+      throw new YouTubeError(`YouTube thumbnails.set returned ${res.status}: ${raw.slice(0, 300)}`, {
+        status: res.status,
+        retryable: isRetryableStatus(res.status),
+        body: raw,
+      });
+    }
   }
 
   async verify(platformPostId: string): Promise<{ live: boolean; issues: PlatformIssue[] }> {
     const auth = this.authByVideoId.get(platformPostId);
     if (!auth) {
-      // Fresh worker process — the caller (verify job) must primeVerifyAuth first.
-      return { live: false, issues: [{
-        code: 'auth-missing',
-        message: 'YouTube verify: access token not seeded for this video id.',
-        severity: 'INFO',
-      }] };
+      return {
+        live: false,
+        issues: [
+          {
+            code: 'auth-missing',
+            message: 'YouTube verify: access token not seeded for this video id.',
+            severity: 'INFO',
+          },
+        ],
+      };
     }
 
     const params = new URLSearchParams({
@@ -213,13 +271,16 @@ export class YouTubeAdapter implements PublishAdapter {
       });
     } catch (err) {
       throw new YouTubeError(`YouTube verify network failure: ${(err as Error).message}`, {
-        status: 0, retryable: true,
+        status: 0,
+        retryable: true,
       });
     }
     if (!res.ok) {
       const raw = await res.text().catch(() => '');
       throw new YouTubeError(`YouTube verify returned ${res.status}: ${raw.slice(0, 400)}`, {
-        status: res.status, retryable: isRetryableStatus(res.status), body: raw,
+        status: res.status,
+        retryable: isRetryableStatus(res.status),
+        body: raw,
       });
     }
 
@@ -236,11 +297,16 @@ export class YouTubeAdapter implements PublishAdapter {
     };
     const item = data.items?.[0];
     if (!item) {
-      return { live: false, issues: [{
-        code: 'not-found',
-        message: `YouTube videos.list returned no item for ${platformPostId}.`,
-        severity: 'BLOCK',
-      }] };
+      return {
+        live: false,
+        issues: [
+          {
+            code: 'not-found',
+            message: `YouTube videos.list returned no item for ${platformPostId}.`,
+            severity: 'BLOCK',
+          },
+        ],
+      };
     }
 
     const issues: PlatformIssue[] = [];

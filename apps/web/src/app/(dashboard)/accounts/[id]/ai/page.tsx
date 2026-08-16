@@ -38,6 +38,9 @@ import {
   selectNarrationScript,
   selectHookText,
   selectCaptionTemplate,
+  selectCaptionPosition,
+  selectCaptionColorMode,
+  selectHookPosition,
   updateNarrationScript,
   updatePublishMetadata,
   type AiPipelineItem,
@@ -47,11 +50,41 @@ import {
   DEFAULT_BACKGROUND_BED_PERCENT,
   clampBackgroundBedPercent,
   CAPTION_TEMPLATE_PICKER,
+  OVERLAY_POSITIONS,
+  OVERLAY_POSITION_LABELS,
+  CAPTION_COLOR_MODES,
+  CAPTION_COLOR_MODE_LABELS,
   captionTemplateMeta,
   normalizeCaptionTemplateId,
-  previewCaptionSpans,
+  normalizeOverlayPosition,
+  normalizeCaptionColorMode,
+  previewCaptionLines,
+  type OverlayPosition,
+  type CaptionColorMode,
 } from '@scp/shared';
 
+function overlayPreviewPosClass(pos: OverlayPosition): string {
+  switch (pos) {
+    case 'top':
+      return 'left-3 right-3 top-5';
+    case 'upper':
+      return 'left-3 right-3 top-[18%]';
+    case 'center':
+      return 'left-3 right-3 top-1/2 -translate-y-1/2';
+    case 'lower':
+      return 'left-3 right-3 bottom-[28%]';
+    case 'bottom':
+    default:
+      return 'left-3 right-3 bottom-8';
+  }
+}
+
+function defaultCaptionPreviewPos(templateId: string | null | undefined): OverlayPosition {
+  const align = captionTemplateMeta(templateId).align;
+  if (align === 'upper') return 'upper';
+  if (align === 'bottom') return 'bottom';
+  return 'center';
+}
 function readableAiText(value: string): string {
   const trimmed = value.trim();
   if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return value;
@@ -269,12 +302,23 @@ function PipelineVideoFrame({
     hookText?: string | null;
     captionSample?: string | null;
     templateId?: string | null;
+    captionPosition?: string | null;
+    hookPosition?: string | null;
+    colorMode?: string | null;
   };
 }) {
   const template = captionTemplateMeta(overlay?.templateId);
   const hook = overlay?.hookText?.trim() || '';
   const captionRaw = overlay?.captionSample?.trim() || '';
-  const captionSpans = captionRaw ? previewCaptionSpans(captionRaw, overlay?.templateId) : [];
+  const colorMode = normalizeCaptionColorMode(overlay?.colorMode);
+  const captionLines = captionRaw
+    ? previewCaptionLines(captionRaw, overlay?.templateId, { colorMode })
+    : [];
+  const captionPos = normalizeOverlayPosition(
+    overlay?.captionPosition,
+    defaultCaptionPreviewPos(overlay?.templateId),
+  );
+  const hookPos = normalizeOverlayPosition(overlay?.hookPosition, 'top');
   const sizeClass =
     template.size === 'xl'
       ? 'text-lg sm:text-xl'
@@ -283,19 +327,14 @@ function PipelineVideoFrame({
         : template.size === 'sm'
           ? 'text-xs'
           : 'text-sm';
-  const captionPos =
-    template.align === 'center'
-      ? 'left-3 right-3 top-1/2 -translate-y-1/2'
-      : template.align === 'upper'
-        ? 'left-3 right-3 top-[18%]'
-        : 'left-3 right-3 bottom-8';
   const italicClass = template.italic ? 'italic' : '';
+  const outlineColor = colorMode === 'light' ? '#FFFFFF' : template.outline;
 
   return (
     <div>
       <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
         {label}
-        {(hook || captionSpans.length > 0) && (
+        {(hook || captionLines.length > 0) && (
           <span className="ml-1 font-normal normal-case tracking-normal text-zinc-400">
             · live preview
           </span>
@@ -310,12 +349,12 @@ function PipelineVideoFrame({
           poster={poster}
           className={`${VIDEO_ASPECT} w-full border-0 bg-black object-contain`}
         />
-        {(hook || captionSpans.length > 0) && (
+        {(hook || captionLines.length > 0) && (
           <div className="pointer-events-none absolute inset-0 z-10">
             {hook ? (
-              <div className="absolute left-3 right-3 top-5 text-center">
+              <div className={`absolute text-center ${overlayPreviewPosClass(hookPos)}`}>
                 <span
-                  className="inline-block text-base font-black uppercase tracking-wide text-white sm:text-lg"
+                  className="inline-block whitespace-pre-line text-base font-black uppercase tracking-wide text-white sm:text-lg"
                   style={{
                     textShadow:
                       '0 0 4px #000, 0 0 4px #000, 2px 2px 0 #000, -2px -2px 0 #000',
@@ -325,8 +364,8 @@ function PipelineVideoFrame({
                 </span>
               </div>
             ) : null}
-            {captionSpans.length > 0 ? (
-              <div className={`absolute text-center ${captionPos}`}>
+            {captionLines.length > 0 ? (
+              <div className={`absolute text-center ${overlayPreviewPosClass(captionPos)}`}>
                 <span
                   className={`inline-block font-black uppercase leading-tight tracking-wide ${sizeClass} ${italicClass}`}
                   style={{
@@ -335,18 +374,22 @@ function PipelineVideoFrame({
                     borderRadius: template.boxed ? '0.25rem' : undefined,
                   }}
                 >
-                  {captionSpans.map((span, i) => (
-                    <span
-                      key={`${span.text}-${i}`}
-                      style={{
-                        color: span.color,
-                        textShadow: template.boxed
-                          ? undefined
-                          : `0 0 3px ${template.outline}, 2px 2px 0 ${template.outline}, -2px -2px 0 ${template.outline}`,
-                        marginRight: i < captionSpans.length - 1 ? '0.28em' : undefined,
-                      }}
-                    >
-                      {span.text}
+                  {captionLines.map((line, li) => (
+                    <span key={`line-${li}`} className="block">
+                      {line.map((span, i) => (
+                        <span
+                          key={`${span.text}-${li}-${i}`}
+                          style={{
+                            color: span.color,
+                            textShadow: template.boxed
+                              ? undefined
+                              : `0 0 3px ${outlineColor}, 2px 2px 0 ${outlineColor}, -2px -2px 0 ${outlineColor}`,
+                            marginRight: i < line.length - 1 ? '0.28em' : undefined,
+                          }}
+                        >
+                          {span.text}
+                        </span>
+                      ))}
                     </span>
                   ))}
                 </span>
@@ -645,6 +688,9 @@ function NarrationScriptPanel({
   const [selectingId, setSelectingId] = useState<string | null>(null);
   const [selectingHookId, setSelectingHookId] = useState<string | null>(null);
   const [selectingCaptionId, setSelectingCaptionId] = useState<string | null>(null);
+  const [savingCaptionPos, setSavingCaptionPos] = useState(false);
+  const [savingCaptionColor, setSavingCaptionColor] = useState(false);
+  const [savingHookPos, setSavingHookPos] = useState(false);
   const locked =
     busy ||
     saving ||
@@ -652,10 +698,19 @@ function NarrationScriptPanel({
     accepting ||
     selectingId != null ||
     selectingHookId != null ||
-    selectingCaptionId != null;
+    selectingCaptionId != null ||
+    savingCaptionPos ||
+    savingCaptionColor ||
+    savingHookPos;
   const selectedCaptionId = normalizeCaptionTemplateId(
     item.selectedCaptionTemplateId ?? 'impact_hormozi',
   );
+  const selectedCaptionPos = normalizeOverlayPosition(
+    item.selectedCaptionPosition,
+    defaultCaptionPreviewPos(selectedCaptionId),
+  );
+  const selectedCaptionColor = normalizeCaptionColorMode(item.selectedCaptionColorMode);
+  const selectedHookPos = normalizeOverlayPosition(item.selectedHookPosition, 'top');
 
   useEffect(() => {
     if (mode !== 'view') return;
@@ -710,6 +765,45 @@ function NarrationScriptPanel({
       toast(err instanceof ApiError ? err.message : 'Failed to select caption template', 'error');
     } finally {
       setSelectingCaptionId(null);
+    }
+  }
+
+  async function onSelectCaptionPos(pos: OverlayPosition) {
+    if (!canEdit || pos === selectedCaptionPos || locked) return;
+    setSavingCaptionPos(true);
+    try {
+      const next = await selectCaptionPosition(item.id, pos);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to update caption position', 'error');
+    } finally {
+      setSavingCaptionPos(false);
+    }
+  }
+
+  async function onSelectCaptionColor(mode: CaptionColorMode) {
+    if (!canEdit || mode === selectedCaptionColor || locked) return;
+    setSavingCaptionColor(true);
+    try {
+      const next = await selectCaptionColorMode(item.id, mode);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to update caption text color', 'error');
+    } finally {
+      setSavingCaptionColor(false);
+    }
+  }
+
+  async function onSelectHookPos(pos: OverlayPosition) {
+    if (!canEdit || pos === selectedHookPos || locked) return;
+    setSavingHookPos(true);
+    try {
+      const next = await selectHookPosition(item.id, pos);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to update hook position', 'error');
+    } finally {
+      setSavingHookPos(false);
     }
   }
 
@@ -861,7 +955,7 @@ function NarrationScriptPanel({
                   disabled={locked || !canEdit}
                   onClick={() => void onSelectHook(h.id)}
                   className={
-                    'rounded-md border px-2 py-1 text-[11px] font-semibold tracking-wide ' +
+                    'max-w-full rounded-md border px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-pre-line ' +
                     (active
                       ? 'border-amber-300 bg-amber-50 text-amber-900'
                       : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
@@ -873,11 +967,28 @@ function NarrationScriptPanel({
               );
             })}
           </div>
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+              Hook position
+            </span>
+            <Select
+              value={selectedHookPos}
+              disabled={locked || !canEdit}
+              onChange={(e) => void onSelectHookPos(e.target.value as OverlayPosition)}
+              className="h-7 max-w-[10rem] py-0 text-[11px]"
+            >
+              {OVERLAY_POSITIONS.map((p) => (
+                <option key={p} value={p}>
+                  {OVERLAY_POSITION_LABELS[p]}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
       )}
       <div className="mb-2 shrink-0 space-y-1">
         <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-          Caption style (ffmpeg burn-in)
+          Caption style (ffmpeg burn-in · max 2 lines)
         </div>
         <div className="flex flex-wrap gap-1">
           {CAPTION_TEMPLATE_PICKER.map((t) => {
@@ -902,14 +1013,48 @@ function NarrationScriptPanel({
             );
           })}
         </div>
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+            Caption position
+          </span>
+          <Select
+            value={selectedCaptionPos}
+            disabled={locked || !canEdit}
+            onChange={(e) => void onSelectCaptionPos(e.target.value as OverlayPosition)}
+            className="h-7 max-w-[10rem] py-0 text-[11px]"
+          >
+            {OVERLAY_POSITIONS.map((p) => (
+              <option key={p} value={p}>
+                {OVERLAY_POSITION_LABELS[p]}
+              </option>
+            ))}
+          </Select>
+          <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+            Text color
+          </span>
+          <Select
+            value={selectedCaptionColor}
+            disabled={locked || !canEdit}
+            onChange={(e) => void onSelectCaptionColor(e.target.value as CaptionColorMode)}
+            className="h-7 max-w-[12rem] py-0 text-[11px]"
+          >
+            {CAPTION_COLOR_MODES.map((m) => (
+              <option key={m} value={m}>
+                {CAPTION_COLOR_MODE_LABELS[m]}
+              </option>
+            ))}
+          </Select>
+        </div>
         <p className="text-[11px] text-zinc-500">
-          Preview updates on the original video. Captions burn in with ffmpeg after you approve.
+          Preview updates on the original video. Captions burn in with ffmpeg after you approve
+          (always max 2 lines). Karaoke highlight lights each word as the narrator speaks it.
         </p>
       </div>
-      <div className="mb-2 rounded-md border border-dashed border-zinc-300 bg-zinc-50/60 px-2 py-1.5">
-        <p className="text-[11px] font-medium text-zinc-600">Reaction avatar — coming soon</p>
+      <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50/60 px-2 py-1.5">
+        <p className="text-[11px] font-medium text-zinc-600">Reaction avatar</p>
         <p className="text-[10px] text-zinc-500">
-          Lip-sync face in the corner during dialogue. Toggle will appear here when ready.
+          Configure face upload + corner PiP under Account → Settings → Render effects. Shown during
+          dialogue (or always) after you approve and render.
         </p>
       </div>
       {mode === 'edit' ? (
@@ -1551,6 +1696,9 @@ export default function AccountAiPipelinePage() {
                               return first.trim().slice(0, 90) || 'Sample caption line';
                             })(),
                             templateId: it.selectedCaptionTemplateId ?? 'impact_hormozi',
+                            captionPosition: it.selectedCaptionPosition,
+                            hookPosition: it.selectedHookPosition,
+                            colorMode: it.selectedCaptionColorMode,
                           }}
                         />
                       )}

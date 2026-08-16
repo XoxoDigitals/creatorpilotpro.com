@@ -97,13 +97,19 @@ export interface AiPipelineItemView {
   /** Three narration options (explainer / hooky / documentary); empty if legacy single script. */
   scriptVariants: ScriptVariantView[];
   selectedScriptId: string | null;
-  /** Short on-screen hook phrases (2–3 words) for the approval picker. */
+  /** Short on-screen hook phrases for the approval picker (short + longer / 2-line). */
   hookTextVariants: HookTextVariantView[];
   selectedHookTextId: string | null;
   /** Denormalized selected hook phrase. */
   selectedHookText: string | null;
   /** Caption burn-in template id chosen at script approval. */
   selectedCaptionTemplateId: string | null;
+  /** Caption vertical placement override (null = account / template default). */
+  selectedCaptionPosition: string | null;
+  /** Caption text color mode: dark (light text) or light (dark text). */
+  selectedCaptionColorMode: string | null;
+  /** Hook vertical placement override. */
+  selectedHookPosition: string | null;
   /**
    * English summary for the selected (or sole) narration script when the channel
    * output language is not English. Empty string when English or unavailable.
@@ -331,6 +337,18 @@ export function toAiPipelineItemView(
     selectedCaptionTemplateId:
       typeof step.selectedCaptionTemplateId === 'string' && step.selectedCaptionTemplateId.trim()
         ? step.selectedCaptionTemplateId.trim()
+        : null,
+    selectedCaptionPosition:
+      typeof step.selectedCaptionPosition === 'string' && step.selectedCaptionPosition.trim()
+        ? step.selectedCaptionPosition.trim()
+        : null,
+    selectedCaptionColorMode:
+      typeof step.selectedCaptionColorMode === 'string' && step.selectedCaptionColorMode.trim()
+        ? step.selectedCaptionColorMode.trim()
+        : null,
+    selectedHookPosition:
+      typeof step.selectedHookPosition === 'string' && step.selectedHookPosition.trim()
+        ? step.selectedHookPosition.trim()
         : null,
     englishSummary: selectedVariant?.englishSummary?.trim() || stepSummary || '',
     metadata: asText(step.metadata),

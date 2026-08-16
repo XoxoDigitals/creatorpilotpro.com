@@ -239,10 +239,10 @@ export function voiceoverDialogueBedMixFilter(
 }
 
 /**
- * ffmpeg volume enable expression that hard-mutes during dialogue windows.
- * Returns null when ranges is empty (caller keeps full-bed aggressive path).
+ * ffmpeg enable= expression that is true inside any dialogue window.
+ * Returns null when there are no usable ranges (caller shows avatar always).
  */
-export function muteDialogueRangesAf(
+export function dialogueOverlayEnableExpr(
   ranges: { startSec: number; endSec: number }[],
 ): string | null {
   const parts: string[] = [];
@@ -254,8 +254,37 @@ export function muteDialogueRangesAf(
     parts.push(`between(t\\,${s}\\,${e})`);
   }
   if (parts.length === 0) return null;
+  return parts.join('+');
+}
+
+export function reactionAvatarOverlayXy(
+  corner: 'br' | 'bl' | 'tr' | 'tl',
+  margin = 36,
+): { x: string; y: string } {
+  switch (corner) {
+    case 'bl':
+      return { x: String(margin), y: `H-h-${margin}` };
+    case 'tr':
+      return { x: `W-w-${margin}`, y: String(margin) };
+    case 'tl':
+      return { x: String(margin), y: String(margin) };
+    case 'br':
+    default:
+      return { x: `W-w-${margin}`, y: `H-h-${margin}` };
+  }
+}
+
+/**
+ * ffmpeg volume enable expression that hard-mutes during dialogue windows.
+ * Returns null when ranges is empty (caller keeps full-bed aggressive path).
+ */
+export function muteDialogueRangesAf(
+  ranges: { startSec: number; endSec: number }[],
+): string | null {
+  const enable = dialogueOverlayEnableExpr(ranges);
+  if (!enable) return null;
   // `+` is OR in ffmpeg enable expressions.
-  return `volume=0:enable='${parts.join('+')}'`;
+  return `volume=0:enable='${enable}'`;
 }
 
 /**
@@ -518,6 +547,19 @@ export class Ffmpeg {
       const sec = Number(m[3]);
       if (![h, min, sec].every(Number.isFinite)) return null;
       return h * 3600 + min * 60 + sec;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Best-effort video width from `ffmpeg -i` stderr Stream #… Video line. */
+  async probeVideoWidth(srcPath: string): Promise<number | null> {
+    try {
+      const res = await this.runner(this.binary, ['-hide_banner', '-i', srcPath, '-f', 'null', '-']);
+      const m = /Video:.*?(\d{2,5})x(\d{2,5})/.exec(res.stderr);
+      if (!m) return null;
+      const w = Number(m[1]);
+      return Number.isFinite(w) && w > 0 ? w : null;
     } catch {
       return null;
     }
@@ -795,6 +837,98 @@ export class Ffmpeg {
     if (res.code !== 0) {
       throw new Error(
         ffmpegFailureMessage(`ffmpeg final video effects failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
+  /**
+   * Overlay a reaction face (image or short video) in a corner. Optional
+   * `enableExpr` limits visibility to dialogue windows (ffmpeg enable=).
+   * `sizePx` is the box width/height in pixels (computed from main video width).
+   */
+  async applyReactionAvatarOverlay(
+    srcPath: string,
+    avatarPath: string,
+    destPath: string,
+    opts: {
+      shape: 'circle' | 'square' | 'rounded';
+      corner: 'br' | 'bl' | 'tr' | 'tl';
+      sizePx: number;
+      enableExpr?: string | null;
+      /** Loop short video avatars for the full main duration. */
+      isVideo?: boolean;
+    },
+  ): Promise<void> {
+    await this.ensureAvailable();
+    const sizePx = Math.max(80, Math.min(720, Math.round(opts.sizePx || 240)));
+    const xy = reactionAvatarOverlayXy(opts.corner, 36);
+    const enable = opts.enableExpr?.trim()
+      ? `:enable='${opts.enableExpr.trim()}'`
+      : '';
+
+    let pipChain: string;
+    if (opts.shape === 'circle') {
+      pipChain =
+        `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
+        `crop=${sizePx}:${sizePx},format=rgba,` +
+        `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':` +
+        `a='if(lte(hypot(X-W/2\\,Y-H/2)\\,${Math.floor(sizePx / 2) - 1})\\,255\\,0)'[pip]`;
+    } else if (opts.shape === 'rounded') {
+      const r = Math.max(8, Math.floor(sizePx * 0.12));
+      const half = Math.floor(sizePx / 2);
+      const inner = half - r;
+      pipChain =
+        `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
+        `crop=${sizePx}:${sizePx},format=rgba,` +
+        `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':` +
+        `a='if(gt(abs(X-W/2)\\,${inner})*gt(abs(Y-H/2)\\,${inner})*` +
+        `gt(hypot(abs(X-W/2)-${inner}\\,abs(Y-H/2)-${inner})\\,${r})\\,0\\,255)'[pip]`;
+    } else {
+      pipChain =
+        `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
+        `crop=${sizePx}:${sizePx},` +
+        `pad=${sizePx + 8}:${sizePx + 8}:4:4:white[pip]`;
+    }
+
+    const filterComplex =
+      `${pipChain};[0:v][pip]overlay=${xy.x}:${xy.y}${enable}:eof_action=pass:shortest=1[vout]`;
+
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      ...(opts.isVideo ? ['-stream_loop', '-1'] : ['-loop', '1']),
+      '-i',
+      avatarPath,
+      '-filter_complex',
+      filterComplex,
+      '-map',
+      '[vout]',
+      '-map',
+      '0:a?',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-c:a',
+      'copy',
+      '-movflags',
+      '+faststart',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(
+          `ffmpeg reaction avatar overlay failed for ${srcPath}`,
+          res.code,
+          res.stderr,
+        ),
       );
     }
   }

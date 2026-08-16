@@ -7,8 +7,14 @@ import {
   captionAssStyleFields,
   hookAssStyleFields,
   normalizeCaptionTemplateId,
+  normalizeOverlayPosition,
+  normalizeCaptionColorMode,
   formatImpactAssText,
+  buildKaraokeAssCueEvents,
+  captionTemplateMeta,
   type CaptionTemplateId,
+  type CaptionColorMode,
+  type OverlayPosition,
 } from '@scp/shared';
 
 export type AssCue = { startMs: number; endMs: number; text: string };
@@ -53,9 +59,6 @@ function styleLine(
 ): string {
   const italic = opts.italic ? -1 : 0;
   const shadow = opts.shadow ?? 0;
-  // Format: Name, Fontname, Fontsize, Primary, Secondary, Outline, Back, Bold, Italic,
-  // Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow,
-  // Alignment, MarginL, MarginR, MarginV, Encoding
   return (
     `Style: ${name},Arial,${opts.fontSize},${opts.primary},` +
     `&H000000FF,${opts.outline},&H80000000,` +
@@ -101,16 +104,23 @@ export function buildOverlayAssContent(opts: {
   hookText?: string | null;
   /** Hook visible for this many ms (default ~full short). */
   hookEndMs?: number;
+  captionPosition?: OverlayPosition | string | null;
+  hookPosition?: OverlayPosition | string | null;
+  colorMode?: CaptionColorMode | string | null;
   playResX?: number;
   playResY?: number;
 }): string {
   const templateId = normalizeCaptionTemplateId(opts.templateId);
-  const caption = captionAssStyleFields(templateId);
-  const hook = hookAssStyleFields();
+  const colorMode = normalizeCaptionColorMode(opts.colorMode);
+  const captionPos = normalizeOverlayPosition(opts.captionPosition, 'center');
+  const hookPos = normalizeOverlayPosition(opts.hookPosition, 'top');
+  const caption = captionAssStyleFields(templateId, captionPos, colorMode);
+  const hook = hookAssStyleFields(hookPos);
   const playResX = opts.playResX ?? 1080;
   const playResY = opts.playResY ?? 1920;
   const lastCueEnd = opts.cues.reduce((m, c) => Math.max(m, c.endMs), 0);
   const hookEnd = Math.max(opts.hookEndMs ?? 8_000, lastCueEnd || 8_000);
+  const isKaraoke = captionTemplateMeta(templateId).highlightMode === 'karaoke_word';
 
   const lines: string[] = [
     '[Script Info]',
@@ -131,13 +141,23 @@ export function buildOverlayAssContent(opts: {
 
   const hookText = (opts.hookText ?? '').trim();
   if (hookText) {
+    const hookAss = escapeAssText(hookText.toUpperCase()).replace(/\n+/g, '\\N');
     lines.push(
-      `Dialogue: 0,${msToAssTime(0)},${msToAssTime(hookEnd)},${hook.name},,0,0,0,,${escapeAssText(hookText.toUpperCase())}`,
+      `Dialogue: 0,${msToAssTime(0)},${msToAssTime(hookEnd)},${hook.name},,0,0,0,,${hookAss}`,
     );
   }
 
   for (const cue of opts.cues) {
-    const text = formatImpactAssText(cue.text, templateId);
+    if (isKaraoke) {
+      const frames = buildKaraokeAssCueEvents(cue, templateId, colorMode);
+      for (const frame of frames) {
+        lines.push(
+          `Dialogue: 0,${msToAssTime(frame.startMs)},${msToAssTime(frame.endMs)},${caption.name},,0,0,0,,${frame.text}`,
+        );
+      }
+      continue;
+    }
+    const text = formatImpactAssText(cue.text, templateId, colorMode);
     if (!text) continue;
     lines.push(
       `Dialogue: 0,${msToAssTime(cue.startMs)},${msToAssTime(cue.endMs)},${caption.name},,0,0,0,,${text}`,
@@ -154,6 +174,9 @@ export async function writeOverlayAssFile(
     cues: AssCue[];
     hookText?: string | null;
     hookEndMs?: number;
+    captionPosition?: OverlayPosition | string | null;
+    hookPosition?: OverlayPosition | string | null;
+    colorMode?: CaptionColorMode | string | null;
   },
 ): Promise<string> {
   const body = buildOverlayAssContent(opts);

@@ -183,6 +183,182 @@ export class AccountsService {
     return { id, deleted: true };
   }
 
+  /**
+   * Save a reaction-avatar image/clip under STORAGE_ROOT/accounts/{id}/ and
+   * record the relative path on voiceSettings.renderSettings.reactionAvatar.
+   */
+  async saveReactionAvatar(
+    id: string,
+    input: {
+      filename: string;
+      mimeType?: string;
+      stream: NodeJS.ReadableStream;
+      isTruncated: () => boolean;
+    },
+  ): Promise<AccountView> {
+    await this.loadActive(id);
+    const root = process.env.STORAGE_ROOT?.trim();
+    if (!root) {
+      throw new BadRequestException('STORAGE_ROOT is not configured on the API host.');
+    }
+    const ext = (() => {
+      const fromName = input.filename.includes('.')
+        ? input.filename.slice(input.filename.lastIndexOf('.')).toLowerCase()
+        : '';
+      if (/\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v)$/i.test(fromName)) return fromName;
+      const mt = (input.mimeType ?? '').toLowerCase();
+      if (mt.includes('png')) return '.png';
+      if (mt.includes('jpeg') || mt.includes('jpg')) return '.jpg';
+      if (mt.includes('webp')) return '.webp';
+      if (mt.includes('mp4')) return '.mp4';
+      if (mt.includes('webm')) return '.webm';
+      throw new BadRequestException('Use a PNG/JPG/WebP image or a short MP4/WebM clip.');
+    })();
+
+    const { mkdir, unlink, readdir } = await import('node:fs/promises');
+    const { createWriteStream } = await import('node:fs');
+    const { pipeline } = await import('node:stream/promises');
+    const { join } = await import('node:path');
+
+    const dir = join(root, 'accounts', id);
+    await mkdir(dir, { recursive: true });
+    // Clear previous reaction-avatar.* files for this account.
+    try {
+      const existing = await readdir(dir);
+      for (const name of existing) {
+        if (/^reaction-avatar\./i.test(name)) {
+          await unlink(join(dir, name)).catch(() => {});
+        }
+      }
+    } catch {
+      /* empty dir */
+    }
+
+    const fileName = `reaction-avatar${ext}`;
+    const abs = join(dir, fileName);
+    const rel = `accounts/${id}/${fileName}`.replace(/\\/g, '/');
+    await pipeline(input.stream, createWriteStream(abs));
+    if (input.isTruncated()) {
+      await unlink(abs).catch(() => {});
+      throw new BadRequestException('Upload truncated — file too large.');
+    }
+
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId: id },
+    });
+    if (!profile) throw new NotFoundException('Channel profile not found.');
+    const voice =
+      profile.voiceSettings && typeof profile.voiceSettings === 'object' && !Array.isArray(profile.voiceSettings)
+        ? { ...(profile.voiceSettings as Record<string, unknown>) }
+        : {};
+    const render =
+      voice.renderSettings && typeof voice.renderSettings === 'object' && !Array.isArray(voice.renderSettings)
+        ? { ...(voice.renderSettings as Record<string, unknown>) }
+        : {};
+    const prevAvatar =
+      render.reactionAvatar && typeof render.reactionAvatar === 'object' && !Array.isArray(render.reactionAvatar)
+        ? { ...(render.reactionAvatar as Record<string, unknown>) }
+        : {};
+    render.reactionAvatar = {
+      ...prevAvatar,
+      enabled: true,
+      assetPath: rel,
+      fileName: input.filename || fileName,
+      mimeType: input.mimeType || undefined,
+      shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
+      corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
+      sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
+      showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+    };
+    voice.renderSettings = render;
+    await this.prisma.client.channelProfile.update({
+      where: { accountId: id },
+      data: { voiceSettings: voice as Prisma.InputJsonValue },
+    });
+    const row = await this.loadActive(id);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
+  }
+
+  async clearReactionAvatar(id: string): Promise<AccountView> {
+    await this.loadActive(id);
+    const root = process.env.STORAGE_ROOT?.trim();
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId: id },
+    });
+    if (!profile) throw new NotFoundException('Channel profile not found.');
+    const voice =
+      profile.voiceSettings && typeof profile.voiceSettings === 'object' && !Array.isArray(profile.voiceSettings)
+        ? { ...(profile.voiceSettings as Record<string, unknown>) }
+        : {};
+    const render =
+      voice.renderSettings && typeof voice.renderSettings === 'object' && !Array.isArray(voice.renderSettings)
+        ? { ...(voice.renderSettings as Record<string, unknown>) }
+        : {};
+    const prevAvatar =
+      render.reactionAvatar && typeof render.reactionAvatar === 'object' && !Array.isArray(render.reactionAvatar)
+        ? { ...(render.reactionAvatar as Record<string, unknown>) }
+        : {};
+    const assetPath = typeof prevAvatar.assetPath === 'string' ? prevAvatar.assetPath : null;
+    if (root && assetPath) {
+      const { unlink } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      await unlink(join(root, assetPath.replace(/^[/\\]+/, ''))).catch(() => {});
+    }
+    render.reactionAvatar = {
+      enabled: false,
+      shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
+      corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
+      sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
+      showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+    };
+    voice.renderSettings = render;
+    await this.prisma.client.channelProfile.update({
+      where: { accountId: id },
+      data: { voiceSettings: voice as Prisma.InputJsonValue },
+    });
+    const row = await this.loadActive(id);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
+  }
+
+  /** Absolute path to the reaction avatar file when present on disk. */
+  async reactionAvatarLocalPath(id: string): Promise<{ path: string; mimeType: string } | null> {
+    await this.loadActive(id);
+    const root = process.env.STORAGE_ROOT?.trim();
+    if (!root) return null;
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId: id },
+      select: { voiceSettings: true },
+    });
+    const voice = (profile?.voiceSettings ?? {}) as Record<string, unknown>;
+    const render = (voice.renderSettings ?? {}) as Record<string, unknown>;
+    const avatar = (render.reactionAvatar ?? {}) as Record<string, unknown>;
+    const assetPath = typeof avatar.assetPath === 'string' ? avatar.assetPath : null;
+    if (!assetPath) return null;
+    const { access } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const abs = join(root, assetPath.replace(/^[/\\]+/, ''));
+    try {
+      await access(abs);
+    } catch {
+      return null;
+    }
+    const mime =
+      typeof avatar.mimeType === 'string' && avatar.mimeType
+        ? avatar.mimeType
+        : abs.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : abs.toLowerCase().endsWith('.webp')
+            ? 'image/webp'
+            : abs.toLowerCase().endsWith('.mp4')
+              ? 'video/mp4'
+              : abs.toLowerCase().endsWith('.webm')
+                ? 'video/webm'
+                : 'image/jpeg';
+    return { path: abs, mimeType: mime };
+  }
+
   private async loadActive(
     id: string,
   ): Promise<SocialAccount & { profile: Prisma.ChannelProfileGetPayload<object> | null }> {

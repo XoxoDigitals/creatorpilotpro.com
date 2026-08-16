@@ -234,12 +234,36 @@ export async function runPublish(
   }
 
   const localFile = buildLocalFile(localAsset);
-  const override = (target.metadataOverride ?? {}) as Record<string, unknown>;
+  const override = { ...((target.metadataOverride ?? {}) as Record<string, unknown>) };
   const step = (contentItem.currentStep ?? {}) as Record<string, unknown>;
   const aiMeta =
     step.metadata && typeof step.metadata === 'object' && !Array.isArray(step.metadata)
       ? (step.metadata as Record<string, unknown>)
       : null;
+
+  // Prefer an uploaded THUMBNAIL asset for YouTube custom thumbs.
+  if (!override.thumbnailPath) {
+    const thumbAsset = contentItem.assets.find((a) => a.kind === 'THUMBNAIL');
+    if (thumbAsset && (thumbAsset.localPath || thumbAsset.driveFileId)) {
+      try {
+        const ensured = await ensureLocalFinalAsset({
+          id: thumbAsset.id,
+          contentItemId: contentItem.id,
+          localPath: thumbAsset.localPath,
+          driveFileId: thumbAsset.driveFileId,
+          md5: thumbAsset.md5,
+          bytes: thumbAsset.bytes,
+        });
+        if (ensured.localPath) override.thumbnailPath = ensured.localPath;
+      } catch (err) {
+        console.warn(
+          `[worker:publish] thumbnail restore failed for ${contentItem.id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
   const meta = resolveMetadata(override, account.profile, contentItem.title, aiMeta);
 
   // Build the adapter (its constraints drive fail-fast metadata validation).
