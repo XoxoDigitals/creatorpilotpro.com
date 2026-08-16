@@ -859,8 +859,16 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
       });
     }
 
-    // Register TTS timings as SUBTITLE so burn-captions can find them on render.
+    // Always write SRT from timings (Edge continuous + scene-aligned) so burn-in works.
     const srtPath = join(dirname(synth.finalWavPath), 'voiceover.srt');
+    if (synth.timings.length > 0) {
+      await writeFile(srtPath, segmentsToSrt(synth.timings), 'utf8');
+      await writeFile(
+        join(dirname(synth.finalWavPath), 'voiceover.vtt'),
+        segmentsToVtt(synth.timings),
+        'utf8',
+      );
+    }
     try {
       const srtStats = await stat(srtPath);
       const existingSub = await prisma.asset.findFirst({
@@ -888,7 +896,7 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
         });
       }
     } catch {
-      /* no SRT when timings empty */
+      console.warn(`[worker:tts] no SRT registered for ${contentItemId} (timings empty?)`);
     }
 
     await prisma.contentItem.update({

@@ -3,9 +3,35 @@
  * Each effect is off unless its `enabled` flag is true.
  */
 import { z } from 'zod';
+import {
+  CAPTION_TEMPLATE_IDS,
+  LEGACY_CAPTION_PRESETS,
+  normalizeCaptionTemplateId,
+  captionAssStyleFields,
+} from './caption-templates.js';
 
-export const CAPTION_PRESETS = ['bottom', 'center', 'karaoke'] as const;
-export type CaptionPreset = (typeof CAPTION_PRESETS)[number];
+export {
+  CAPTION_TEMPLATE_IDS,
+  CAPTION_TEMPLATES,
+  CAPTION_TEMPLATE_PICKER,
+  LEGACY_CAPTION_PRESETS,
+  normalizeCaptionTemplateId,
+  captionTemplateMeta,
+  captionAssStyleFields,
+  hookAssStyleFields,
+  formatImpactAssText,
+  previewCaptionSpans,
+  pickHighlightIndices,
+  assColor,
+  type CaptionTemplateId,
+  type CaptionPreset,
+  type CaptionTemplateMeta,
+  type PreviewCaptionSpan,
+} from './caption-templates.js';
+
+/** @deprecated Prefer CaptionTemplateId — kept for older imports. */
+export const CAPTION_PRESETS = [...CAPTION_TEMPLATE_IDS, ...LEGACY_CAPTION_PRESETS] as const;
+export type CaptionPresetCompat = (typeof CAPTION_PRESETS)[number];
 
 export const COLOR_FILTER_PRESETS = ['none', 'vivid', 'warm', 'cool', 'contrast'] as const;
 export type ColorFilterPreset = (typeof COLOR_FILTER_PRESETS)[number];
@@ -18,18 +44,23 @@ export type HookTextVariant = { id: string; text: string };
 
 export const DEFAULT_TRIM_START_MS = 500;
 
+const captionPresetSchema = z
+  .string()
+  .default('bottom_white')
+  .transform((v) => normalizeCaptionTemplateId(v));
+
 export const renderSettingsSchema = z.object({
   trimStartMs: z.number().int().min(0).max(60_000).default(DEFAULT_TRIM_START_MS),
-  /** Full dialogue / VO captions burned from SRT (usually bottom). */
+  /** Full dialogue / VO captions burned from SRT/ASS (usually bottom). */
   burnCaptions: z
     .object({
       enabled: z.boolean().default(false),
-      preset: z.enum(CAPTION_PRESETS).default('bottom'),
+      preset: captionPresetSchema,
       fontSize: z.number().int().min(12).max(72).optional(),
       primaryColor: z.string().optional(),
       outlineColor: z.string().optional(),
     })
-    .default({ enabled: false, preset: 'bottom' }),
+    .default({ enabled: false, preset: 'impact_hormozi' }),
   /** Short 2–3 word attention hook at top-center (separate from captions). */
   hookText: z
     .object({
@@ -52,16 +83,26 @@ export const renderSettingsSchema = z.object({
       preset: z.enum(COLOR_FILTER_PRESETS).default('none'),
     })
     .default({ enabled: false, preset: 'none' }),
+  /**
+   * Talking / reaction avatar PiP (lip-sync). Stored for future use; render ignores
+   * until the avatar pipeline ships.
+   */
+  reactionAvatar: z
+    .object({
+      enabled: z.boolean().default(false),
+    })
+    .default({ enabled: false }),
 });
 
 export type RenderSettings = z.infer<typeof renderSettingsSchema>;
 
 export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
   trimStartMs: DEFAULT_TRIM_START_MS,
-  burnCaptions: { enabled: false, preset: 'bottom' },
+  burnCaptions: { enabled: false, preset: 'impact_hormozi' },
   hookText: { enabled: false, source: 'options', maxWords: 3 },
   flipHorizontal: { enabled: false },
   colorFilter: { enabled: false, preset: 'none' },
+  reactionAvatar: { enabled: false },
 };
 
 export function parseRenderSettings(raw: unknown): RenderSettings {
@@ -203,26 +244,22 @@ export function resolveHookOverlayText(
   return fromTitle || null;
 }
 
-/** ASS force_style fragment for burned captions. */
+/** ASS force_style fragment for burned captions (legacy subtitles= path). */
 export function captionForceStyle(settings: RenderSettings['burnCaptions']): string {
-  const preset = settings.preset ?? 'bottom';
-  const fontSize =
-    settings.fontSize ??
-    (preset === 'karaoke' ? 28 : preset === 'center' ? 26 : 22);
-  const primary = settings.primaryColor?.trim() || '&H00FFFFFF';
-  const outline = settings.outlineColor?.trim() || '&H00000000';
-  const alignment = preset === 'center' ? 5 : 2;
-  const marginV = preset === 'center' ? 0 : preset === 'karaoke' ? 80 : 60;
+  const style = captionAssStyleFields(settings.preset);
+  const fontSize = settings.fontSize ?? style.fontSize;
+  const primary = settings.primaryColor?.trim() || style.primary;
+  const outline = settings.outlineColor?.trim() || style.outline;
   return [
     `FontName=Arial`,
     `FontSize=${fontSize}`,
     `PrimaryColour=${primary}`,
     `OutlineColour=${outline}`,
-    `BorderStyle=1`,
-    `Outline=2`,
+    `BorderStyle=${style.borderStyle}`,
+    `Outline=${style.outlineWidth}`,
     `Shadow=0`,
-    `Alignment=${alignment}`,
-    `MarginV=${marginV}`,
+    `Alignment=${style.alignment}`,
+    `MarginV=${style.marginV}`,
   ].join(',');
 }
 
@@ -244,9 +281,11 @@ export function colorFilterExpr(preset: ColorFilterPreset): string | null {
 
 export type FinalVideoEffectsInput = {
   settings: RenderSettings;
-  /** Absolute path to an SRT/ASS file when burnCaptions is enabled. */
+  /** Preferred: single ASS file with hook + caption dialogues (ffmpeg `ass=`). */
+  assPath?: string | null;
+  /** Absolute path to an SRT/ASS file when burnCaptions is enabled (legacy). */
   subtitlePath?: string | null;
-  /** Short hook phrase when hookText is enabled. */
+  /** Short hook phrase when hookText is enabled (legacy drawtext). */
   hookOverlayText?: string | null;
   /** Absolute font file for ffmpeg drawtext (required on many Linux hosts). */
   fontFile?: string | null;
@@ -269,21 +308,28 @@ export function buildFinalVideoFilterChain(input: FinalVideoEffectsInput): strin
     if (eq) parts.push(eq);
   }
 
-  if (settings.hookText.enabled && input.hookOverlayText?.trim()) {
-    const text = escapeFfmpegDrawtext(input.hookOverlayText.trim());
-    const fontSize = settings.hookText.fontSize ?? 52;
-    const fontOpt = input.fontFile?.trim()
-      ? `:fontfile='${escapeFfmpegSubtitlesPath(input.fontFile.trim())}'`
-      : '';
-    parts.push(
-      `drawtext=text='${text}'${fontOpt}:fontsize=${fontSize}:fontcolor=white:borderw=4:bordercolor=black:x=(w-text_w)/2:y=h*0.07`,
-    );
-  }
+  if (input.assPath?.trim()) {
+    const escaped = escapeFfmpegSubtitlesPath(input.assPath.trim());
+    parts.push(`ass='${escaped}'`);
+  } else {
+    if (settings.hookText.enabled && input.hookOverlayText?.trim()) {
+      const text = escapeFfmpegDrawtext(input.hookOverlayText.trim());
+      const fontSize = settings.hookText.fontSize ?? 52;
+      const fontOpt = input.fontFile?.trim()
+        ? `:fontfile='${escapeFfmpegSubtitlesPath(input.fontFile.trim())}'`
+        : '';
+      parts.push(
+        `drawtext=text='${text}'${fontOpt}:fontsize=${fontSize}:fontcolor=white:borderw=4:bordercolor=black:x=(w-text_w)/2:y=h*0.07`,
+      );
+    }
 
-  if (settings.burnCaptions.enabled && input.subtitlePath) {
-    const escaped = escapeFfmpegSubtitlesPath(input.subtitlePath);
-    const style = captionForceStyle(settings.burnCaptions).replace(/:/g, '\\:').replace(/'/g, "\\'");
-    parts.push(`subtitles='${escaped}':force_style='${style}'`);
+    if (settings.burnCaptions.enabled && input.subtitlePath) {
+      const escaped = escapeFfmpegSubtitlesPath(input.subtitlePath);
+      const style = captionForceStyle(settings.burnCaptions)
+        .replace(/:/g, '\\:')
+        .replace(/'/g, "\\'");
+      parts.push(`subtitles='${escaped}':force_style='${style}'`);
+    }
   }
 
   return parts.join(',');
@@ -294,30 +340,37 @@ export function finalVideoEffectsEnabled(
   settings: RenderSettings,
   subtitlePath?: string | null,
   hookOverlayText?: string | null,
+  assPath?: string | null,
 ): boolean {
   if (settings.trimStartMs > 0) return true;
   if (settings.flipHorizontal.enabled) return true;
   if (settings.colorFilter.enabled && settings.colorFilter.preset !== 'none') return true;
+  if (assPath?.trim()) return true;
   if (settings.hookText.enabled && !!hookOverlayText?.trim()) return true;
   if (settings.burnCaptions.enabled && !!subtitlePath) return true;
   return false;
 }
 
 /**
- * Progressive `-vf` fallbacks: drop hook drawtext, then captions, so flip/color/trim
- * still apply when a host lacks fonts or libass fails a subtitle path.
+ * Progressive `-vf` fallbacks: drop ASS/text overlays last so flip/color/trim
+ * still apply when libass fails.
  */
 export function buildFinalVideoFilterFallbacks(input: FinalVideoEffectsInput): string[] {
   const full = buildFinalVideoFilterChain(input);
-  const noHook = buildFinalVideoFilterChain({ ...input, hookOverlayText: null });
-  const noSubs = buildFinalVideoFilterChain({
+  const noAss = buildFinalVideoFilterChain({
     ...input,
+    assPath: null,
     hookOverlayText: null,
     subtitlePath: null,
   });
+  const noHook = buildFinalVideoFilterChain({
+    ...input,
+    assPath: null,
+    hookOverlayText: null,
+  });
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const vf of [full, noHook, noSubs]) {
+  for (const vf of [full, noHook, noAss]) {
     if (seen.has(vf)) continue;
     seen.add(vf);
     out.push(vf);

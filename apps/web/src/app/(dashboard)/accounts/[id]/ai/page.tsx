@@ -37,6 +37,7 @@ import {
   rewriteNarrationScript,
   selectNarrationScript,
   selectHookText,
+  selectCaptionTemplate,
   updateNarrationScript,
   updatePublishMetadata,
   type AiPipelineItem,
@@ -45,6 +46,10 @@ import { IdeaPackagesPanel } from '@/components/idea-packages-panel';
 import {
   DEFAULT_BACKGROUND_BED_PERCENT,
   clampBackgroundBedPercent,
+  CAPTION_TEMPLATE_PICKER,
+  captionTemplateMeta,
+  normalizeCaptionTemplateId,
+  previewCaptionSpans,
 } from '@scp/shared';
 
 function readableAiText(value: string): string {
@@ -252,19 +257,51 @@ function PipelineVideoFrame({
   embedUrl,
   streamUrl,
   poster,
+  overlay,
 }: {
   label: string;
   itemId: string;
   embedUrl?: string | null;
   streamUrl: string;
   poster?: string;
+  /** Live CSS mock of hook + caption template on the original (pre-approve). */
+  overlay?: {
+    hookText?: string | null;
+    captionSample?: string | null;
+    templateId?: string | null;
+  };
 }) {
+  const template = captionTemplateMeta(overlay?.templateId);
+  const hook = overlay?.hookText?.trim() || '';
+  const captionRaw = overlay?.captionSample?.trim() || '';
+  const captionSpans = captionRaw ? previewCaptionSpans(captionRaw, overlay?.templateId) : [];
+  const sizeClass =
+    template.size === 'xl'
+      ? 'text-lg sm:text-xl'
+      : template.size === 'lg'
+        ? 'text-base sm:text-lg'
+        : template.size === 'sm'
+          ? 'text-xs'
+          : 'text-sm';
+  const captionPos =
+    template.align === 'center'
+      ? 'left-3 right-3 top-1/2 -translate-y-1/2'
+      : template.align === 'upper'
+        ? 'left-3 right-3 top-[18%]'
+        : 'left-3 right-3 bottom-8';
+  const italicClass = template.italic ? 'italic' : '';
+
   return (
     <div>
       <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
         {label}
+        {(hook || captionSpans.length > 0) && (
+          <span className="ml-1 font-normal normal-case tracking-normal text-zinc-400">
+            · live preview
+          </span>
+        )}
       </p>
-      <div className="overflow-hidden rounded-md border border-zinc-200 bg-zinc-950">
+      <div className="relative overflow-hidden rounded-md border border-zinc-200 bg-zinc-950">
         <MediaEmbed
           key={`${itemId}-${label}`}
           kind="video"
@@ -273,6 +310,50 @@ function PipelineVideoFrame({
           poster={poster}
           className={`${VIDEO_ASPECT} w-full border-0 bg-black object-contain`}
         />
+        {(hook || captionSpans.length > 0) && (
+          <div className="pointer-events-none absolute inset-0 z-10">
+            {hook ? (
+              <div className="absolute left-3 right-3 top-5 text-center">
+                <span
+                  className="inline-block text-base font-black uppercase tracking-wide text-white sm:text-lg"
+                  style={{
+                    textShadow:
+                      '0 0 4px #000, 0 0 4px #000, 2px 2px 0 #000, -2px -2px 0 #000',
+                  }}
+                >
+                  {hook}
+                </span>
+              </div>
+            ) : null}
+            {captionSpans.length > 0 ? (
+              <div className={`absolute text-center ${captionPos}`}>
+                <span
+                  className={`inline-block font-black uppercase leading-tight tracking-wide ${sizeClass} ${italicClass}`}
+                  style={{
+                    backgroundColor: template.boxed ? 'rgba(0,0,0,0.65)' : 'transparent',
+                    padding: template.boxed ? '0.35rem 0.6rem' : undefined,
+                    borderRadius: template.boxed ? '0.25rem' : undefined,
+                  }}
+                >
+                  {captionSpans.map((span, i) => (
+                    <span
+                      key={`${span.text}-${i}`}
+                      style={{
+                        color: span.color,
+                        textShadow: template.boxed
+                          ? undefined
+                          : `0 0 3px ${template.outline}, 2px 2px 0 ${template.outline}, -2px -2px 0 ${template.outline}`,
+                        marginRight: i < captionSpans.length - 1 ? '0.28em' : undefined,
+                      }}
+                    >
+                      {span.text}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -563,8 +644,18 @@ function NarrationScriptPanel({
   const [accepting, setAccepting] = useState(false);
   const [selectingId, setSelectingId] = useState<string | null>(null);
   const [selectingHookId, setSelectingHookId] = useState<string | null>(null);
+  const [selectingCaptionId, setSelectingCaptionId] = useState<string | null>(null);
   const locked =
-    busy || saving || rewriting || accepting || selectingId != null || selectingHookId != null;
+    busy ||
+    saving ||
+    rewriting ||
+    accepting ||
+    selectingId != null ||
+    selectingHookId != null ||
+    selectingCaptionId != null;
+  const selectedCaptionId = normalizeCaptionTemplateId(
+    item.selectedCaptionTemplateId ?? 'impact_hormozi',
+  );
 
   useEffect(() => {
     if (mode !== 'view') return;
@@ -606,6 +697,19 @@ function NarrationScriptPanel({
       toast(err instanceof ApiError ? err.message : 'Failed to select hook text', 'error');
     } finally {
       setSelectingHookId(null);
+    }
+  }
+
+  async function onSelectCaption(id: string) {
+    if (!canEdit || id === selectedCaptionId || locked) return;
+    setSelectingCaptionId(id);
+    try {
+      const next = await selectCaptionTemplate(item.id, id);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to select caption template', 'error');
+    } finally {
+      setSelectingCaptionId(null);
     }
   }
 
@@ -771,6 +875,43 @@ function NarrationScriptPanel({
           </div>
         </div>
       )}
+      <div className="mb-2 shrink-0 space-y-1">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+          Caption style (ffmpeg burn-in)
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {CAPTION_TEMPLATE_PICKER.map((t) => {
+            const active = t.id === selectedCaptionId;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                disabled={locked || !canEdit}
+                title={t.description}
+                onClick={() => void onSelectCaption(t.id)}
+                className={
+                  'rounded-md border px-2 py-1 text-[11px] font-medium ' +
+                  (active
+                    ? 'border-sky-300 bg-sky-50 text-sky-900'
+                    : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+                }
+              >
+                {t.label}
+                {active ? ' · selected' : ''}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-zinc-500">
+          Preview updates on the original video. Captions burn in with ffmpeg after you approve.
+        </p>
+      </div>
+      <div className="mb-2 rounded-md border border-dashed border-zinc-300 bg-zinc-50/60 px-2 py-1.5">
+        <p className="text-[11px] font-medium text-zinc-600">Reaction avatar — coming soon</p>
+        <p className="text-[10px] text-zinc-500">
+          Lip-sync face in the corner during dialogue. Toggle will appear here when ready.
+        </p>
+      </div>
       {mode === 'edit' ? (
         <div className="flex min-h-0 flex-1 flex-col space-y-2">
           <Textarea
@@ -1400,6 +1541,17 @@ export default function AccountAiPipelinePage() {
                               ? contentThumbnailUrl(it.id)
                               : undefined
                           }
+                          overlay={{
+                            hookText: it.selectedHookText,
+                            captionSample: (() => {
+                              const script = readableAiText(it.script ?? '');
+                              const first =
+                                script.split(/(?<=[.!?])\s+/).find((s) => s.trim()) ??
+                                script.slice(0, 80);
+                              return first.trim().slice(0, 90) || 'Sample caption line';
+                            })(),
+                            templateId: it.selectedCaptionTemplateId ?? 'impact_hormozi',
+                          }}
                         />
                       )}
                       <div className="min-w-0 space-y-3">

@@ -503,6 +503,8 @@ export interface AiPipelineItem {
   hookTextVariants?: { id: string; text: string }[];
   selectedHookTextId?: string | null;
   selectedHookText?: string | null;
+  /** Caption template id chosen at script approval (ffmpeg burn-in). */
+  selectedCaptionTemplateId?: string | null;
   /** English summary for the active narration (non-English channels only). */
   englishSummary?: string;
   metadata: string | null;
@@ -614,6 +616,13 @@ export async function selectHookText(
   selectedHookTextId: string,
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedHookTextId });
+}
+
+export async function selectCaptionTemplate(
+  id: string,
+  selectedCaptionTemplateId: string,
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedCaptionTemplateId });
 }
 
 /** Ask AI to rewrite the narration from an instruction; caller PATCHes to save. */

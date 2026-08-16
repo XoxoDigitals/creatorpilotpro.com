@@ -102,6 +102,8 @@ export interface AiPipelineItemView {
   selectedHookTextId: string | null;
   /** Denormalized selected hook phrase. */
   selectedHookText: string | null;
+  /** Caption burn-in template id chosen at script approval. */
+  selectedCaptionTemplateId: string | null;
   /**
    * English summary for the selected (or sole) narration script when the channel
    * output language is not English. Empty string when English or unavailable.
@@ -326,6 +328,10 @@ export function toAiPipelineItemView(
     hookTextVariants: hookTexts.variants,
     selectedHookTextId: hookTexts.selectedHookTextId,
     selectedHookText: hookTexts.selectedHookText,
+    selectedCaptionTemplateId:
+      typeof step.selectedCaptionTemplateId === 'string' && step.selectedCaptionTemplateId.trim()
+        ? step.selectedCaptionTemplateId.trim()
+        : null,
     englishSummary: selectedVariant?.englishSummary?.trim() || stepSummary || '',
     metadata: asText(step.metadata),
     publishTitle: publish.title,

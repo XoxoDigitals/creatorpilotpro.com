@@ -14,10 +14,12 @@ import {
   renderSettingsFromVoiceSettings,
   clampTrimStartMs,
   type StyleProfileAnswers,
-  type CaptionPreset,
+  type CaptionTemplateId,
   type ColorFilterPreset,
   type HookTextSource,
   type RenderSettings,
+  CAPTION_TEMPLATES,
+  CAPTION_TEMPLATE_PICKER,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -505,6 +507,9 @@ export default function AccountSettingsPage() {
             colorFilter: {
               enabled: renderSettings.colorFilter.enabled,
               preset: renderSettings.colorFilter.preset,
+            },
+            reactionAvatar: {
+              enabled: renderSettings.reactionAvatar?.enabled ?? false,
             },
           },
         },
@@ -1013,7 +1018,7 @@ export default function AccountSettingsPage() {
               label="Burn captions (dialogue / voiceover lines)"
             />
             {renderSettings.burnCaptions.enabled && (
-              <Field label="Caption style">
+              <Field label="Default caption template">
                 <Select
                   value={renderSettings.burnCaptions.preset}
                   onChange={(e) =>
@@ -1021,17 +1026,28 @@ export default function AccountSettingsPage() {
                       ...s,
                       burnCaptions: {
                         ...s.burnCaptions,
-                        preset: e.target.value as CaptionPreset,
+                        preset: e.target.value as CaptionTemplateId,
                       },
                     }))
                   }
                 >
-                  <option value="bottom">Bottom (standard)</option>
-                  <option value="center">Center</option>
-                  <option value="karaoke">Karaoke / larger bottom</option>
+                  {CAPTION_TEMPLATE_PICKER.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+                  {/* Keep legacy values selectable if already saved */}
+                  {!CAPTION_TEMPLATE_PICKER.some((t) => t.id === renderSettings.burnCaptions.preset) &&
+                    CAPTION_TEMPLATES.filter(
+                      (t) => t.id === renderSettings.burnCaptions.preset,
+                    ).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.label} (legacy)
+                      </option>
+                    ))}
                 </Select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Timed lines from voiceover SRT. Separate from the top hook.
+                  Per-video choice on the AI tab overrides this. Burned with ffmpeg after approve.
                 </p>
               </Field>
             )}
@@ -1110,11 +1126,20 @@ export default function AccountSettingsPage() {
             )}
           </div>
 
-          <div className="rounded-md border border-dashed border-zinc-300 bg-zinc-50/50 p-3">
-            <p className="text-sm font-medium text-zinc-700">Talking avatar (coming soon)</p>
+          <div className="rounded-md border border-zinc-200 bg-zinc-50/80 p-3 opacity-80">
+            <Toggle
+              checked={renderSettings.reactionAvatar?.enabled ?? false}
+              onChange={(v) =>
+                setRenderSettings((s) => ({
+                  ...s,
+                  reactionAvatar: { enabled: v },
+                }))
+              }
+              label="Reaction avatar (coming soon)"
+            />
             <p className="mt-1 text-[11px] text-zinc-500">
-              Lip-sync reaction face in the corner during dialogue only. Not available yet — this is
-              where the toggle will live.
+              Lip-sync reaction face in the corner during dialogue only. Saved for later — not
+              rendered yet.
             </p>
           </div>
 

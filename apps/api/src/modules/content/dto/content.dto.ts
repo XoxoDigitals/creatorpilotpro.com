@@ -33,14 +33,20 @@ export const updateScriptSchema = z
     selectedScriptId: z.string().min(1).max(40).optional(),
     /** Switch the on-screen hook phrase (2–3 words) at script approval. */
     selectedHookTextId: z.string().min(1).max(40).optional(),
+    /** Caption burn-in template picked at script approval. */
+    selectedCaptionTemplateId: z.string().min(1).max(40).optional(),
   })
   .refine(
     (d) =>
       Boolean(
-        d.script?.trim() || d.selectedScriptId?.trim() || d.selectedHookTextId?.trim(),
+        d.script?.trim() ||
+          d.selectedScriptId?.trim() ||
+          d.selectedHookTextId?.trim() ||
+          d.selectedCaptionTemplateId?.trim(),
       ),
     {
-      message: 'script, selectedScriptId, or selectedHookTextId is required',
+      message:
+        'script, selectedScriptId, selectedHookTextId, or selectedCaptionTemplateId is required',
     },
   );
 export type UpdateScriptDto = z.infer<typeof updateScriptSchema>;

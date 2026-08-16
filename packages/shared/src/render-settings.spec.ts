@@ -138,7 +138,7 @@ describe('buildFinalVideoFilterChain', () => {
     });
     expect(on).toContain('subtitles=');
     expect(on).toContain('force_style=');
-    expect(captionForceStyle({ enabled: true, preset: 'bottom' })).toContain('Alignment=2');
+    expect(captionForceStyle({ enabled: true, preset: 'bottom_white' })).toContain('Alignment=2');
   });
 
   it('draws hook text with optional fontfile', () => {
@@ -211,7 +211,7 @@ describe('parseRenderSettings', () => {
     });
     expect(s.trimStartMs).toBe(750);
     expect(s.flipHorizontal.enabled).toBe(true);
-    expect(s.burnCaptions.preset).toBe('karaoke');
+    expect(s.burnCaptions.preset).toBe('karaoke_yellow');
     expect(s.hookText.enabled).toBe(true);
     expect(s.hookText.customText).toBe('WAIT FOR IT');
     expect(s.colorFilter.preset).toBe('cool');

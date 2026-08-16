@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
 import type { ContentItemStatus, Prisma } from '@scp/db';
-import { withPublishReviewApproved } from '@scp/shared';
+import { withPublishReviewApproved, normalizeCaptionTemplateId } from '@scp/shared';
 import { drivePreviewEmbedUrl } from '@scp/storage';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
@@ -121,6 +121,15 @@ function applySelectedHookText(
   if (!text) throw new BadRequestException('Hook text option is empty.');
   step.selectedHookTextId = id;
   step.selectedHookText = text;
+}
+
+function applySelectedCaptionTemplate(
+  step: Record<string, unknown>,
+  opts: { selectedCaptionTemplateId?: string },
+): void {
+  const id = opts.selectedCaptionTemplateId?.trim();
+  if (!id) return;
+  step.selectedCaptionTemplateId = normalizeCaptionTemplateId(id);
 }
 
 @Injectable()
@@ -433,6 +442,7 @@ export class ContentService {
     delete step.hookTextVariants;
     delete step.selectedHookTextId;
     delete step.selectedHookText;
+    delete step.selectedCaptionTemplateId;
     step.scriptNonce = Date.now();
     const updated = await this.prisma.client.contentItem.update({
       where: { id },
@@ -630,11 +640,22 @@ export class ContentService {
    */
   async updateScript(
     id: string,
-    dto: { script?: string; selectedScriptId?: string; selectedHookTextId?: string },
+    dto: {
+      script?: string;
+      selectedScriptId?: string;
+      selectedHookTextId?: string;
+      selectedCaptionTemplateId?: string;
+    },
   ): Promise<AiPipelineItemView> {
     const item = await this.findPipelineItem(id);
     this.assertScriptEditable(item.status);
     const step = { ...((item.currentStep ?? {}) as Record<string, unknown>) };
+
+    if (dto.selectedCaptionTemplateId?.trim()) {
+      applySelectedCaptionTemplate(step, {
+        selectedCaptionTemplateId: dto.selectedCaptionTemplateId,
+      });
+    }
 
     if (dto.selectedHookTextId?.trim()) {
       // Persist synthesized options for legacy items so selection sticks.

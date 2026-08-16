@@ -26,6 +26,7 @@ import {
   buildFinalVideoFilterFallbacks,
   finalVideoEffectsEnabled,
   resolveHookOverlayText,
+  normalizeCaptionTemplateId,
   type RenderSettings,
 } from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
@@ -44,6 +45,7 @@ import {
   VO_MIX_SIDECHAIN,
   bedGainForPercent,
 } from './media/ffmpeg.js';
+import { loadSrtCues, writeOverlayAssFile } from './media/overlay-ass.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
 import type { AiJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident } from './publish-support.js';
@@ -501,42 +503,95 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     await unlink(mergedPath).catch(() => {});
 
     // Step 3b: Trim lead-in + optional flip / color / hook / burned captions.
-    // Render mixes from ORIGINAL (untrimmed), so account trimStartMs must apply here.
+    // Prefer a single ASS overlay (ffmpeg `ass=`) — more reliable than drawtext.
     const renderSettings = await resolveAccountRenderSettings(contentItemId);
+    const step = (item.currentStep ?? {}) as Record<string, unknown>;
+    const selectedTemplateRaw =
+      typeof step.selectedCaptionTemplateId === 'string'
+        ? step.selectedCaptionTemplateId
+        : null;
+    // Per-video template pick at script approval enables burn for that item.
+    const captionTemplateId = normalizeCaptionTemplateId(
+      selectedTemplateRaw ?? renderSettings.burnCaptions.preset,
+    );
+    const burnCaptions =
+      renderSettings.burnCaptions.enabled || !!selectedTemplateRaw?.trim();
+    const effectiveSettings: RenderSettings = {
+      ...renderSettings,
+      burnCaptions: {
+        ...renderSettings.burnCaptions,
+        enabled: burnCaptions,
+        preset: captionTemplateId,
+      },
+      hookText: {
+        ...renderSettings.hookText,
+        // Prefer burning hook whenever account enabled OR a hook was selected.
+        enabled:
+          renderSettings.hookText.enabled ||
+          !!(typeof step.selectedHookText === 'string' && step.selectedHookText.trim()),
+      },
+    };
+
     const subtitlePath = await resolveSubtitlePath(item.assets, voPath);
     const hookOverlayText = resolveHookOverlayText(
-      renderSettings.hookText,
+      effectiveSettings.hookText,
       item.title,
-      typeof (item.currentStep as Record<string, unknown> | null)?.selectedHookText === 'string'
-        ? ((item.currentStep as Record<string, unknown>).selectedHookText as string)
-        : null,
+      typeof step.selectedHookText === 'string' ? step.selectedHookText : null,
     );
-    const fontFile = resolveDrawtextFontFile();
-    if (renderSettings.hookText.enabled && hookOverlayText && !fontFile) {
-      console.warn(
-        `[worker:render] hook text enabled but no font file found — set FFMPEG_FONTFILE or install DejaVu/Arial`,
-      );
+
+    let assPath: string | null = null;
+    if (
+      (effectiveSettings.burnCaptions.enabled && subtitlePath) ||
+      (effectiveSettings.hookText.enabled && hookOverlayText)
+    ) {
+      try {
+        const cues =
+          effectiveSettings.burnCaptions.enabled && subtitlePath
+            ? await loadSrtCues(subtitlePath)
+            : [];
+        const outAss = join(renderDir, 'overlay.ass');
+        await writeOverlayAssFile(outAss, {
+          templateId: captionTemplateId,
+          cues: effectiveSettings.burnCaptions.enabled ? cues : [],
+          hookText: effectiveSettings.hookText.enabled ? hookOverlayText : null,
+        });
+        assPath = outAss;
+        console.log(
+          `[worker:render] wrote overlay ASS for ${contentItemId}` +
+            ` (cues=${cues.length}, hook=${hookOverlayText ? 'yes' : 'no'}, template=${captionTemplateId})`,
+        );
+      } catch (err) {
+        console.warn(
+          `[worker:render] ASS overlay build failed for ${contentItemId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
+
     const finalPath = join(renderDir, 'final.mp4');
     const needsEffectsPass = finalVideoEffectsEnabled(
-      renderSettings,
+      effectiveSettings,
       subtitlePath,
       hookOverlayText,
+      assPath,
     );
     console.log(
-      `[worker:render] effects for ${contentItemId}: trim=${renderSettings.trimStartMs}ms` +
-        ` flip=${renderSettings.flipHorizontal.enabled}` +
-        ` color=${renderSettings.colorFilter.enabled ? renderSettings.colorFilter.preset : 'off'}` +
+      `[worker:render] effects for ${contentItemId}: trim=${effectiveSettings.trimStartMs}ms` +
+        ` flip=${effectiveSettings.flipHorizontal.enabled}` +
+        ` color=${effectiveSettings.colorFilter.enabled ? effectiveSettings.colorFilter.preset : 'off'}` +
         ` hook=${hookOverlayText ? JSON.stringify(hookOverlayText) : 'off'}` +
-        ` captions=${renderSettings.burnCaptions.enabled ? (subtitlePath ? 'yes' : 'no-srt') : 'off'}`,
+        ` captions=${effectiveSettings.burnCaptions.enabled ? (subtitlePath ? 'yes' : 'no-srt') : 'off'}` +
+        ` ass=${assPath ? 'yes' : 'no'}`,
     );
 
     if (needsEffectsPass) {
       const candidates = buildFinalVideoFilterFallbacks({
-        settings: renderSettings,
-        subtitlePath,
-        hookOverlayText: fontFile ? hookOverlayText : null,
-        fontFile,
+        settings: effectiveSettings,
+        assPath,
+        // Legacy fallbacks if ASS missing:
+        subtitlePath: assPath ? null : subtitlePath,
+        hookOverlayText: assPath ? null : hookOverlayText,
+        fontFile: resolveDrawtextFontFile(),
       });
       let applied = false;
       let lastErr: unknown;
@@ -544,16 +599,19 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         try {
           await unlink(finalPath).catch(() => {});
           await ffmpeg.applyFinalVideoEffects(loudnormPath, finalPath, vf, {
-            trimStartMs: renderSettings.trimStartMs,
+            trimStartMs: effectiveSettings.trimStartMs,
           });
           applied = true;
           console.log(
             `[worker:render] applied final video effects for ${contentItemId}` +
-              (renderSettings.trimStartMs > 0 ? ` [trim:${renderSettings.trimStartMs}ms]` : '') +
-              (renderSettings.flipHorizontal.enabled ? ' [flip]' : '') +
-              (renderSettings.colorFilter.enabled
-                ? ` [color:${renderSettings.colorFilter.preset}]`
+              (effectiveSettings.trimStartMs > 0
+                ? ` [trim:${effectiveSettings.trimStartMs}ms]`
                 : '') +
+              (effectiveSettings.flipHorizontal.enabled ? ' [flip]' : '') +
+              (effectiveSettings.colorFilter.enabled
+                ? ` [color:${effectiveSettings.colorFilter.preset}]`
+                : '') +
+              (vf.includes('ass=') ? ' [ass]' : '') +
               (vf.includes('drawtext=') && hookOverlayText ? ` [hook:${hookOverlayText}]` : '') +
               (vf.includes('subtitles=') ? ' [captions]' : '') +
               (!vf ? ' [trim-only]' : ''),

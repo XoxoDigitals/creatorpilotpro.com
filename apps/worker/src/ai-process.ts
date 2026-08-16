@@ -619,6 +619,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       updatedStep.hookTextVariants = hookTextVariants;
       updatedStep.selectedHookTextId = hookTextVariants[0]?.id ?? null;
       updatedStep.selectedHookText = hookTextVariants[0]?.text ?? '';
+      updatedStep.selectedCaptionTemplateId = 'impact_hormozi';
       await prisma.contentItem.update({
         where: { id: contentItemId },
         data: { currentStep: updatedStep as any, status: 'SCRIPT_READY' },
