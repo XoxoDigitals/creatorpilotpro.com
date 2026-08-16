@@ -78,8 +78,27 @@ export const OVERLAY_OFF_ID = 'none';
 /** Hard cap so ASS + CSS preview stay ≤2 visual lines (no mid-line wrap). */
 export const CAPTION_MAX_WORDS = 6;
 
-/** Short phrase for live CSS preview (wraps to ≤2 lines). */
-export const CAPTION_PREVIEW_SAMPLE = 'WAIT FOR IT';
+/**
+ * Legacy constant — do not show this as fake caption copy.
+ * Live preview should use {@link captionPreviewFromNarration} from the real script.
+ * Empty so callers never paint a placeholder phrase onto the video mock.
+ */
+export const CAPTION_PREVIEW_SAMPLE = '';
+
+/**
+ * First ≤{@link CAPTION_MAX_WORDS} words of narration for the AI-panel CSS caption mock.
+ * Burn-in / ASS never use this — only the live overlay preview.
+ */
+export function captionPreviewFromNarration(raw: string | null | undefined): string {
+  const words = (raw ?? '')
+    .replace(/[#@]/g, ' ')
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, CAPTION_MAX_WORDS);
+  return words.join(' ');
+}
 
 /** Safe inset from frame edge as % of height (CSS + ASS). */
 export const OVERLAY_SAFE_EDGE_PERCENT = 5;

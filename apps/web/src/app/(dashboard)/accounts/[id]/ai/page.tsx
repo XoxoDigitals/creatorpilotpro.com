@@ -54,6 +54,7 @@ import {
   CAPTION_COLOR_MODES,
   CAPTION_COLOR_MODE_LABELS,
   CAPTION_PREVIEW_SAMPLE,
+  captionPreviewFromNarration,
   OVERLAY_OFF_ID,
   COLOR_FILTER_PRESETS,
   COLOR_FILTER_LABELS,
@@ -308,7 +309,7 @@ function PipelineVideoFrame({
   );
   const hook = hookOff ? '' : overlay?.hookText?.trim() || '';
   const captionRaw =
-    captionsOff ? '' : overlay?.captionSample?.trim() || CAPTION_PREVIEW_SAMPLE;
+    captionsOff ? '' : overlay?.captionSample?.trim() || '';
   const colorMode = normalizeCaptionColorMode(overlay?.colorMode);
   const captionLines = captionRaw
     ? previewCaptionLines(captionRaw, overlay?.templateId, { colorMode })
@@ -1262,7 +1263,7 @@ function NarrationScriptPanel({
         <p className="text-[10px] text-zinc-500">
           Upload a silent face image/clip and optional lip-sync talking-head video under Account →
           Settings → Render effects. ffmpeg PiP prefers the lip-sync clip during dialogue (not ML
-          lip-sync). Background is removed with rembg on render when installed on the worker.
+          lip-sync). Background removal: rembg if installed, else ffmpeg chromakey (green screen).
         </p>
       </div>
 
@@ -1349,6 +1350,10 @@ function AiPreRenderRow({
   const [draftHookY, setDraftHookY] = useState<number | null>(null);
   const captionsOff = isOverlayOffId(item.selectedCaptionTemplateId);
   const hookOff = isOverlayOffId(item.selectedHookTextId);
+  const narrationForPreview =
+    selectedVariant(item)?.script?.trim() ||
+    readableAiText(item.script ?? '').trim();
+  const captionSample = captionPreviewFromNarration(narrationForPreview);
 
   useEffect(() => {
     setDraftCaptionY(null);
@@ -1378,7 +1383,7 @@ function AiPreRenderRow({
               hookText: hookOff ? null : item.selectedHookText,
               hookOff,
               captionsOff,
-              captionSample: CAPTION_PREVIEW_SAMPLE,
+              captionSample: captionSample || CAPTION_PREVIEW_SAMPLE,
               templateId: captionsOff
                 ? OVERLAY_OFF_ID
                 : (item.selectedCaptionTemplateId ?? 'impact_hormozi'),

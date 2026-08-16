@@ -1,11 +1,13 @@
 /**
- * Reaction-avatar background removal via the `rembg` CLI (optional host dep).
+ * Reaction-avatar background removal.
  *
- * Images → PNG with alpha (`*.nobg.png`).
- * Videos → short PNG sequence → rembg folder → WebM VP9+alpha (`*.nobg.webm`).
+ * Prefer `rembg` CLI when available (ML cutout).
+ * Fallback / alternative: ffmpeg `colorkey` chromakey (best with a green/magenta screen).
  *
- * Limits (MVP): videos capped at REACTION_AVATAR_REMBG_MAX_SEC @ FPS.
- * If rembg is missing or fails, returns the original path unchanged.
+ * Images → PNG with alpha (`*.nobg.png` / `*.nobg-ck.png`).
+ * Videos → WebM VP9+alpha (`*.nobg.webm` / `*.nobg-ck.webm`).
+ *
+ * If both rembg and chromakey are unavailable/disabled, returns the original path.
  */
 import { copyFile, mkdir, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -18,6 +20,22 @@ export const REACTION_AVATAR_REMBG_MAX_SEC = 8;
 export const REACTION_AVATAR_REMBG_FPS = 12;
 /** Downscale long edge before rembg to speed CPU inference. */
 export const REACTION_AVATAR_REMBG_MAX_SIDE = 512;
+
+/** Default chroma green (OBS / fabric screens). */
+export const DEFAULT_CHROMAKEY_COLOR = '#00B140';
+
+export type ReactionRemoveBgMode = 'auto' | 'rembg' | 'chromakey' | 'off';
+
+export type ReactionRemoveBgOptions = {
+  mode?: ReactionRemoveBgMode;
+  /** Hex `#RRGGBB` key color for chromakey. */
+  chromakeyColor?: string;
+  chromakeySimilarity?: number;
+  chromakeyBlend?: number;
+  ffmpeg?: Ffmpeg;
+  runner?: CommandRunner;
+  workDir?: string;
+};
 
 function rembgBin(): string {
   return resolveRembgBinary();
@@ -40,11 +58,23 @@ function isImagePath(p: string): boolean {
   return /\.(png|jpe?g|webp|gif)$/i.test(p);
 }
 
+/** Normalize `#RRGGBB` → `0xRRGGBB` for ffmpeg colorkey. */
+export function ffmpegKeyColor(hex: string | null | undefined): string {
+  const raw = (hex ?? DEFAULT_CHROMAKEY_COLOR).trim();
+  const m = raw.match(/^#?([0-9A-Fa-f]{6})$/);
+  const rgb = (m?.[1] ?? '00B140').toUpperCase();
+  return `0x${rgb}`;
+}
+
 /** Cache path beside the upload (mtime-checked). */
-export function reactionAvatarNobgCachePath(srcPath: string): string {
+export function reactionAvatarNobgCachePath(
+  srcPath: string,
+  method: 'rembg' | 'chromakey' = 'rembg',
+): string {
+  const tag = method === 'chromakey' ? 'nobg-ck' : 'nobg';
   return isVideoPath(srcPath)
-    ? srcPath.replace(/\.[^.]+$/i, '.nobg.webm')
-    : srcPath.replace(/\.[^.]+$/i, '.nobg.png');
+    ? srcPath.replace(/\.[^.]+$/i, `.${tag}.webm`)
+    : srcPath.replace(/\.[^.]+$/i, `.${tag}.png`);
 }
 
 async function cacheIsFresh(srcPath: string, cachePath: string): Promise<boolean> {
@@ -97,53 +127,100 @@ async function listPngsRecursive(dir: string): Promise<string[]> {
   return out.sort();
 }
 
-/**
- * Ensure a background-removed asset exists for PiP overlay.
- * Returns path to use (nobg cache or original if rembg unavailable / failed).
- */
-export async function prepareReactionAvatarNobg(
+function colorkeyVf(color: string, similarity: number, blend: number): string {
+  const sim = Math.max(0.01, Math.min(1, similarity));
+  const bl = Math.max(0, Math.min(1, blend));
+  return `colorkey=${color}:${sim}:${bl},format=rgba`;
+}
+
+async function runChromakeyImage(
+  ffmpeg: Ffmpeg,
+  inputPath: string,
+  outputPath: string,
+  color: string,
+  similarity: number,
+  blend: number,
+): Promise<void> {
+  await unlink(outputPath).catch(() => {});
+  await ffmpeg.exec([
+    '-loglevel',
+    'error',
+    '-i',
+    inputPath,
+    '-vf',
+    colorkeyVf(color, similarity, blend),
+    '-y',
+    outputPath,
+  ]);
+}
+
+async function runChromakeyVideo(
+  ffmpeg: Ffmpeg,
+  inputPath: string,
+  outputPath: string,
+  color: string,
+  similarity: number,
+  blend: number,
+): Promise<void> {
+  const maxSec = REACTION_AVATAR_REMBG_MAX_SEC;
+  await unlink(outputPath).catch(() => {});
+  await ffmpeg.exec([
+    '-loglevel',
+    'error',
+    '-i',
+    inputPath,
+    '-t',
+    String(maxSec),
+    '-vf',
+    `${colorkeyVf(color, similarity, blend)},format=yuva420p`,
+    '-c:v',
+    'libvpx-vp9',
+    '-pix_fmt',
+    'yuva420p',
+    '-auto-alt-ref',
+    '0',
+    '-an',
+    '-y',
+    outputPath,
+  ]);
+}
+
+async function prepareViaRembg(
   srcPath: string,
-  opts?: {
-    ffmpeg?: Ffmpeg;
-    runner?: CommandRunner;
+  opts: {
+    ffmpeg: Ffmpeg;
+    runner: CommandRunner;
     workDir?: string;
   },
-): Promise<{ path: string; removedBg: boolean; reason?: string }> {
-  const runner = opts?.runner ?? spawnRunner;
-  const ffmpeg = opts?.ffmpeg ?? new Ffmpeg(resolveFfmpegBinaryPath(), runner);
-
-  if (!isVideoPath(srcPath) && !isImagePath(srcPath)) {
-    return { path: srcPath, removedBg: false, reason: 'unsupported-ext' };
-  }
-
-  const cachePath = reactionAvatarNobgCachePath(srcPath);
+): Promise<{ path: string; removedBg: boolean; reason?: string; method: 'rembg' }> {
+  const cachePath = reactionAvatarNobgCachePath(srcPath, 'rembg');
   if (await cacheIsFresh(srcPath, cachePath)) {
-    return { path: cachePath, removedBg: true };
+    return { path: cachePath, removedBg: true, method: 'rembg' };
   }
 
-  if (!(await rembgAvailable(runner))) {
-    return { path: srcPath, removedBg: false, reason: 'rembg-unavailable' };
+  if (!(await rembgAvailable(opts.runner))) {
+    return { path: srcPath, removedBg: false, reason: 'rembg-unavailable', method: 'rembg' };
   }
 
   try {
     if (isImagePath(srcPath)) {
       await unlink(cachePath).catch(() => {});
-      await runRembgImage(srcPath, cachePath, runner);
-      return { path: cachePath, removedBg: true };
+      await runRembgImage(srcPath, cachePath, opts.runner);
+      return { path: cachePath, removedBg: true, method: 'rembg' };
     }
 
     const maxSec = REACTION_AVATAR_REMBG_MAX_SEC;
     const fps = REACTION_AVATAR_REMBG_FPS;
     const maxSide = REACTION_AVATAR_REMBG_MAX_SIDE;
     const workRoot =
-      opts?.workDir ?? join(dirname(srcPath), `.rembg-${basename(srcPath).replace(/\W+/g, '_')}`);
+      opts.workDir ?? join(dirname(srcPath), `.rembg-${basename(srcPath).replace(/\W+/g, '_')}`);
     const framesIn = join(workRoot, 'in');
     const framesOut = join(workRoot, 'out');
     const seqDir = join(workRoot, 'seq');
     await rm(workRoot, { recursive: true, force: true }).catch(() => {});
     await mkdir(framesIn, { recursive: true });
 
-    await ffmpeg.exec([
+    await opts.ffmpeg.exec([
       '-loglevel',
       'error',
       '-i',
@@ -161,7 +238,7 @@ export async function prepareReactionAvatarNobg(
       throw new Error('No frames extracted for rembg');
     }
 
-    await runRembgFolder(framesIn, framesOut, runner);
+    await runRembgFolder(framesIn, framesOut, opts.runner);
     const outFiles = await listPngsRecursive(framesOut);
     if (outFiles.length === 0) {
       throw new Error('rembg produced no output frames');
@@ -175,7 +252,7 @@ export async function prepareReactionAvatarNobg(
     }
 
     await unlink(cachePath).catch(() => {});
-    await ffmpeg.exec([
+    await opts.ffmpeg.exec([
       '-loglevel',
       'error',
       '-framerate',
@@ -200,12 +277,113 @@ export async function prepareReactionAvatarNobg(
       'utf8',
     ).catch(() => {});
 
-    return { path: cachePath, removedBg: true };
+    return { path: cachePath, removedBg: true, method: 'rembg' };
   } catch (err) {
     return {
       path: srcPath,
       removedBg: false,
       reason: err instanceof Error ? err.message : String(err),
+      method: 'rembg',
     };
   }
+}
+
+async function prepareViaChromakey(
+  srcPath: string,
+  opts: {
+    ffmpeg: Ffmpeg;
+    color: string;
+    similarity: number;
+    blend: number;
+  },
+): Promise<{ path: string; removedBg: boolean; reason?: string; method: 'chromakey' }> {
+  const cachePath = reactionAvatarNobgCachePath(srcPath, 'chromakey');
+  if (await cacheIsFresh(srcPath, cachePath)) {
+    return { path: cachePath, removedBg: true, method: 'chromakey' };
+  }
+
+  try {
+    if (isImagePath(srcPath)) {
+      await runChromakeyImage(
+        opts.ffmpeg,
+        srcPath,
+        cachePath,
+        opts.color,
+        opts.similarity,
+        opts.blend,
+      );
+    } else {
+      await runChromakeyVideo(
+        opts.ffmpeg,
+        srcPath,
+        cachePath,
+        opts.color,
+        opts.similarity,
+        opts.blend,
+      );
+    }
+    await writeFile(
+      `${cachePath}.meta.txt`,
+      `chromakey color=${opts.color} similarity=${opts.similarity} blend=${opts.blend}\n`,
+      'utf8',
+    ).catch(() => {});
+    return { path: cachePath, removedBg: true, method: 'chromakey' };
+  } catch (err) {
+    return {
+      path: srcPath,
+      removedBg: false,
+      reason: err instanceof Error ? err.message : String(err),
+      method: 'chromakey',
+    };
+  }
+}
+
+/**
+ * Ensure a background-removed asset exists for PiP overlay.
+ * Returns path to use (nobg cache or original).
+ */
+export async function prepareReactionAvatarNobg(
+  srcPath: string,
+  opts?: ReactionRemoveBgOptions,
+): Promise<{ path: string; removedBg: boolean; reason?: string; method?: string }> {
+  const runner = opts?.runner ?? spawnRunner;
+  const ffmpeg = opts?.ffmpeg ?? new Ffmpeg(resolveFfmpegBinaryPath(), runner);
+  const mode: ReactionRemoveBgMode = opts?.mode ?? 'auto';
+  const color = ffmpegKeyColor(opts?.chromakeyColor);
+  const similarity = opts?.chromakeySimilarity ?? 0.3;
+  const blend = opts?.chromakeyBlend ?? 0.1;
+
+  if (!isVideoPath(srcPath) && !isImagePath(srcPath)) {
+    return { path: srcPath, removedBg: false, reason: 'unsupported-ext' };
+  }
+
+  if (mode === 'off') {
+    return { path: srcPath, removedBg: false, reason: 'remove-bg-off' };
+  }
+
+  if (mode === 'chromakey') {
+    return prepareViaChromakey(srcPath, { ffmpeg, color, similarity, blend });
+  }
+
+  if (mode === 'rembg') {
+    return prepareViaRembg(srcPath, { ffmpeg, runner, workDir: opts?.workDir });
+  }
+
+  // auto: rembg first, then chromakey
+  const rembg = await prepareViaRembg(srcPath, { ffmpeg, runner, workDir: opts?.workDir });
+  if (rembg.removedBg) return rembg;
+
+  const ck = await prepareViaChromakey(srcPath, { ffmpeg, color, similarity, blend });
+  if (ck.removedBg) {
+    return {
+      ...ck,
+      reason: rembg.reason ? `rembg→chromakey (${rembg.reason})` : 'rembg→chromakey',
+    };
+  }
+
+  return {
+    path: srcPath,
+    removedBg: false,
+    reason: [rembg.reason, ck.reason].filter(Boolean).join('; ') || 'remove-bg-failed',
+  };
 }

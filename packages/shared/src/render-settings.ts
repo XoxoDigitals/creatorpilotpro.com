@@ -25,6 +25,7 @@ export {
   OVERLAY_OFF_ID,
   CAPTION_MAX_WORDS,
   CAPTION_PREVIEW_SAMPLE,
+  captionPreviewFromNarration,
   CAPTION_COLOR_MODES,
   CAPTION_COLOR_MODE_LABELS,
   normalizeCaptionTemplateId,
@@ -163,7 +164,7 @@ export const renderSettingsSchema = z.object({
    * Corner reaction / talking-head PiP. Upload a silent face image/clip and/or
    * a lip-sync (talking-head) video; ffmpeg overlays it (no ML lip-sync).
    * Prefer lipSyncAssetPath when present, else assetPath.
-   * Worker removes background via rembg before overlay when available.
+   * Background removal: rembg (ML) and/or ffmpeg chromakey (green screen).
    */
   reactionAvatar: z
     .object({
@@ -181,6 +182,24 @@ export const renderSettingsSchema = z.object({
       /** Width as % of video width (12–40). */
       sizePercent: z.number().int().min(12).max(40).default(22),
       showDuring: z.enum(['dialogue', 'always']).default('dialogue'),
+      /**
+       * `auto` = rembg if installed, else chromakey; `rembg` / `chromakey` force one path;
+       * `off` = overlay original (no remove-bg).
+       */
+      removeBg: z.enum(['auto', 'rembg', 'chromakey', 'off']).default('auto'),
+      /** Hex key color for ffmpeg chromakey/colorkey (default chroma green). */
+      chromakeyColor: z
+        .string()
+        .optional()
+        .transform((v) => {
+          const raw = (v ?? '').trim();
+          const m = raw.match(/^#?([0-9A-Fa-f]{6})$/);
+          return m ? `#${m[1]!.toUpperCase()}` : '#00B140';
+        }),
+      /** 0–1 similarity for colorkey (higher = more aggressive). */
+      chromakeySimilarity: z.number().min(0.01).max(1).default(0.3),
+      /** 0–1 edge blend for colorkey. */
+      chromakeyBlend: z.number().min(0).max(1).default(0.1),
     })
     .default({
       enabled: false,
@@ -188,6 +207,10 @@ export const renderSettingsSchema = z.object({
       corner: 'br',
       sizePercent: 22,
       showDuring: 'dialogue',
+      removeBg: 'auto',
+      chromakeyColor: '#00B140',
+      chromakeySimilarity: 0.3,
+      chromakeyBlend: 0.1,
     }),
 });
 
@@ -205,6 +228,10 @@ export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
     corner: 'br',
     sizePercent: 22,
     showDuring: 'dialogue',
+    removeBg: 'auto',
+    chromakeyColor: '#00B140',
+    chromakeySimilarity: 0.3,
+    chromakeyBlend: 0.1,
   },
 };
 

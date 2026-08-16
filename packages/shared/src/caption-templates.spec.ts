@@ -14,6 +14,7 @@ import {
   overlayAssFromYPercent,
   CAPTION_MAX_WORDS,
   CAPTION_PREVIEW_SAMPLE,
+  captionPreviewFromNarration,
 } from './caption-templates.js';
 
 describe('impact caption formatting', () => {
@@ -78,7 +79,19 @@ describe('impact caption formatting', () => {
     const wrapped = wrapWordsToLines(long.toUpperCase().split(/\s+/), 2);
     expect(wrapped.length).toBeLessThanOrEqual(2);
     expect(wrapped.flat().length).toBeLessThanOrEqual(CAPTION_MAX_WORDS);
-    expect(CAPTION_PREVIEW_SAMPLE.split(/\s+/).length).toBeLessThanOrEqual(CAPTION_MAX_WORDS);
+    expect(
+      CAPTION_PREVIEW_SAMPLE.split(/\s+/).filter(Boolean).length,
+    ).toBeLessThanOrEqual(CAPTION_MAX_WORDS);
+  });
+
+  it('builds CSS preview sample from narration (not a fake phrase)', () => {
+    const sample = captionPreviewFromNarration(
+      'Inside the ultimate DIY tiny house you can build this weekend with scrap wood',
+    );
+    expect(sample.toLowerCase()).toContain('inside');
+    expect(sample.toLowerCase()).not.toContain('wait for it');
+    expect(sample.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(CAPTION_MAX_WORDS);
+    expect(captionPreviewFromNarration('')).toBe('');
   });
 
   it('maps Y% to safe ASS MarginV', () => {

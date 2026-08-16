@@ -543,6 +543,10 @@ export default function AccountSettingsPage() {
               corner: renderSettings.reactionAvatar?.corner ?? 'br',
               sizePercent: renderSettings.reactionAvatar?.sizePercent ?? 22,
               showDuring: renderSettings.reactionAvatar?.showDuring ?? 'dialogue',
+              removeBg: renderSettings.reactionAvatar?.removeBg ?? 'auto',
+              chromakeyColor: renderSettings.reactionAvatar?.chromakeyColor ?? '#00B140',
+              chromakeySimilarity: renderSettings.reactionAvatar?.chromakeySimilarity ?? 0.3,
+              chromakeyBlend: renderSettings.reactionAvatar?.chromakeyBlend ?? 0.1,
               ...(renderSettings.reactionAvatar?.assetPath
                 ? { assetPath: renderSettings.reactionAvatar.assetPath }
                 : {}),
@@ -1285,8 +1289,8 @@ export default function AccountSettingsPage() {
             <p className="text-[11px] text-zinc-500">
               Upload a silent face photo/clip and an optional lip-sync talking-head video (MP4 / WebM
               / MOV). ffmpeg overlays the lip-sync clip when present (else the silent asset) in the
-              corner during dialogue — not ML lip-sync, just PiP. Background is removed with rembg
-              on render (cached beside the upload).
+              corner during dialogue — not ML lip-sync, just PiP. Background removal uses rembg
+              when installed, or ffmpeg chromakey for green-screen clips (no Python required).
             </p>
             {renderSettings.reactionAvatar?.enabled && (
               <div className="space-y-3">
@@ -1446,15 +1450,80 @@ export default function AccountSettingsPage() {
                     )}
                     <p className="text-[10px] text-zinc-500">
                       Preferred during dialogue when set. Falls back to the silent asset. Keep clips
-                      short (rembg processes up to ~8s @ 12fps on the worker).
+                      short (remove-bg processes up to ~8s on the worker).
                     </p>
                   </div>
                 </div>
                 <p className="text-[10px] text-zinc-500">
-                  Background removed on render (requires <code className="text-[10px]">rembg</code>{' '}
-                  on the worker host). Preview shows the original upload.
+                  rembg = ML cutout (optional Python). Chromakey = ffmpeg green-screen keying —
+                  works without rembg when you film on a green backdrop. Preview shows the original
+                  upload; remove-bg runs on render.
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Background removal">
+                    <Select
+                      value={renderSettings.reactionAvatar.removeBg ?? 'auto'}
+                      onChange={(e) =>
+                        setRenderSettings((s) => ({
+                          ...s,
+                          reactionAvatar: {
+                            ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                            removeBg: e.target.value as 'auto' | 'rembg' | 'chromakey' | 'off',
+                          },
+                        }))
+                      }
+                    >
+                      <option value="auto">Auto (rembg → chromakey)</option>
+                      <option value="rembg">rembg only</option>
+                      <option value="chromakey">Chromakey (green screen)</option>
+                      <option value="off">Off (keep original bg)</option>
+                    </Select>
+                  </Field>
+                  <Field label="Chromakey color">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        className="h-9 w-12 cursor-pointer rounded border border-zinc-200 bg-white p-1"
+                        value={
+                          /^#[0-9A-Fa-f]{6}$/.test(
+                            renderSettings.reactionAvatar.chromakeyColor ?? '',
+                          )
+                            ? (renderSettings.reactionAvatar.chromakeyColor as string)
+                            : '#00B140'
+                        }
+                        onChange={(e) =>
+                          setRenderSettings((s) => ({
+                            ...s,
+                            reactionAvatar: {
+                              ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                              chromakeyColor: e.target.value.toUpperCase(),
+                            },
+                          }))
+                        }
+                        disabled={
+                          (renderSettings.reactionAvatar.removeBg ?? 'auto') === 'off' ||
+                          (renderSettings.reactionAvatar.removeBg ?? 'auto') === 'rembg'
+                        }
+                      />
+                      <Input
+                        className="font-mono text-xs"
+                        value={renderSettings.reactionAvatar.chromakeyColor ?? '#00B140'}
+                        onChange={(e) =>
+                          setRenderSettings((s) => ({
+                            ...s,
+                            reactionAvatar: {
+                              ...(s.reactionAvatar ?? DEFAULT_RENDER_SETTINGS.reactionAvatar),
+                              chromakeyColor: e.target.value.trim() || '#00B140',
+                            },
+                          }))
+                        }
+                        disabled={
+                          (renderSettings.reactionAvatar.removeBg ?? 'auto') === 'off' ||
+                          (renderSettings.reactionAvatar.removeBg ?? 'auto') === 'rembg'
+                        }
+                      />
+                    </div>
+                  </Field>
                   <Field label="Shape">
                     <Select
                       value={renderSettings.reactionAvatar.shape ?? 'circle'}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dialogueOverlayEnableExpr, reactionAvatarOverlayXy } from './ffmpeg.js';
-import { reactionAvatarNobgCachePath } from './rembg-avatar.js';
+import { ffmpegKeyColor, reactionAvatarNobgCachePath } from './rembg-avatar.js';
 
 describe('dialogueOverlayEnableExpr', () => {
   it('builds OR of between() windows', () => {
@@ -32,5 +32,20 @@ describe('reactionAvatarNobgCachePath', () => {
     expect(reactionAvatarNobgCachePath('/a/reaction-avatar-lipsync.mp4')).toBe(
       '/a/reaction-avatar-lipsync.nobg.webm',
     );
+  });
+
+  it('uses distinct chromakey cache suffixes', () => {
+    expect(reactionAvatarNobgCachePath('/a/reaction-avatar.jpg', 'chromakey')).toBe(
+      '/a/reaction-avatar.nobg-ck.png',
+    );
+    expect(reactionAvatarNobgCachePath('/a/clip.mp4', 'chromakey')).toBe('/a/clip.nobg-ck.webm');
+  });
+});
+
+describe('ffmpegKeyColor', () => {
+  it('normalizes hex to 0xRRGGBB', () => {
+    expect(ffmpegKeyColor('#00B140')).toBe('0x00B140');
+    expect(ffmpegKeyColor('00FF00')).toBe('0x00FF00');
+    expect(ffmpegKeyColor('bad')).toBe('0x00B140');
   });
 });

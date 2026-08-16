@@ -714,10 +714,16 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           avatar.showDuring === 'dialogue'
             ? dialogueOverlayEnableExpr(dialogueRanges)
             : null;
-        const nobg = await prepareReactionAvatarNobg(avatarAbs, { ffmpeg });
+        const nobg = await prepareReactionAvatarNobg(avatarAbs, {
+          ffmpeg,
+          mode: avatar.removeBg ?? 'auto',
+          chromakeyColor: avatar.chromakeyColor,
+          chromakeySimilarity: avatar.chromakeySimilarity,
+          chromakeyBlend: avatar.chromakeyBlend,
+        });
         if (!nobg.removedBg && nobg.reason) {
           console.warn(
-            `[worker:render] reaction avatar rembg skipped for ${contentItemId}: ${nobg.reason}`,
+            `[worker:render] reaction avatar remove-bg skipped for ${contentItemId}: ${nobg.reason}`,
           );
         }
         const overlayAbs = nobg.path;
@@ -737,7 +743,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           `[worker:render] reaction avatar applied for ${contentItemId}` +
             ` [${avatar.lipSyncAssetPath?.trim() ? 'lip-sync' : 'silent'}/${avatar.shape}/${avatar.corner}/${sizePx}px` +
             (enableExpr ? ', dialogue-only' : ', always') +
-            (nobg.removedBg ? ', rembg' : '') +
+            (nobg.removedBg ? `, nobg=${nobg.method ?? 'yes'}` : '') +
             ']',
         );
       } catch (err) {

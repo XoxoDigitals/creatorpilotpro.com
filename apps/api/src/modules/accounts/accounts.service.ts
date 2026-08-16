@@ -286,6 +286,15 @@ export class AccountsService {
             corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
             sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
             showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+            removeBg: typeof prevAvatar.removeBg === 'string' ? prevAvatar.removeBg : 'auto',
+            chromakeyColor:
+              typeof prevAvatar.chromakeyColor === 'string' ? prevAvatar.chromakeyColor : '#00B140',
+            chromakeySimilarity:
+              typeof prevAvatar.chromakeySimilarity === 'number'
+                ? prevAvatar.chromakeySimilarity
+                : 0.3,
+            chromakeyBlend:
+              typeof prevAvatar.chromakeyBlend === 'number' ? prevAvatar.chromakeyBlend : 0.1,
           }
         : {
             ...prevAvatar,
@@ -297,6 +306,15 @@ export class AccountsService {
             corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
             sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
             showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+            removeBg: typeof prevAvatar.removeBg === 'string' ? prevAvatar.removeBg : 'auto',
+            chromakeyColor:
+              typeof prevAvatar.chromakeyColor === 'string' ? prevAvatar.chromakeyColor : '#00B140',
+            chromakeySimilarity:
+              typeof prevAvatar.chromakeySimilarity === 'number'
+                ? prevAvatar.chromakeySimilarity
+                : 0.3,
+            chromakeyBlend:
+              typeof prevAvatar.chromakeyBlend === 'number' ? prevAvatar.chromakeyBlend : 0.1,
           };
     voice.renderSettings = render;
     await this.prisma.client.channelProfile.update({
@@ -337,11 +355,15 @@ export class AccountsService {
       if (!root || typeof assetPath !== 'string' || !assetPath) return;
       const abs = join(root, assetPath.replace(/^[/\\]+/, ''));
       await unlink(abs).catch(() => {});
-      // Cached rembg outputs written beside the upload (*.nobg.png / *.nobg.webm).
-      const nobgPng = abs.replace(/\.[^.]+$/i, '.nobg.png');
-      const nobgWebm = abs.replace(/\.[^.]+$/i, '.nobg.webm');
-      if (nobgPng !== abs) await unlink(nobgPng).catch(() => {});
-      if (nobgWebm !== abs) await unlink(nobgWebm).catch(() => {});
+      // Cached rembg / chromakey outputs written beside the upload.
+      const suffixes = ['.nobg.png', '.nobg.webm', '.nobg-ck.png', '.nobg-ck.webm'];
+      for (const suf of suffixes) {
+        const cached = abs.replace(/\.[^.]+$/i, suf);
+        if (cached !== abs) {
+          await unlink(cached).catch(() => {});
+          await unlink(`${cached}.meta.txt`).catch(() => {});
+        }
+      }
     };
     if (kind === 'silent' || kind === 'all') {
       await clearPath(prevAvatar.assetPath);
@@ -364,6 +386,13 @@ export class AccountsService {
       corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
       sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
       showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+      removeBg: typeof prevAvatar.removeBg === 'string' ? prevAvatar.removeBg : 'auto',
+      chromakeyColor:
+        typeof prevAvatar.chromakeyColor === 'string' ? prevAvatar.chromakeyColor : '#00B140',
+      chromakeySimilarity:
+        typeof prevAvatar.chromakeySimilarity === 'number' ? prevAvatar.chromakeySimilarity : 0.3,
+      chromakeyBlend:
+        typeof prevAvatar.chromakeyBlend === 'number' ? prevAvatar.chromakeyBlend : 0.1,
       ...(typeof prevAvatar.assetPath === 'string' ? { assetPath: prevAvatar.assetPath } : {}),
       ...(typeof prevAvatar.fileName === 'string' ? { fileName: prevAvatar.fileName } : {}),
       ...(typeof prevAvatar.mimeType === 'string' ? { mimeType: prevAvatar.mimeType } : {}),

@@ -216,6 +216,11 @@ describe('parseRenderSettings', () => {
         burnCaptions: { enabled: true, preset: 'karaoke' },
         hookText: { enabled: true, source: 'custom', customText: 'WAIT FOR IT', maxWords: 3 },
         colorFilter: { enabled: true, preset: 'cool' },
+        reactionAvatar: {
+          enabled: true,
+          removeBg: 'chromakey',
+          chromakeyColor: '#00FF00',
+        },
       },
     });
     expect(s.trimStartMs).toBe(750);
@@ -224,5 +229,13 @@ describe('parseRenderSettings', () => {
     expect(s.hookText.enabled).toBe(true);
     expect(s.hookText.customText).toBe('WAIT FOR IT');
     expect(s.colorFilter.preset).toBe('cool');
+    expect(s.reactionAvatar.removeBg).toBe('chromakey');
+    expect(s.reactionAvatar.chromakeyColor).toBe('#00FF00');
+  });
+
+  it('defaults reactionAvatar removeBg to auto', () => {
+    const s = parseRenderSettings({});
+    expect(s.reactionAvatar.removeBg).toBe('auto');
+    expect(s.reactionAvatar.chromakeyColor).toBe('#00B140');
   });
 });
