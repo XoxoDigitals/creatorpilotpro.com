@@ -52,7 +52,11 @@ import {
 } from './media/ffmpeg.js';
 import { loadSrtCues, writeOverlayAssFile } from './media/overlay-ass.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
-import { prepareReactionAvatarNobg } from './media/rembg-avatar.js';
+import { prepareReactionAvatarNobg, REACTION_AVATAR_REMBG_MAX_SEC } from './media/rembg-avatar.js';
+import {
+  reactionAvatarSourceTrimSec,
+  resolveReactionAvatarSpeakingRanges,
+} from './media/reaction-avatar-timing.js';
 import type { AiJob } from './ai-jobs.js';
 import { getPrisma, raiseIncident } from './publish-support.js';
 import { archiveAssetToDriveIfConfigured } from './gdrive-archive.js';
@@ -697,6 +701,8 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
 
     // Step 3c: Reaction avatar PiP (corner face) — after trim/captions so it sits on top.
     // Prefer lip-sync talking-head clip when uploaded; else silent image/clip.
+    // showDuring=dialogue (default): PiP only while speaking; reaction source trimmed to
+    // sum(speaking) so unused clip tail is not burned. Fallbacks: SRT cues → VO → lead-in.
     const avatar = effectiveSettings.reactionAvatar;
     const preferredRel =
       avatar.enabled && avatar.lipSyncAssetPath?.trim()
@@ -710,16 +716,46 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         await access(avatarAbs);
         const width = (await ffmpeg.probeVideoWidth(finalPath)) ?? 1080;
         const sizePx = Math.round((width * (avatar.sizePercent ?? 22)) / 100);
+        const showDuring = avatar.showDuring ?? 'dialogue';
+
+        let subtitleCuesForAvatar: { startMs: number; endMs: number }[] = [];
+        if (showDuring === 'dialogue' && subtitlePath) {
+          try {
+            subtitleCuesForAvatar = await loadSrtCues(subtitlePath);
+          } catch {
+            subtitleCuesForAvatar = [];
+          }
+        }
+        const finalPictureSec = (await ffmpeg.probeDurationSec(finalPath)) ?? pictureSec;
+        const speaking = resolveReactionAvatarSpeakingRanges({
+          showDuring,
+          dialogueRanges,
+          subtitleCues: subtitleCuesForAvatar,
+          voEndSec,
+          pictureSec: finalPictureSec,
+        });
         const enableExpr =
-          avatar.showDuring === 'dialogue'
-            ? dialogueOverlayEnableExpr(dialogueRanges)
-            : null;
+          showDuring === 'dialogue' ? dialogueOverlayEnableExpr(speaking.ranges) : null;
+
+        const clipDur = await ffmpeg.probeDurationSec(avatarAbs);
+        const trimSec = reactionAvatarSourceTrimSec({
+          speakingRanges: speaking.ranges,
+          clipDurationSec: clipDur,
+          maxSec:
+            showDuring === 'always'
+              ? finalPictureSec ?? REACTION_AVATAR_REMBG_MAX_SEC
+              : undefined,
+        });
+        const nobgMaxSec = Math.min(REACTION_AVATAR_REMBG_MAX_SEC, trimSec);
+
         const nobg = await prepareReactionAvatarNobg(avatarAbs, {
           ffmpeg,
           mode: avatar.removeBg ?? 'auto',
           chromakeyColor: avatar.chromakeyColor,
           chromakeySimilarity: avatar.chromakeySimilarity,
           chromakeyBlend: avatar.chromakeyBlend,
+          maxSec: nobgMaxSec,
+          workDir: renderDir,
         });
         if (!nobg.removedBg && nobg.reason) {
           console.warn(
@@ -736,13 +772,17 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           sizePx,
           enableExpr,
           isVideo,
+          trimSec: isVideo ? trimSec : null,
+          workDir: renderDir,
         });
         await unlink(finalPath).catch(() => {});
         await rename(pipOut, finalPath);
         console.log(
           `[worker:render] reaction avatar applied for ${contentItemId}` +
             ` [${avatar.lipSyncAssetPath?.trim() ? 'lip-sync' : 'silent'}/${avatar.shape}/${avatar.corner}/${sizePx}px` +
-            (enableExpr ? ', dialogue-only' : ', always') +
+            (enableExpr
+              ? `, dialogue-only(${speaking.source}, ${speaking.ranges.length} win, trim=${trimSec}s)`
+              : `, always(trim=${trimSec}s)`) +
             (nobg.removedBg ? `, nobg=${nobg.method ?? 'yes'}` : '') +
             ']',
         );

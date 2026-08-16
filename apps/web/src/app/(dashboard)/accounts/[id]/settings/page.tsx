@@ -7,6 +7,7 @@ import {
   defaultVoiceForLanguage,
   contentLanguageSelectOptions,
   contentLanguageOptionLabel,
+  edgeVoiceTone,
   DEFAULT_BACKGROUND_BED_PERCENT,
   clampBackgroundBedPercent,
   DEFAULT_TRIM_START_MS,
@@ -32,6 +33,7 @@ import {
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Field, Input, Select, Textarea, Toggle } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
@@ -138,7 +140,7 @@ export default function AccountSettingsPage() {
   const [voices, setVoices] = useState<EdgeVoice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [ttsStatus, setTtsStatus] = useState<string | null>(null);
-  const [previewing, setPreviewing] = useState(false);
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
   const [titleTemplate, setTitleTemplate] = useState('{{hook}} — {{topic}}');
   const [descriptionTemplate, setDescriptionTemplate] = useState(
     '{{description}} — {{default-content}}',
@@ -449,26 +451,25 @@ export default function AccountSettingsPage() {
     }
   }
 
-  async function previewVoice() {
+  async function previewVoice(voiceId: string) {
     if (ttsProvider !== 'edge') {
       toast('Preview is available for Edge Neural voices', 'info');
       return;
     }
-    setPreviewing(true);
+    setPreviewingVoiceId(voiceId);
     try {
       const res = await api.post<{ mimeType: string; audioBase64: string }>('/ai/tts/preview', {
-        voiceId: voice,
+        voiceId,
         rate: voiceRate,
         pitch: voicePitch,
         volume: voiceVolume,
       });
       const audio = new Audio(`data:${res.mimeType};base64,${res.audioBase64}`);
       await audio.play();
-      toast('Playing voice preview', 'success');
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Preview failed', 'error');
     } finally {
-      setPreviewing(false);
+      setPreviewingVoiceId(null);
     }
   }
 
@@ -995,23 +996,101 @@ export default function AccountSettingsPage() {
           </div>
           {ttsProvider === 'edge' && (
             <>
-              <Field label="Voice">
-                <Select
-                  value={voice}
-                  onChange={(e) => setVoice(e.target.value)}
-                  disabled={voicesLoading}
+              <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-zinc-700">Voice</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void loadVoices()}
+                    disabled={voicesLoading}
+                  >
+                    {voicesLoading ? 'Refreshing…' : 'Refresh voices'}
+                  </Button>
+                </div>
+                <p className="mb-2 text-[11px] text-zinc-500">
+                  Click a row to select. Play previews that voice with current rate / pitch / volume.
+                </p>
+                <div
+                  role="listbox"
+                  aria-label="Edge Neural voices"
+                  aria-busy={voicesLoading}
+                  className="max-h-64 overflow-y-auto rounded-md border border-zinc-200 bg-white"
                 >
-                  {filteredVoices.length === 0 ? (
-                    <option value={voice}>{voice}</option>
+                  {voicesLoading && filteredVoices.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-xs text-zinc-500">Loading voices…</p>
+                  ) : filteredVoices.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-xs text-zinc-500">
+                      No voices for {voiceLocale || 'this locale'}. Try Refresh voices.
+                    </p>
                   ) : (
-                    filteredVoices.map((v) => (
-                      <option key={v.shortName} value={v.shortName}>
-                        {v.label}
-                      </option>
-                    ))
+                    filteredVoices.map((v) => {
+                      const selected = voice === v.shortName;
+                      const isPreviewing = previewingVoiceId === v.shortName;
+                      const tone = edgeVoiceTone(v.shortName);
+                      const meta = [v.gender, v.locale].filter(Boolean).join(' · ') || v.shortName;
+                      return (
+                        <div
+                          key={v.shortName}
+                          role="option"
+                          aria-selected={selected}
+                          tabIndex={0}
+                          onClick={() => setVoice(v.shortName)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setVoice(v.shortName);
+                            }
+                          }}
+                          className={cn(
+                            'flex cursor-pointer items-center gap-2 border-b border-zinc-100 px-3 py-2 last:border-b-0',
+                            'hover:bg-zinc-50 focus:outline-none focus-visible:bg-indigo-50/60',
+                            selected && 'bg-indigo-50 hover:bg-indigo-50',
+                          )}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className={cn(
+                                'truncate text-sm text-zinc-800',
+                                selected && 'font-medium text-indigo-800',
+                              )}
+                            >
+                              {v.name || v.label}
+                            </p>
+                            <p className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+                              <span className="truncate">{meta}</span>
+                              {tone && (
+                                <Badge tone="neutral" className="px-1.5 py-0 text-[10px] font-medium">
+                                  {tone}
+                                </Badge>
+                              )}
+                            </p>
+                          </div>
+                          {selected && (
+                            <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-indigo-600">
+                              Selected
+                            </span>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={selected ? 'primary' : 'secondary'}
+                            className="shrink-0"
+                            disabled={previewingVoiceId !== null}
+                            aria-label={`Preview ${v.name || v.shortName}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void previewVoice(v.shortName);
+                            }}
+                          >
+                            {isPreviewing ? 'Playing…' : 'Play'}
+                          </Button>
+                        </div>
+                      );
+                    })
                   )}
-                </Select>
-              </Field>
+                </div>
+              </div>
               <div className="grid gap-4 sm:grid-cols-3">
                 <Field label="Rate">
                   <Input value={voiceRate} onChange={(e) => setVoiceRate(e.target.value)} placeholder="+0%" />
@@ -1022,14 +1101,6 @@ export default function AccountSettingsPage() {
                 <Field label="Volume">
                   <Input value={voiceVolume} onChange={(e) => setVoiceVolume(e.target.value)} placeholder="+0%" />
                 </Field>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" onClick={() => void previewVoice()} disabled={previewing}>
-                  {previewing ? 'Generating…' : 'Preview voice'}
-                </Button>
-                <Button type="button" onClick={() => void loadVoices()}>
-                  Refresh voices
-                </Button>
               </div>
             </>
           )}
@@ -1289,8 +1360,10 @@ export default function AccountSettingsPage() {
             <p className="text-[11px] text-zinc-500">
               Upload a silent face photo/clip and an optional lip-sync talking-head video (MP4 / WebM
               / MOV). ffmpeg overlays the lip-sync clip when present (else the silent asset) in the
-              corner during dialogue — not ML lip-sync, just PiP. Background removal uses rembg
-              when installed, or ffmpeg chromakey for green-screen clips (no Python required).
+              corner during speaking windows — not ML lip-sync, just PiP. Only plays during speaking;
+              unused clip tail is cut. If dialogue timing is missing, falls back to VO/subtitle cues,
+              else a short lead-in (~5s). Background removal uses rembg when installed, or ffmpeg
+              chromakey for green-screen clips (no Python required).
             </p>
             {renderSettings.reactionAvatar?.enabled && (
               <div className="space-y-3">
@@ -1594,10 +1667,15 @@ export default function AccountSettingsPage() {
                         }))
                       }
                     >
-                      <option value="dialogue">During dialogue only</option>
+                      <option value="dialogue">During speaking only</option>
                       <option value="always">Entire video</option>
                     </Select>
                   </Field>
+                  <p className="text-[11px] text-zinc-500">
+                    During speaking only (default): PiP shows on dialogue/VO windows; reaction media
+                    is trimmed to that total — unused clip tail is cut. Entire video still trims the
+                    reaction source to the main video length.
+                  </p>
                 </div>
               </div>
             )}

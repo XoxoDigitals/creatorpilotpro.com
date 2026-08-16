@@ -1262,8 +1262,9 @@ function NarrationScriptPanel({
         <p className="text-[11px] font-medium text-zinc-600">Reaction avatar</p>
         <p className="text-[10px] text-zinc-500">
           Upload a silent face image/clip and optional lip-sync talking-head video under Account →
-          Settings → Render effects. ffmpeg PiP prefers the lip-sync clip during dialogue (not ML
-          lip-sync). Background removal: rembg if installed, else ffmpeg chromakey (green screen).
+          Settings → Render effects. ffmpeg PiP prefers the lip-sync clip during speaking windows
+          (not ML lip-sync); unused reaction-clip tail is cut. Background removal: rembg if
+          installed, else ffmpeg chromakey (green screen).
         </p>
       </div>
 

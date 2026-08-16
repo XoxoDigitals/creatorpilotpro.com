@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile } from 'node:fs/promises';
-import { delimiter } from 'node:path';
+import { copyFile, unlink } from 'node:fs/promises';
+import { basename, delimiter, dirname, extname, join } from 'node:path';
 import { isResolvedBinaryPath, resolveFfmpegBinary } from '@scp/shared/bin';
 
 /**
@@ -842,8 +842,70 @@ export class Ffmpeg {
   }
 
   /**
+   * Hard-trim a reaction video to the first `durationSec` (drops unused tail).
+   * Re-encodes so WebM-with-alpha and odd containers stay overlay-safe.
+   */
+  async trimReactionAvatarSource(
+    srcPath: string,
+    destPath: string,
+    durationSec: number,
+  ): Promise<void> {
+    await this.ensureAvailable();
+    const t = Math.max(0.1, durationSec);
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-t',
+      String(Number(t.toFixed(3))),
+      '-an',
+      '-c:v',
+      'libvpx-vp9',
+      '-pix_fmt',
+      'yuva420p',
+      '-auto-alt-ref',
+      '0',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      // Fallback without alpha-preserving codec (e.g. plain mp4 source).
+      const fallback = [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        srcPath,
+        '-t',
+        String(Number(t.toFixed(3))),
+        '-an',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-y',
+        destPath,
+      ];
+      const res2 = await this.runner(this.binary, fallback);
+      if (res2.code !== 0) {
+        throw new Error(
+          ffmpegFailureMessage(
+            `ffmpeg reaction avatar trim failed for ${srcPath}`,
+            res2.code,
+            res2.stderr || res.stderr,
+          ),
+        );
+      }
+    }
+  }
+
+  /**
    * Overlay a reaction face (image or short video) in a corner. Optional
-   * `enableExpr` limits visibility to dialogue windows (ffmpeg enable=).
+   * `enableExpr` limits visibility to dialogue/speaking windows (ffmpeg enable=).
+   * `trimSec` cuts unused reaction-clip tail before looping (dialogue-only / VO).
    * `sizePx` is the box width/height in pixels (computed from main video width).
    */
   async applyReactionAvatarOverlay(
@@ -857,6 +919,13 @@ export class Ffmpeg {
       enableExpr?: string | null;
       /** Loop short video avatars for the full main duration. */
       isVideo?: boolean;
+      /**
+       * Seconds of reaction source to keep (speaking total, capped by clip).
+       * Longer tails are cut; shorter clips still loop via -stream_loop.
+       */
+      trimSec?: number | null;
+      /** Directory for a trimmed temp clip (defaults beside avatar). */
+      workDir?: string;
     },
   ): Promise<void> {
     await this.ensureAvailable();
@@ -865,6 +934,27 @@ export class Ffmpeg {
     const enable = opts.enableExpr?.trim()
       ? `:enable='${opts.enableExpr.trim()}'`
       : '';
+
+    let avatarInput = avatarPath;
+    let trimmedTemp: string | null = null;
+    const trimSec =
+      opts.isVideo && opts.trimSec != null && Number.isFinite(opts.trimSec) && opts.trimSec > 0
+        ? opts.trimSec
+        : null;
+    if (trimSec != null) {
+      const clipDur = await this.probeDurationSec(avatarPath);
+      // Only write a trim temp when the source is longer than needed.
+      if (clipDur == null || clipDur > trimSec + 0.15) {
+        const dir = opts.workDir ?? dirname(avatarPath);
+        trimmedTemp = join(
+          dir,
+          `${basename(avatarPath, extname(avatarPath))}.pip-trim-${Math.ceil(trimSec * 1000)}.webm`,
+        );
+        await unlink(trimmedTemp).catch(() => {});
+        await this.trimReactionAvatarSource(avatarPath, trimmedTemp, trimSec);
+        avatarInput = trimmedTemp;
+      }
+    }
 
     // Preserve source alpha (rembg / WebM-with-alpha) inside the shape mask —
     // do not force opaque 255 inside the circle/rounded region.
@@ -904,7 +994,7 @@ export class Ffmpeg {
       srcPath,
       ...(opts.isVideo ? ['-stream_loop', '-1'] : ['-loop', '1']),
       '-i',
-      avatarPath,
+      avatarInput,
       '-filter_complex',
       filterComplex,
       '-map',
@@ -924,15 +1014,19 @@ export class Ffmpeg {
       '-y',
       destPath,
     ];
-    const res = await this.runner(this.binary, args);
-    if (res.code !== 0) {
-      throw new Error(
-        ffmpegFailureMessage(
-          `ffmpeg reaction avatar overlay failed for ${srcPath}`,
-          res.code,
-          res.stderr,
-        ),
-      );
+    try {
+      const res = await this.runner(this.binary, args);
+      if (res.code !== 0) {
+        throw new Error(
+          ffmpegFailureMessage(
+            `ffmpeg reaction avatar overlay failed for ${srcPath}`,
+            res.code,
+            res.stderr,
+          ),
+        );
+      }
+    } finally {
+      if (trimmedTemp) await unlink(trimmedTemp).catch(() => {});
     }
   }
 }

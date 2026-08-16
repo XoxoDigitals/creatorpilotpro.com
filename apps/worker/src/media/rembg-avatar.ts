@@ -32,6 +32,8 @@ export type ReactionRemoveBgOptions = {
   chromakeyColor?: string;
   chromakeySimilarity?: number;
   chromakeyBlend?: number;
+  /** Cap video processing length (defaults to REACTION_AVATAR_REMBG_MAX_SEC). */
+  maxSec?: number;
   ffmpeg?: Ffmpeg;
   runner?: CommandRunner;
   workDir?: string;
@@ -66,15 +68,30 @@ export function ffmpegKeyColor(hex: string | null | undefined): string {
   return `0x${rgb}`;
 }
 
-/** Cache path beside the upload (mtime-checked). */
+/** Cache path beside the upload (mtime-checked). Optional maxSec tags shorter trims. */
 export function reactionAvatarNobgCachePath(
   srcPath: string,
   method: 'rembg' | 'chromakey' = 'rembg',
+  maxSec?: number,
 ): string {
   const tag = method === 'chromakey' ? 'nobg-ck' : 'nobg';
+  const secTag =
+    maxSec != null &&
+    Number.isFinite(maxSec) &&
+    maxSec > 0 &&
+    maxSec < REACTION_AVATAR_REMBG_MAX_SEC - 0.05
+      ? `-t${Math.ceil(maxSec)}`
+      : '';
   return isVideoPath(srcPath)
-    ? srcPath.replace(/\.[^.]+$/i, `.${tag}.webm`)
+    ? srcPath.replace(/\.[^.]+$/i, `.${tag}${secTag}.webm`)
     : srcPath.replace(/\.[^.]+$/i, `.${tag}.png`);
+}
+
+function resolveReactionMaxSec(maxSec?: number): number {
+  if (maxSec != null && Number.isFinite(maxSec) && maxSec > 0) {
+    return Math.min(REACTION_AVATAR_REMBG_MAX_SEC, Math.max(0.1, maxSec));
+  }
+  return REACTION_AVATAR_REMBG_MAX_SEC;
 }
 
 async function cacheIsFresh(srcPath: string, cachePath: string): Promise<boolean> {
@@ -161,8 +178,8 @@ async function runChromakeyVideo(
   color: string,
   similarity: number,
   blend: number,
+  maxSec: number = REACTION_AVATAR_REMBG_MAX_SEC,
 ): Promise<void> {
-  const maxSec = REACTION_AVATAR_REMBG_MAX_SEC;
   await unlink(outputPath).catch(() => {});
   await ffmpeg.exec([
     '-loglevel',
@@ -170,7 +187,7 @@ async function runChromakeyVideo(
     '-i',
     inputPath,
     '-t',
-    String(maxSec),
+    String(Number(Math.max(0.1, maxSec).toFixed(3))),
     '-vf',
     `${colorkeyVf(color, similarity, blend)},format=yuva420p`,
     '-c:v',
@@ -191,9 +208,11 @@ async function prepareViaRembg(
     ffmpeg: Ffmpeg;
     runner: CommandRunner;
     workDir?: string;
+    maxSec?: number;
   },
 ): Promise<{ path: string; removedBg: boolean; reason?: string; method: 'rembg' }> {
-  const cachePath = reactionAvatarNobgCachePath(srcPath, 'rembg');
+  const maxSec = resolveReactionMaxSec(opts.maxSec);
+  const cachePath = reactionAvatarNobgCachePath(srcPath, 'rembg', maxSec);
   if (await cacheIsFresh(srcPath, cachePath)) {
     return { path: cachePath, removedBg: true, method: 'rembg' };
   }
@@ -209,7 +228,6 @@ async function prepareViaRembg(
       return { path: cachePath, removedBg: true, method: 'rembg' };
     }
 
-    const maxSec = REACTION_AVATAR_REMBG_MAX_SEC;
     const fps = REACTION_AVATAR_REMBG_FPS;
     const maxSide = REACTION_AVATAR_REMBG_MAX_SIDE;
     const workRoot =
@@ -226,7 +244,7 @@ async function prepareViaRembg(
       '-i',
       srcPath,
       '-t',
-      String(maxSec),
+      String(Number(maxSec.toFixed(3))),
       '-vf',
       `fps=${fps},scale=${maxSide}:${maxSide}:force_original_aspect_ratio=decrease`,
       '-y',
@@ -295,9 +313,11 @@ async function prepareViaChromakey(
     color: string;
     similarity: number;
     blend: number;
+    maxSec?: number;
   },
 ): Promise<{ path: string; removedBg: boolean; reason?: string; method: 'chromakey' }> {
-  const cachePath = reactionAvatarNobgCachePath(srcPath, 'chromakey');
+  const maxSec = resolveReactionMaxSec(opts.maxSec);
+  const cachePath = reactionAvatarNobgCachePath(srcPath, 'chromakey', maxSec);
   if (await cacheIsFresh(srcPath, cachePath)) {
     return { path: cachePath, removedBg: true, method: 'chromakey' };
   }
@@ -320,11 +340,12 @@ async function prepareViaChromakey(
         opts.color,
         opts.similarity,
         opts.blend,
+        maxSec,
       );
     }
     await writeFile(
       `${cachePath}.meta.txt`,
-      `chromakey color=${opts.color} similarity=${opts.similarity} blend=${opts.blend}\n`,
+      `chromakey color=${opts.color} similarity=${opts.similarity} blend=${opts.blend} maxSec=${maxSec}\n`,
       'utf8',
     ).catch(() => {});
     return { path: cachePath, removedBg: true, method: 'chromakey' };
@@ -352,6 +373,7 @@ export async function prepareReactionAvatarNobg(
   const color = ffmpegKeyColor(opts?.chromakeyColor);
   const similarity = opts?.chromakeySimilarity ?? 0.3;
   const blend = opts?.chromakeyBlend ?? 0.1;
+  const maxSec = opts?.maxSec;
 
   if (!isVideoPath(srcPath) && !isImagePath(srcPath)) {
     return { path: srcPath, removedBg: false, reason: 'unsupported-ext' };
@@ -362,18 +384,23 @@ export async function prepareReactionAvatarNobg(
   }
 
   if (mode === 'chromakey') {
-    return prepareViaChromakey(srcPath, { ffmpeg, color, similarity, blend });
+    return prepareViaChromakey(srcPath, { ffmpeg, color, similarity, blend, maxSec });
   }
 
   if (mode === 'rembg') {
-    return prepareViaRembg(srcPath, { ffmpeg, runner, workDir: opts?.workDir });
+    return prepareViaRembg(srcPath, { ffmpeg, runner, workDir: opts?.workDir, maxSec });
   }
 
   // auto: rembg first, then chromakey
-  const rembg = await prepareViaRembg(srcPath, { ffmpeg, runner, workDir: opts?.workDir });
+  const rembg = await prepareViaRembg(srcPath, {
+    ffmpeg,
+    runner,
+    workDir: opts?.workDir,
+    maxSec,
+  });
   if (rembg.removedBg) return rembg;
 
-  const ck = await prepareViaChromakey(srcPath, { ffmpeg, color, similarity, blend });
+  const ck = await prepareViaChromakey(srcPath, { ffmpeg, color, similarity, blend, maxSec });
   if (ck.removedBg) {
     return {
       ...ck,

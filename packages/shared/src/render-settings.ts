@@ -181,6 +181,11 @@ export const renderSettingsSchema = z.object({
       corner: z.enum(['br', 'bl', 'tr', 'tl']).default('br'),
       /** Width as % of video width (12–40). */
       sizePercent: z.number().int().min(12).max(40).default(22),
+      /**
+       * `dialogue` (default): PiP only during speaking windows; reaction source trimmed to
+       * sum(speaking) — unused clip tail is cut. Falls back to VO/subtitle cues, else ~5s lead-in.
+       * `always`: visible for full video; still trims reaction source to main duration.
+       */
       showDuring: z.enum(['dialogue', 'always']).default('dialogue'),
       /**
        * `auto` = rembg if installed, else chromakey; `rembg` / `chromakey` force one path;
