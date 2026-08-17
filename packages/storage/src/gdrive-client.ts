@@ -23,9 +23,20 @@ import { pipeline } from 'node:stream/promises';
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
+/** Narrow scope used historically for OAuth paste setups. */
 const OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+/**
+ * Connect-button OAuth: full Drive so Settings can list folders and archive
+ * into a user-selected root (drive.file alone cannot browse arbitrary folders).
+ */
+const CONNECT_OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive';
 /** Shared-folder access for service accounts (My Drive share or Shared Drive). */
 const SERVICE_ACCOUNT_SCOPE = 'https://www.googleapis.com/auth/drive';
+
+export interface GDriveFolderEntry {
+  id: string;
+  name: string;
+}
 
 export type GDriveAuthMode = 'oauth' | 'service_account';
 
@@ -186,11 +197,10 @@ export function requireGDriveConfig(
   const cfg = resolveGDriveConfig(settings, env);
   if (!cfg) {
     throw new Error(
-      'Google Drive is selected as the storage backend but is not configured. Paste credentials in ' +
-        'Settings → General → Google Drive media library (OAuth refresh token, or service ' +
-        'account email + private key), set the root folder ID, and choose Google Drive as the backend — ' +
-        'or set GOOGLE_DRIVE_* env bootstrap vars. For a service account, share the root folder with ' +
-        'the SA email (Editor) or add it to a Shared Drive.',
+      'Google Drive is selected as the storage backend but is not configured. Use Settings → General → ' +
+        'Google Drive → Connect with Google and Select folder (or paste OAuth / service-account credentials), ' +
+        'set the root folder ID, and choose Google Drive as the backend — or set GOOGLE_DRIVE_* env bootstrap vars. ' +
+        'For a service account, share the root folder with the SA email (Editor) or add it to a Shared Drive.',
     );
   }
   return cfg;
@@ -301,6 +311,49 @@ export class GoogleDriveClient {
     this.accessToken = json.access_token;
     this.accessExpiryMs = Date.now() + json.expires_in * 1000;
     return this.accessToken;
+  }
+
+  /**
+   * List child folders under `parentId` (use `'root'` for My Drive top level).
+   * Used by Settings → Select folder (no Google Picker API required).
+   */
+  async listFolders(parentId: string = 'root'): Promise<GDriveFolderEntry[]> {
+    const token = await this.getAccessToken();
+    const safeParent = parentId.replace(/'/g, "\\'");
+    const q = [
+      `mimeType='application/vnd.google-apps.folder'`,
+      `'${safeParent}' in parents`,
+      'trashed=false',
+    ].join(' and ');
+    const out: GDriveFolderEntry[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({
+        q,
+        fields: 'nextPageToken,files(id,name)',
+        pageSize: '100',
+        orderBy: 'folder,name',
+        supportsAllDrives: 'true',
+        includeItemsFromAllDrives: 'true',
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const res = await this.fetchImpl(`${DRIVE_FILES}?${params.toString()}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Drive folder list failed (${res.status}): ${body.slice(0, 200)}`);
+      }
+      const json = (await res.json()) as {
+        nextPageToken?: string;
+        files?: Array<{ id: string; name: string }>;
+      };
+      for (const f of json.files ?? []) {
+        out.push({ id: f.id, name: f.name });
+      }
+      pageToken = json.nextPageToken;
+    } while (pageToken);
+    return out;
   }
 
   /**
@@ -487,4 +540,5 @@ export class GoogleDriveClient {
 }
 
 export const GDRIVE_OAUTH_SCOPE = OAUTH_SCOPE;
+export const GDRIVE_CONNECT_OAUTH_SCOPE = CONNECT_OAUTH_SCOPE;
 export const GDRIVE_SERVICE_ACCOUNT_SCOPE = SERVICE_ACCOUNT_SCOPE;

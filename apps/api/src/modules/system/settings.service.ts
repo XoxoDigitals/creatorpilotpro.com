@@ -228,6 +228,39 @@ export class SettingsService {
     return { key, secret: true, configured: true, preview: previewOf(merged) };
   }
 
+  /**
+   * Replace an entire secret object (no partial-merge). Used when clearing OAuth
+   * fields on Drive disconnect — empty-string merge would otherwise keep secrets.
+   */
+  async putReplace(key: string, value: unknown): Promise<SettingView> {
+    const spec = SETTINGS_WHITELIST[key];
+    if (!spec) throw new BadRequestException(`Unknown setting key: ${key}`);
+    if (!spec.secret) {
+      return this.put(key, value);
+    }
+
+    const parsed = spec.schema.safeParse(value);
+    if (!parsed.success) {
+      throw new BadRequestException({
+        message: `Invalid value for ${key}`,
+        issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      });
+    }
+
+    const merged = parsed.data as Record<string, unknown>;
+    const stored: Prisma.InputJsonValue = {
+      __enc: this.crypto.encrypt(JSON.stringify(merged)),
+      __preview: previewOf(merged),
+    };
+    await this.prisma.client.systemSetting.upsert({
+      where: { key },
+      update: { value: stored },
+      create: { key, value: stored },
+    });
+
+    return { key, secret: true, configured: true, preview: previewOf(merged) };
+  }
+
   /** Demo-data toggle (docs mission §4). Default OFF — live data only unless the
    *  Owner explicitly turns demo mode on for design/testing. */
   async getDemoMode(): Promise<{ enabled: boolean }> {

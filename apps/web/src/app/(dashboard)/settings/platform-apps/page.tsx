@@ -60,6 +60,7 @@ export default function PlatformAppsPage() {
   }
 
   const googleRedirect = `${webOrigin}/api/v1/accounts/connect/google/callback`;
+  const gdriveRedirect = `${webOrigin}/api/v1/storage/gdrive/connect/callback`;
   const metaRedirect = `${webOrigin}/api/v1/accounts/connect/meta/callback`;
   const tiktokRedirect = `${webOrigin}/api/v1/accounts/connect/tiktok/callback`;
   const metaWebhookUrl = `${webOrigin}/api/v1/webhooks/meta`;
@@ -106,8 +107,8 @@ export default function PlatformAppsPage() {
       {/* Google Cloud OAuth */}
       <Card>
         <CardHeader
-          title="Google Cloud OAuth (YouTube channel connect)"
-          description="OAuth client for connecting your channels, YouTube Analytics, and direct video upload."
+          title="Google Cloud OAuth (YouTube + Google Drive)"
+          description="Same OAuth client for YouTube channel connect and Settings → General → Google Drive Connect."
           action={<StatusBadge configured={settings['platform_apps.google']?.configured ?? false} />}
         />
         <div className="space-y-3 p-4">
@@ -138,18 +139,18 @@ export default function PlatformAppsPage() {
           <SetupGuide title="How to set up Google Cloud">
             <ol className="ml-4 list-decimal space-y-2">
               <li>Open the <ExtLink href="https://console.cloud.google.com/projectcreate">Google Cloud console</ExtLink> and create a new project (or use an existing one).</li>
-              <li>Enable APIs: search for <b>YouTube Data API v3</b> and <b>YouTube Analytics API</b>, then click <b>Enable</b> on each.</li>
+              <li>Enable APIs: search for <b>YouTube Data API v3</b>, <b>YouTube Analytics API</b>, and <b>Google Drive API</b>, then click <b>Enable</b> on each.</li>
               <li>
                 For competitor Ideas: <ExtLink href="https://console.cloud.google.com/apis/credentials">Credentials → Create credentials → API key</ExtLink>.
                 Restrict the key to YouTube Data API v3, paste it in the <b>YouTube Data API key</b> card above, and click <b>Save YouTube Data API key</b>.
               </li>
               <li>Configure the <ExtLink href="https://console.cloud.google.com/apis/credentials/consent">OAuth consent screen</ExtLink>. If your channels live under a Google Workspace organization, choose <b>Internal</b> — this skips app verification entirely.</li>
               <li>Go to <ExtLink href="https://console.cloud.google.com/apis/credentials">Credentials → Create credentials → OAuth client ID</ExtLink>. Application type = <b>Web application</b>.</li>
-              <li>Add this <b>Authorized redirect URI</b> and save: <Callback url={googleRedirect} /></li>
-              <li>Add scopes on the OAuth consent screen: <code className="rounded bg-zinc-100 px-1">youtube</code> (manage / upload / thumbnails), <code className="rounded bg-zinc-100 px-1">youtube.readonly</code>, <code className="rounded bg-zinc-100 px-1">yt-analytics.readonly</code>, <code className="rounded bg-zinc-100 px-1">yt-analytics-monetary.readonly</code> (revenue). Re-connect each channel after changing scopes.</li>
+              <li>Add these <b>Authorized redirect URIs</b> and save: <Callback url={googleRedirect} /> (YouTube) and <Callback url={gdriveRedirect} /> (Drive media library).</li>
+              <li>Add scopes on the OAuth consent screen: <code className="rounded bg-zinc-100 px-1">youtube</code> (manage / upload / thumbnails), <code className="rounded bg-zinc-100 px-1">youtube.readonly</code>, <code className="rounded bg-zinc-100 px-1">yt-analytics.readonly</code>, <code className="rounded bg-zinc-100 px-1">yt-analytics-monetary.readonly</code> (revenue), and <code className="rounded bg-zinc-100 px-1">drive</code> (Settings → Google Drive Connect + folder pick). Re-connect after changing scopes.</li>
               <li>Copy the generated <b>Client ID</b> and <b>Client Secret</b> into the fields above and click <b>Save Google OAuth</b>.</li>
               <li>YouTube&apos;s default upload quota is 6 videos/day per project. Request more via the <b>YouTube API Services - Audit and Quota Extension</b> form linked from the Cloud console. Approvals typically take 1–4 weeks.</li>
-              <li>Once saved, use <b>Accounts → Connect account → Google</b> to authorize each channel individually.</li>
+              <li>Once saved, use <b>Accounts → Connect account → Google</b> for channels, and <b>Settings → General → Connect with Google</b> for the Drive media library.</li>
             </ol>
           </SetupGuide>
         </div>

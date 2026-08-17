@@ -21,7 +21,9 @@ import {
   resolveGDriveConfig,
   resolveStorageBackend,
   requireGDriveConfig,
+  GDRIVE_CONNECT_OAUTH_SCOPE,
   type GDriveConfig,
+  type GDriveFolderEntry,
   type GDriveSettingsPartial,
   type StorageBackend,
 } from '@scp/storage';
@@ -33,6 +35,8 @@ import {
 import type { Readable } from 'node:stream';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingsService } from '../system/settings.service';
+import { GoogleOAuthService, type GoogleConfig } from '../accounts/oauth/google.service';
+import { signState, verifyState } from '../accounts/oauth/oauth-state.util';
 import { toAssetView, type AssetView } from './asset.view';
 
 type UploadKind = 'ORIGINAL' | 'FINAL' | 'THUMBNAIL';
@@ -86,6 +90,7 @@ export class StorageService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly settings: SettingsService,
+    private readonly google: GoogleOAuthService,
   ) {}
 
   /**
@@ -261,13 +266,21 @@ export class StorageService {
     previewExample: string | null;
     source: 'settings' | 'env' | 'mixed' | 'none';
     auth: 'oauth' | 'service_account' | null;
+    /** OAuth refresh token present (may still need a root folder). */
+    oauthConnected: boolean;
+    /** Platform Apps → Google OAuth client is configured (Connect can run). */
+    googleAppConfigured: boolean;
   }> {
     const stored = await this.settings.getDecrypted<GDriveSettingsPartial>('storage.gdrive');
+    const googleApp = await this.settings.getDecrypted<GoogleConfig>('platform_apps.google');
     const backend = resolveStorageBackend(stored ?? null);
     const cfg = resolveGDriveConfig(stored ?? null);
     const envOnly = resolveGDriveConfig(null);
+    const oauthConnected = Boolean(
+      stored?.refreshToken?.trim() || process.env.GOOGLE_DRIVE_REFRESH_TOKEN?.trim(),
+    );
     let source: 'settings' | 'env' | 'mixed' | 'none' = 'none';
-    if (cfg) {
+    if (cfg || oauthConnected) {
       const fromSettings = Boolean(
         stored?.clientId?.trim() ||
           stored?.clientSecret?.trim() ||
@@ -278,18 +291,170 @@ export class StorageService {
           stored?.authMode ||
           stored?.backend,
       );
-      if (fromSettings && envOnly) source = 'mixed';
-      else if (fromSettings) source = 'settings';
-      else source = 'env';
+      if (cfg) {
+        if (fromSettings && envOnly) source = 'mixed';
+        else if (fromSettings) source = 'settings';
+        else source = 'env';
+      } else if (fromSettings) {
+        source = 'settings';
+      }
     }
+    const authHint =
+      cfg?.auth ??
+      (stored?.authMode === 'service_account'
+        ? 'service_account'
+        : oauthConnected
+          ? 'oauth'
+          : null);
     return {
       backend,
       configured: !!cfg,
-      rootFolderId: cfg?.rootFolderId ?? null,
+      rootFolderId: cfg?.rootFolderId ?? stored?.rootFolderId?.trim() ?? null,
       previewExample: cfg ? drivePreviewEmbedUrl('FILE_ID') : null,
       source,
-      auth: cfg?.auth ?? null,
+      auth: authHint,
+      oauthConnected,
+      googleAppConfigured: Boolean(googleApp?.clientId?.trim() && googleApp?.clientSecret?.trim()),
     };
+  }
+
+  /** OAuth redirect URI for system-level Drive connect (same Google client as YouTube). */
+  private gdriveRedirectUri(): string {
+    const web = process.env.WEB_APP_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
+    return `${web}/api/v1/storage/gdrive/connect/callback`;
+  }
+
+  private sessionSecret(): string {
+    const s = process.env.SESSION_SECRET;
+    if (!s) throw new BadRequestException('SESSION_SECRET is not configured.');
+    return s;
+  }
+
+  /**
+   * Start Drive OAuth using Platform Apps → Google client (same as YouTube).
+   * Requests `drive` scope with incremental auth (`include_granted_scopes`).
+   */
+  async gdriveConnectStartUrl(userId: string): Promise<string> {
+    const cfg = await this.google.getConfig();
+    const state = signState({ userId, purpose: 'gdrive' }, this.sessionSecret());
+    return this.google.buildAuthUrl({
+      clientId: cfg.clientId,
+      redirectUri: this.gdriveRedirectUri(),
+      scopes: [GDRIVE_CONNECT_OAUTH_SCOPE],
+      state,
+    });
+  }
+
+  /**
+   * Exchange code → store refresh token + Platform Apps client id/secret into
+   * `storage.gdrive` (system-level). Does not create a social account.
+   */
+  async gdriveConnectCallback(code: string, state: string): Promise<void> {
+    const payload = verifyState<{ userId: string; purpose?: string }>(state, this.sessionSecret());
+    if (!payload || payload.purpose !== 'gdrive') {
+      throw new BadRequestException('Invalid or expired OAuth state.');
+    }
+
+    const cfg = await this.google.getConfig();
+    const bundle = await this.google.exchangeCode(code, this.gdriveRedirectUri());
+    if (!bundle.refreshToken) {
+      throw new BadRequestException(
+        'Google did not return a refresh token. Revoke app access in Google Account → Security → Third-party access, then Connect again.',
+      );
+    }
+
+    await this.settings.put('storage.gdrive', {
+      authMode: 'oauth',
+      clientId: cfg.clientId,
+      clientSecret: cfg.clientSecret,
+      refreshToken: bundle.refreshToken,
+    });
+  }
+
+  /** Clear OAuth credentials from storage.gdrive; keep folder / SA / backend. */
+  async gdriveDisconnect(): Promise<void> {
+    const existing =
+      (await this.settings.getDecrypted<GDriveSettingsPartial>('storage.gdrive')) ?? {};
+    const next: GDriveSettingsPartial = { ...existing };
+    delete next.clientId;
+    delete next.clientSecret;
+    delete next.refreshToken;
+    if (next.authMode === 'oauth') {
+      if (next.clientEmail || next.privateKey) next.authMode = 'service_account';
+      else delete next.authMode;
+    }
+    await this.settings.putReplace('storage.gdrive', next);
+  }
+
+  /**
+   * List Drive folders for the Settings picker. Uses OAuth or SA credentials
+   * already stored (OAuth may be connected without a root folder yet).
+   */
+  async listGdriveFolders(parentId?: string): Promise<GDriveFolderEntry[]> {
+    const client = await this.driveClientForBrowse();
+    return client.listFolders(parentId?.trim() || 'root');
+  }
+
+  /** Persist selected library root folder id. */
+  async setGdriveRootFolder(folderId: string): Promise<{ rootFolderId: string }> {
+    const id = folderId.trim();
+    if (!id) throw new BadRequestException('folderId is required.');
+    await this.settings.put('storage.gdrive', { rootFolderId: id });
+    return { rootFolderId: id };
+  }
+
+  /** Client for folder browse — oauth/SA without requiring a configured root yet. */
+  private async driveClientForBrowse(): Promise<GoogleDriveClient> {
+    const stored = await this.settings.getDecrypted<GDriveSettingsPartial>('storage.gdrive');
+    const googleApp = await this.settings.getDecrypted<GoogleConfig>('platform_apps.google');
+
+    const rootFolderId =
+      stored?.rootFolderId?.trim() ||
+      process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim() ||
+      'root';
+
+    const refreshToken =
+      stored?.refreshToken?.trim() || process.env.GOOGLE_DRIVE_REFRESH_TOKEN?.trim() || '';
+    const clientId =
+      stored?.clientId?.trim() ||
+      googleApp?.clientId?.trim() ||
+      process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() ||
+      '';
+    const clientSecret =
+      stored?.clientSecret?.trim() ||
+      googleApp?.clientSecret?.trim() ||
+      process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() ||
+      '';
+
+    const clientEmail =
+      stored?.clientEmail?.trim() || process.env.GOOGLE_DRIVE_CLIENT_EMAIL?.trim() || '';
+    const privateKey =
+      stored?.privateKey?.trim() || process.env.GOOGLE_DRIVE_PRIVATE_KEY?.trim() || '';
+
+    const preferSa =
+      stored?.authMode === 'service_account' ||
+      (!refreshToken && Boolean(clientEmail && privateKey));
+
+    if (!preferSa && clientId && clientSecret && refreshToken) {
+      return new GoogleDriveClient({
+        auth: 'oauth',
+        clientId,
+        clientSecret,
+        refreshToken,
+        rootFolderId,
+      });
+    }
+    if (clientEmail && privateKey) {
+      return new GoogleDriveClient({
+        auth: 'service_account',
+        clientEmail,
+        privateKey,
+        rootFolderId,
+      });
+    }
+    throw new BadRequestException(
+      'Connect Google Drive first (Connect with Google), or configure a service account.',
+    );
   }
 
   /**
