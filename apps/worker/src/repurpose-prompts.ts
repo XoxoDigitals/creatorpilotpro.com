@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { TaskType, formatOutputLanguagePolicy, languageDisplayName } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 10;
+export const REPURPOSE_PROMPT_REV = 13;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -197,21 +197,74 @@ export function normalizeNarrationVariants(output: unknown): NarrationScriptVari
   ];
 }
 
+/** Coerce AI tag/keyword fields that arrive as a comma string or sparse array. */
+const stringListField = z.preprocess((v) => {
+  if (typeof v === 'string') {
+    return v
+      .split(/[,#\n]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+  return v;
+}, z.array(z.string()).nullish().transform((v) => v ?? []));
+
 export const metadataOutputSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
-  tags: z
-    .array(z.string())
-    .nullish()
-    .transform((v) => v ?? []),
-  keywords: z
-    .array(z.string())
-    .nullish()
-    .transform((v) => v ?? []),
+  tags: stringListField,
+  keywords: stringListField,
   category: z.string().nullish(),
 });
 
 export type MetadataOutput = z.infer<typeof metadataOutputSchema>;
+
+/** Strip # / whitespace and dedupe (case-insensitive), preserving first-seen casing. */
+export function cleanTagLabels(raw: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const label = item.replace(/^#+/, '').trim().replace(/\s+/g, ' ');
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out;
+}
+
+/** Pull trailing/inline `#hashtags` out of a description when `tags` was omitted. */
+export function extractHashtagLabels(description: string): string[] {
+  if (!description.trim()) return [];
+  const matches = description.match(/#[\p{L}\p{N}_]+(?:\s+[\p{L}\p{N}_]+)*/gu) ?? [];
+  return cleanTagLabels(matches.map((m) => m.replace(/^#/, '')));
+}
+
+/**
+ * Ensure publish metadata has a usable `tags` array.
+ * Models often fill `keywords` or description hashtags and leave `tags` empty —
+ * YouTube upload needs `snippet.tags`, not only hashtags in the description.
+ */
+export function finalizeMetadataOutput(
+  output: MetadataOutput,
+  platform?: string | null,
+): MetadataOutput {
+  let tags = cleanTagLabels(output.tags);
+  if (tags.length === 0) tags = cleanTagLabels(output.keywords);
+  if (tags.length === 0) tags = extractHashtagLabels(output.description);
+
+  const plat = (platform ?? '').toUpperCase();
+  if (plat === 'YOUTUBE' && tags.length > 30) tags = tags.slice(0, 30);
+  if (plat === 'FACEBOOK' && tags.length > 5) tags = tags.slice(0, 5);
+  if (plat === 'TIKTOK' && tags.length > 15) tags = tags.slice(0, 15);
+
+  return {
+    ...output,
+    tags,
+    keywords: cleanTagLabels(output.keywords),
+  };
+}
 
 export const DEFAULT_VIDEO_ANALYSIS_PROMPT = `You are a video analyst for a social-content repurposing pipeline.
 
@@ -261,8 +314,9 @@ Rules:
 - hasDialogue is true only for intelligible spoken words.
 - dialogueRanges must tightly cover spoken-word windows; merge gaps under ~0.3s. Otherwise return []. These ranges drive precise mute of original speech in render — prefer accuracy over covering the whole clip.
 - hasNaturalSound is true for music, ambience, SFX, reactions, engines, impacts, etc.
+- When natural sound is present, speechOrAudio should name notable production-style cues (impact hits, whooshes, tension risers, ambient beds, crowd reactions) so later mix/narration can leave room for them.
 - hookMoments should identify the strongest curiosity, surprise, failure, reaction, transformation, danger, or payoff moments with approximate timestamps.
-- pacingNotes should identify slow setup, acceleration, repetitive sections, dialogue-heavy areas, and payoff timing.
+- pacingNotes should identify slow setup, acceleration, repetitive sections, dialogue-heavy areas, payoff timing, and where dramatic sound punches through.
 - Compress repetitive/unimportant actions, but still cover the whole timeline.
 - Do not guess identities, brands, relationships, locations, motives, or dialogue.
 - If only frames/samples are provided, infer conservatively from timestamps and still produce contiguous segments covering 0 → durationSec.
@@ -348,6 +402,8 @@ Timing:
 - Lines must be chronological, non-overlapping, and within video duration.
 - Prefer one line per beat covering the FULL video timeline (merge tiny beats if needed). Do not stop narrating halfway.
 - Narration does NOT need to fill every second; allow important visuals, reactions, natural sound, or reveals to breathe.
+- Prefer short spoken beats with a natural pause between lines (do not pack sentences back-to-back). Leave ~0.2–0.5s of breathing room between dialogue segments so TTS gaps and original SFX/ambience can punch through.
+- Prefer complete short sentences ending in . ! or ? so TTS can pause between them.
 - Align narration with the relevant visual beat. Early teasing is allowed only when intentional.
 - script must exactly equal all lines[].text concatenated in order as plain prose (spaces, no timestamps).
 - estimatedSpokenSec must reflect actual spoken wording, not video duration.
@@ -358,7 +414,7 @@ Accuracy:
 - Do not invent identities, brands, motives, relationships, locations, stakes, dialogue, or outcomes.
 - Follow the supplied channel style when provided.
 - Write all spoken text in ${lang}. Keep this instruction prompt in English.
-- No stage directions, speaker labels, brackets, or markdown inside script or lines[].text — ONLY words meant to be spoken aloud.
+- No stage directions, speaker labels, brackets, or markdown inside script or lines[].text — ONLY words meant to be spoken aloud. (Sound-design cues belong in analysis speechOrAudio / pacingNotes, not in spoken script.)
 
 Before returning, ensure each script has:
 1. a real hook,
@@ -374,14 +430,14 @@ Return ONLY the JSON object.`;
 /** Platform keys match Prisma `Platform` (YOUTUBE / TIKTOK / FACEBOOK). */
 export type MetadataPlatform = 'YOUTUBE' | 'TIKTOK' | 'FACEBOOK' | string;
 
-function platformMetadataGuidance(platform?: string | null): string {
+export function platformMetadataGuidance(platform?: string | null): string {
   switch ((platform ?? '').toUpperCase()) {
     case 'YOUTUBE':
       return `Target platform: YouTube (Shorts / upload).
 - title: SEO-aware, searchable, ~40–70 chars preferred (hard max ~100). Front-load keywords; avoid ALL CAPS spam.
 - description: 1–3 short paragraphs, then a blank line, then 3–8 relevant hashtags on the last lines. Include a light CTA (subscribe / watch next) when natural.
-- tags: 8–15 YouTube search tags (plain words/phrases, NOT #hashtags). Mix broad + specific.
-- keywords: optional extra search phrases.
+- tags: REQUIRED — always return 8–15 YouTube search tags in the "tags" array (plain words/phrases, NOT #hashtags). Mix broad + specific. Description hashtags are NOT a substitute; YouTube Studio uses the tags list separately.
+- keywords: optional extra search phrases (do not put the only tags here — "tags" must be filled).
 - category: optional YouTube-style category label (e.g. Entertainment, Education).`;
     case 'TIKTOK':
       return `Target platform: TikTok.
@@ -426,6 +482,7 @@ Given the narration script (and analysis when present), plus the platform field 
 }
 
 Optimize title, description, and tags specifically for the target platform above.
+The "tags" array must always be present (use [] only when the platform guidance allows zero tags).
 Follow the channel style block when provided.
 ${formatOutputLanguagePolicy(language)}
 Write title, description, tags, and keywords in ${lang}. Keep this instruction prompt in English. No markdown fences.`;

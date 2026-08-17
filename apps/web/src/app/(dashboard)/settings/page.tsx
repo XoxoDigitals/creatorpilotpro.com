@@ -24,6 +24,11 @@ export default function GeneralSettingsPage() {
   const [driveClientId, setDriveClientId] = useState('');
   const [driveClientSecret, setDriveClientSecret] = useState('');
   const [driveRefreshToken, setDriveRefreshToken] = useState('');
+  const [driveClientEmail, setDriveClientEmail] = useState('');
+  const [drivePrivateKey, setDrivePrivateKey] = useState('');
+  const [driveSaJson, setDriveSaJson] = useState('');
+  const [driveAuthMode, setDriveAuthMode] = useState<'oauth' | 'service_account'>('oauth');
+  const [driveBackend, setDriveBackend] = useState<'local' | 'gdrive'>('local');
   const [driveFolderId, setDriveFolderId] = useState('');
   const [drivePreview, setDrivePreview] = useState<Record<string, string>>({});
   const [driveConfigured, setDriveConfigured] = useState(false);
@@ -32,6 +37,7 @@ export default function GeneralSettingsPage() {
     configured: boolean;
     rootFolderId: string | null;
     source?: string;
+    auth?: 'oauth' | 'service_account' | null;
   } | null>(null);
 
   useEffect(() => {
@@ -78,9 +84,16 @@ export default function GeneralSettingsPage() {
       setDriveConfigured(gd?.configured ?? false);
       setDrivePreview(gd?.preview ?? {});
       setDriveFolderId(gd?.preview?.rootFolderId ?? '');
+      const mode = gd?.preview?.authMode;
+      setDriveAuthMode(mode === 'service_account' ? 'service_account' : 'oauth');
+      const previewBackend = gd?.preview?.backend;
+      setDriveBackend(previewBackend === 'gdrive' ? 'gdrive' : 'local');
       setDriveClientId('');
       setDriveClientSecret('');
       setDriveRefreshToken('');
+      setDriveClientEmail('');
+      setDrivePrivateKey('');
+      setDriveSaJson('');
       const dm = list.find((s) => s.key === 'demo_mode')?.value as { enabled?: boolean } | undefined;
       setDemoMode(dm?.enabled ?? false);
       try {
@@ -89,8 +102,16 @@ export default function GeneralSettingsPage() {
           configured: boolean;
           rootFolderId: string | null;
           source?: string;
+          auth?: 'oauth' | 'service_account' | null;
         }>('/storage/status');
         setDriveStatus(status);
+        if (status.auth === 'service_account' || status.auth === 'oauth') {
+          setDriveAuthMode(status.auth);
+        }
+        if (status.backend === 'gdrive' || status.backend === 'local') {
+          // Prefer live status (settings + env fallback) when preview has no backend yet.
+          if (!previewBackend) setDriveBackend(status.backend);
+        }
         if (status.rootFolderId && !gd?.preview?.rootFolderId) {
           setDriveFolderId(status.rootFolderId);
         }
@@ -153,23 +174,51 @@ export default function GeneralSettingsPage() {
       <Card>
         <CardHeader
           title="Google Drive media library"
-          description="OAuth credentials for archiving finals & thumbnails. Encrypted at rest like Platform Apps — leave a field blank to keep its current value."
+          description="Choose Local or Google Drive as the media system of record, then paste OAuth or service-account credentials. Encrypted at rest like Platform Apps — leave a secret field blank to keep its current value. No .env edit required."
         />
         <div className="space-y-3 p-4">
           <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
             <p className="font-medium text-zinc-800">Setup</p>
-            <ol className="mt-1.5 list-decimal space-y-0.5 pl-4">
-              <li>Enable Google Drive API in your Google Cloud project</li>
-              <li>
-                Create an OAuth client; authorize once with scope{' '}
-                <code className="rounded bg-zinc-200 px-1">drive.file</code> and copy the refresh token
-              </li>
-              <li>Paste Client ID, Client Secret, Refresh Token, and root folder ID below</li>
-              <li>
-                Set <code className="rounded bg-zinc-200 px-1">STORAGE_BACKEND=gdrive</code> in server{' '}
-                <code className="rounded bg-zinc-200 px-1">.env</code> and restart API + worker
-              </li>
-            </ol>
+            {driveAuthMode === 'oauth' ? (
+              <ol className="mt-1.5 list-decimal space-y-0.5 pl-4">
+                <li>In Google Cloud Console, enable the Google Drive API for your project</li>
+                <li>
+                  Create an OAuth client; authorize once with scope{' '}
+                  <code className="rounded bg-zinc-200 px-1">drive.file</code> and copy the refresh token
+                </li>
+                <li>Paste Client ID, Client Secret, Refresh Token, and root folder ID below</li>
+                <li>
+                  Set <span className="font-medium">Storage backend</span> to Google Drive and click Save —
+                  no <code className="rounded bg-zinc-200 px-1">.env</code> change needed
+                </li>
+              </ol>
+            ) : (
+              <ol className="mt-1.5 list-decimal space-y-0.5 pl-4">
+                <li>
+                  Google Cloud Console → <span className="font-medium">IAM &amp; Admin → Service Accounts</span> →
+                  Create service account (any name)
+                </li>
+                <li>
+                  Open the SA → <span className="font-medium">Keys → Add key → JSON</span>; download the key file.
+                  Also enable <span className="font-medium">Google Drive API</span> for the project (APIs &amp; Services)
+                </li>
+                <li>
+                  In Google Drive, create (or open) your library folder. Share it with the SA email (
+                  <code className="rounded bg-zinc-200 px-1">…@….iam.gserviceaccount.com</code>) as{' '}
+                  <span className="font-medium">Editor</span> — or add the SA as a member of a Shared Drive
+                </li>
+                <li>
+                  Paste the JSON key below (or client email + private key), and the folder ID from the Drive URL (
+                  <code className="rounded bg-zinc-200 px-1">drive.google.com/…/folders/FOLDER_ID</code>)
+                </li>
+                <li>
+                  Set <span className="font-medium">Storage backend</span> to Google Drive and click Save —
+                  API + worker pick this up from Settings (no{' '}
+                  <code className="rounded bg-zinc-200 px-1">STORAGE_BACKEND</code> in{' '}
+                  <code className="rounded bg-zinc-200 px-1">.env</code>)
+                </li>
+              </ol>
+            )}
             <p className="mt-1.5 text-zinc-500">
               Env vars remain an optional bootstrap fallback. Secrets are never returned in full after save
               (last-4 preview only).
@@ -179,7 +228,7 @@ export default function GeneralSettingsPage() {
           {driveStatus ? (
             <div
               className={`rounded-md border px-3 py-2 text-xs ${
-                driveStatus.configured
+                driveStatus.configured && driveStatus.backend === 'gdrive'
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
                   : driveStatus.backend === 'gdrive'
                     ? 'border-amber-200 bg-amber-50 text-amber-900'
@@ -192,12 +241,19 @@ export default function GeneralSettingsPage() {
                   {driveStatus.backend === 'local'
                     ? 'Local storage (Drive off)'
                     : driveStatus.configured
-                      ? 'Connected'
-                      : 'gdrive selected — credentials missing'}
+                      ? 'Connected — Google Drive active'
+                      : 'Google Drive selected — credentials missing'}
                 </span>
               </p>
               <p className="mt-1">
                 Backend: <span className="font-medium">{driveStatus.backend}</span>
+                {' · '}
+                Auth:{' '}
+                <span className="font-medium">
+                  {(driveStatus.auth ?? driveAuthMode) === 'service_account'
+                    ? 'Service account'
+                    : 'OAuth'}
+                </span>
                 {' · '}
                 Credentials:{' '}
                 <span className="font-medium">
@@ -218,32 +274,107 @@ export default function GeneralSettingsPage() {
             <p className="text-xs text-zinc-500">Could not load Drive status (GET /storage/status).</p>
           )}
 
-          <Labeled label={`Client ID ${drivePreview.clientId ? `(…${drivePreview.clientId})` : ''}`}>
-            <Input
-              value={driveClientId}
-              onChange={(e) => setDriveClientId(e.target.value)}
-              placeholder="Leave blank to keep current"
-              autoComplete="off"
-            />
+          <Labeled label="Storage backend">
+            <select
+              className="h-9 w-full rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-900"
+              value={driveBackend}
+              onChange={(e) =>
+                setDriveBackend(e.target.value === 'gdrive' ? 'gdrive' : 'local')
+              }
+            >
+              <option value="local">Local storage (Drive off)</option>
+              <option value="gdrive">Google Drive</option>
+            </select>
           </Labeled>
-          <Labeled label={`Client Secret ${drivePreview.clientSecret ? `(…${drivePreview.clientSecret})` : ''}`}>
-            <Input
-              type="password"
-              value={driveClientSecret}
-              onChange={(e) => setDriveClientSecret(e.target.value)}
-              placeholder="Leave blank to keep current"
-              autoComplete="off"
-            />
+
+          <Labeled label="Auth mode">
+            <select
+              className="h-9 w-full rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-900"
+              value={driveAuthMode}
+              onChange={(e) =>
+                setDriveAuthMode(e.target.value === 'service_account' ? 'service_account' : 'oauth')
+              }
+            >
+              <option value="oauth">OAuth refresh token</option>
+              <option value="service_account">Service account</option>
+            </select>
           </Labeled>
-          <Labeled label={`Refresh Token ${drivePreview.refreshToken ? `(…${drivePreview.refreshToken})` : ''}`}>
-            <Input
-              type="password"
-              value={driveRefreshToken}
-              onChange={(e) => setDriveRefreshToken(e.target.value)}
-              placeholder="Leave blank to keep current"
-              autoComplete="off"
-            />
-          </Labeled>
+
+          {driveAuthMode === 'oauth' ? (
+            <>
+              <Labeled label={`Client ID ${drivePreview.clientId ? `(…${drivePreview.clientId})` : ''}`}>
+                <Input
+                  value={driveClientId}
+                  onChange={(e) => setDriveClientId(e.target.value)}
+                  placeholder="Leave blank to keep current"
+                  autoComplete="off"
+                />
+              </Labeled>
+              <Labeled label={`Client Secret ${drivePreview.clientSecret ? `(…${drivePreview.clientSecret})` : ''}`}>
+                <Input
+                  type="password"
+                  value={driveClientSecret}
+                  onChange={(e) => setDriveClientSecret(e.target.value)}
+                  placeholder="Leave blank to keep current"
+                  autoComplete="off"
+                />
+              </Labeled>
+              <Labeled label={`Refresh Token ${drivePreview.refreshToken ? `(…${drivePreview.refreshToken})` : ''}`}>
+                <Input
+                  type="password"
+                  value={driveRefreshToken}
+                  onChange={(e) => setDriveRefreshToken(e.target.value)}
+                  placeholder="Leave blank to keep current"
+                  autoComplete="off"
+                />
+              </Labeled>
+            </>
+          ) : (
+            <>
+              <Labeled label="Paste service account JSON (optional)">
+                <textarea
+                  className="min-h-[88px] w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-xs text-zinc-900"
+                  value={driveSaJson}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setDriveSaJson(raw);
+                    try {
+                      const parsed = JSON.parse(raw) as {
+                        client_email?: string;
+                        private_key?: string;
+                      };
+                      if (parsed.client_email) setDriveClientEmail(parsed.client_email);
+                      if (parsed.private_key) setDrivePrivateKey(parsed.private_key);
+                    } catch {
+                      // Incomplete JSON while typing — ignore.
+                    }
+                  }}
+                  placeholder='{"type":"service_account","client_email":"…","private_key":"-----BEGIN…"}'
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </Labeled>
+              <Labeled label={`Client email ${drivePreview.clientEmail ? `(…${drivePreview.clientEmail})` : ''}`}>
+                <Input
+                  value={driveClientEmail}
+                  onChange={(e) => setDriveClientEmail(e.target.value)}
+                  placeholder="…@….iam.gserviceaccount.com"
+                  autoComplete="off"
+                />
+              </Labeled>
+              <Labeled label={`Private key ${drivePreview.privateKey ? `(…${drivePreview.privateKey})` : ''}`}>
+                <textarea
+                  className="min-h-[88px] w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-xs text-zinc-900"
+                  value={drivePrivateKey}
+                  onChange={(e) => setDrivePrivateKey(e.target.value)}
+                  placeholder="Leave blank to keep current — PEM including BEGIN/END lines"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </Labeled>
+            </>
+          )}
+
           <Labeled label="Root folder ID">
             <Input
               value={driveFolderId}
@@ -257,14 +388,23 @@ export default function GeneralSettingsPage() {
             size="sm"
             onClick={() =>
               save('storage.gdrive', {
-                clientId: driveClientId,
-                clientSecret: driveClientSecret,
-                refreshToken: driveRefreshToken,
+                backend: driveBackend,
+                authMode: driveAuthMode,
+                ...(driveAuthMode === 'oauth'
+                  ? {
+                      clientId: driveClientId,
+                      clientSecret: driveClientSecret,
+                      refreshToken: driveRefreshToken,
+                    }
+                  : {
+                      clientEmail: driveClientEmail,
+                      privateKey: drivePrivateKey,
+                    }),
                 rootFolderId: driveFolderId.trim() || undefined,
               })
             }
           >
-            Save Drive credentials
+            Save Drive settings
           </Button>
           <p className="text-[11px] text-zinc-500">Leave secret fields blank to keep stored values.</p>
         </div>

@@ -1,3 +1,4 @@
+import { createSign } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -7,27 +8,41 @@ import { pipeline } from 'node:stream/promises';
 /**
  * Minimal Google Drive client for the media library (docs/02 §6).
  *
- * Auth: OAuth refresh token for the Workspace/library account (env
- * GOOGLE_DRIVE_CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN). Prefer this over a
- * service account — personal/My Drive and Workspace user drives are awkward
- * with service accounts unless you use Shared Drives.
+ * Auth (either):
+ * - OAuth refresh token for a user/library account (drive.file) — best for
+ *   personal My Drive owned by that same user.
+ * - Service account JWT (client_email + private_key) — share the root folder
+ *   (Editor) with the SA email, or use a Shared Drive where the SA is a member.
+ *   SA uses the broader `drive` scope so a *shared* parent folder is visible
+ *   (drive.file alone cannot see folders the SA did not create).
  *
- * Scope: `https://www.googleapis.com/auth/drive.file` is enough when uploading
- * into a folder the same OAuth user owns (GOOGLE_DRIVE_ROOT_FOLDER_ID).
+ * Env bootstrap: GOOGLE_DRIVE_* (see resolveGDriveConfig). Settings → General
+ * preferred when non-empty.
  */
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
-const DEFAULT_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+/** Shared-folder access for service accounts (My Drive share or Shared Drive). */
+const SERVICE_ACCOUNT_SCOPE = 'https://www.googleapis.com/auth/drive';
 
-export interface GDriveConfig {
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
-  /** Drive folder id that receives SCP media (mirrored tree under it). */
-  rootFolderId: string;
-}
+export type GDriveAuthMode = 'oauth' | 'service_account';
+
+export type GDriveConfig =
+  | {
+      auth: 'oauth';
+      clientId: string;
+      clientSecret: string;
+      refreshToken: string;
+      rootFolderId: string;
+    }
+  | {
+      auth: 'service_account';
+      clientEmail: string;
+      privateKey: string;
+      rootFolderId: string;
+    };
 
 export interface GDriveUploadResult {
   fileId: string;
@@ -50,10 +65,17 @@ export function assetHasMedia(a: {
   return Boolean(a.localPath || a.driveFileId);
 }
 
+export type StorageBackend = 'local' | 'gdrive';
+
 export type GDriveSettingsPartial = Partial<{
+  /** System of record: Settings → General preferred; env STORAGE_BACKEND is fallback. */
+  backend: StorageBackend;
+  authMode: GDriveAuthMode;
   clientId: string;
   clientSecret: string;
   refreshToken: string;
+  clientEmail: string;
+  privateKey: string;
   rootFolderId: string;
 }>;
 
@@ -63,37 +85,98 @@ export function readGDriveConfigFromEnv(
   return resolveGDriveConfig(null, env);
 }
 
+function pick(fromSettings: string | undefined, fromEnv: string | undefined): string {
+  const s = fromSettings?.trim();
+  if (s) return s;
+  return fromEnv?.trim() ?? '';
+}
+
+/** Normalize PEM private keys pasted from JSON (`\\n`) or Settings. */
+export function normalizePrivateKey(raw: string): string {
+  let key = raw.trim();
+  if (
+    (key.startsWith('"') && key.endsWith('"')) ||
+    (key.startsWith("'") && key.endsWith("'"))
+  ) {
+    key = key.slice(1, -1);
+  }
+  return key.replace(/\\n/g, '\n');
+}
+
 /**
  * Merge Settings-stored credentials (preferred when non-empty) over process env.
  * Used by API + worker so Owners can paste keys in Settings → General without
  * requiring a redeploy — env remains a bootstrap/fallback.
+ *
+ * Resolution order:
+ * 1. Explicit authMode when set
+ * 2. Else OAuth if clientId+secret+refresh resolve
+ * 3. Else service account if clientEmail+privateKey resolve
  */
 export function resolveGDriveConfig(
   settings: GDriveSettingsPartial | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): GDriveConfig | null {
-  const pick = (fromSettings: string | undefined, fromEnv: string | undefined): string => {
-    const s = fromSettings?.trim();
-    if (s) return s;
-    return fromEnv?.trim() ?? '';
-  };
+  const rootFolderId = pick(settings?.rootFolderId, env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
+  if (!rootFolderId) return null;
+
   const clientId = pick(settings?.clientId, env.GOOGLE_DRIVE_CLIENT_ID);
   const clientSecret = pick(settings?.clientSecret, env.GOOGLE_DRIVE_CLIENT_SECRET);
   const refreshToken = pick(settings?.refreshToken, env.GOOGLE_DRIVE_REFRESH_TOKEN);
-  const rootFolderId = pick(settings?.rootFolderId, env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
-  if (!clientId || !clientSecret || !refreshToken || !rootFolderId) return null;
-  return { clientId, clientSecret, refreshToken, rootFolderId };
+  const clientEmail = pick(settings?.clientEmail, env.GOOGLE_DRIVE_CLIENT_EMAIL);
+  const privateKeyRaw = pick(settings?.privateKey, env.GOOGLE_DRIVE_PRIVATE_KEY);
+  const privateKey = privateKeyRaw ? normalizePrivateKey(privateKeyRaw) : '';
+
+  const oauthOk = Boolean(clientId && clientSecret && refreshToken);
+  const saOk = Boolean(clientEmail && privateKey);
+
+  const modeHint = (settings?.authMode ?? env.GOOGLE_DRIVE_AUTH_MODE ?? '')
+    .trim()
+    .toLowerCase();
+  const preferSa =
+    modeHint === 'service_account' || modeHint === 'service-account' || modeHint === 'sa';
+  const preferOauth = modeHint === 'oauth' || modeHint === 'refresh_token';
+
+  if (preferSa && saOk) {
+    return { auth: 'service_account', clientEmail, privateKey, rootFolderId };
+  }
+  if (preferOauth && oauthOk) {
+    return { auth: 'oauth', clientId, clientSecret, refreshToken, rootFolderId };
+  }
+  if (oauthOk) {
+    return { auth: 'oauth', clientId, clientSecret, refreshToken, rootFolderId };
+  }
+  if (saOk) {
+    return { auth: 'service_account', clientEmail, privateKey, rootFolderId };
+  }
+  return null;
 }
 
+/** Env-only backend (bootstrap). Prefer {@link resolveStorageBackend}. */
 export function storageBackendFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-): 'local' | 'gdrive' {
+): StorageBackend {
   const raw = (env.STORAGE_BACKEND ?? 'local').trim().toLowerCase();
   return raw === 'gdrive' ? 'gdrive' : 'local';
 }
 
 /**
- * Require Drive credentials when STORAGE_BACKEND=gdrive. Throws a clear,
+ * Media system of record: Settings `storage.gdrive.backend` preferred when set;
+ * otherwise `STORAGE_BACKEND` env; default `local`.
+ */
+export function resolveStorageBackend(
+  settings: GDriveSettingsPartial | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): StorageBackend {
+  const fromSettings = (settings?.backend ?? '').trim().toLowerCase();
+  if (fromSettings === 'gdrive' || fromSettings === 'local') {
+    return fromSettings;
+  }
+  return storageBackendFromEnv(env);
+}
+
+/**
+ * Require Drive credentials when backend is gdrive. Throws a clear,
  * actionable error instead of silently writing forever-local.
  */
 export function requireGDriveConfig(
@@ -103,14 +186,46 @@ export function requireGDriveConfig(
   const cfg = resolveGDriveConfig(settings, env);
   if (!cfg) {
     throw new Error(
-      'STORAGE_BACKEND=gdrive but Google Drive is not configured. Paste credentials in ' +
-        'Settings → General → Google Drive media library, or set ' +
-        'GOOGLE_DRIVE_CLIENT_ID, GOOGLE_DRIVE_CLIENT_SECRET, ' +
-        'GOOGLE_DRIVE_REFRESH_TOKEN, and GOOGLE_DRIVE_ROOT_FOLDER_ID ' +
-        '(OAuth library account with Drive API enabled).',
+      'Google Drive is selected as the storage backend but is not configured. Paste credentials in ' +
+        'Settings → General → Google Drive media library (OAuth refresh token, or service ' +
+        'account email + private key), set the root folder ID, and choose Google Drive as the backend — ' +
+        'or set GOOGLE_DRIVE_* env bootstrap vars. For a service account, share the root folder with ' +
+        'the SA email (Editor) or add it to a Shared Drive.',
     );
   }
   return cfg;
+}
+
+function base64UrlJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
+/** Mint a Google OAuth access token via service-account JWT assertion. */
+export function buildServiceAccountAssertion(
+  clientEmail: string,
+  privateKey: string,
+  scope: string = SERVICE_ACCOUNT_SCOPE,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): string {
+  const header = base64UrlJson({ alg: 'RS256', typ: 'JWT' });
+  const claim = base64UrlJson({
+    iss: clientEmail,
+    scope,
+    aud: TOKEN_ENDPOINT,
+    iat: nowSec,
+    exp: nowSec + 3600,
+  });
+  const unsigned = `${header}.${claim}`;
+  const signer = createSign('RSA-SHA256');
+  signer.update(unsigned);
+  signer.end();
+  const signature = signer.sign(normalizePrivateKey(privateKey), 'base64url');
+  return `${unsigned}.${signature}`;
+}
+
+/** Query params so Shared Drive folders work the same as My Drive shares. */
+function driveSupportsAll(): string {
+  return 'supportsAllDrives=true&includeItemsFromAllDrives=true';
 }
 
 export class GoogleDriveClient {
@@ -123,6 +238,16 @@ export class GoogleDriveClient {
   async getAccessToken(): Promise<string> {
     if (this.accessToken && Date.now() < this.accessExpiryMs - 60_000) {
       return this.accessToken;
+    }
+    if (this.config.auth === 'service_account') {
+      return this.refreshViaServiceAccount();
+    }
+    return this.refreshViaOauth();
+  }
+
+  private async refreshViaOauth(): Promise<string> {
+    if (this.config.auth !== 'oauth') {
+      throw new Error('OAuth refresh called without OAuth config');
     }
     const res = await this.fetchImpl(TOKEN_ENDPOINT, {
       method: 'POST',
@@ -141,7 +266,37 @@ export class GoogleDriveClient {
     const json = (await res.json()) as {
       access_token: string;
       expires_in: number;
-      scope?: string;
+    };
+    this.accessToken = json.access_token;
+    this.accessExpiryMs = Date.now() + json.expires_in * 1000;
+    return this.accessToken;
+  }
+
+  private async refreshViaServiceAccount(): Promise<string> {
+    if (this.config.auth !== 'service_account') {
+      throw new Error('Service-account refresh called without SA config');
+    }
+    const assertion = buildServiceAccountAssertion(
+      this.config.clientEmail,
+      this.config.privateKey,
+    );
+    const res = await this.fetchImpl(TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }).toString(),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(
+        `Google Drive service-account token failed (${res.status}): ${body.slice(0, 200)}`,
+      );
+    }
+    const json = (await res.json()) as {
+      access_token: string;
+      expires_in: number;
     };
     this.accessToken = json.access_token;
     this.accessExpiryMs = Date.now() + json.expires_in * 1000;
@@ -172,7 +327,9 @@ export class GoogleDriveClient {
       `'${parentId}' in parents`,
       'trashed=false',
     ].join(' and ');
-    const listUrl = `${DRIVE_FILES}?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1`;
+    const listUrl =
+      `${DRIVE_FILES}?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1` +
+      `&${driveSupportsAll()}`;
     const listRes = await this.fetchImpl(listUrl, {
       headers: { authorization: `Bearer ${token}` },
     });
@@ -182,7 +339,7 @@ export class GoogleDriveClient {
     const listed = (await listRes.json()) as { files?: Array<{ id: string }> };
     if (listed.files?.[0]?.id) return listed.files[0].id;
 
-    const createRes = await this.fetchImpl(`${DRIVE_FILES}?fields=id`, {
+    const createRes = await this.fetchImpl(`${DRIVE_FILES}?fields=id&${driveSupportsAll()}`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${token}`,
@@ -230,7 +387,7 @@ export class GoogleDriveClient {
     // files still work via Node streaming the multipart body as a Buffer build
     // would OOM — use resumable for big files).
     const initRes = await this.fetchImpl(
-      `${DRIVE_UPLOAD}?uploadType=resumable&fields=id,md5Checksum,size,webViewLink,mimeType`,
+      `${DRIVE_UPLOAD}?uploadType=resumable&fields=id,md5Checksum,size,webViewLink,mimeType&${driveSupportsAll()}`,
       {
         method: 'POST',
         headers: {
@@ -284,18 +441,21 @@ export class GoogleDriveClient {
   /** Allow iframe embed without the viewer signing into Google. */
   async makeAnyoneWithLinkReader(fileId: string): Promise<void> {
     const token = await this.getAccessToken();
-    const res = await this.fetchImpl(`${DRIVE_FILES}/${encodeURIComponent(fileId)}/permissions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
+    const res = await this.fetchImpl(
+      `${DRIVE_FILES}/${encodeURIComponent(fileId)}/permissions?${driveSupportsAll()}&sendNotificationEmail=false`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          role: 'reader',
+          type: 'anyone',
+          allowFileDiscovery: false,
+        }),
       },
-      body: JSON.stringify({
-        role: 'reader',
-        type: 'anyone',
-        allowFileDiscovery: false,
-      }),
-    });
+    );
     // 400 often means permission already exists — treat as ok.
     if (!res.ok && res.status !== 400) {
       const body = await res.text().catch(() => '');
@@ -308,7 +468,7 @@ export class GoogleDriveClient {
     const token = await this.getAccessToken();
     await mkdir(dirname(destPath), { recursive: true });
     const res = await this.fetchImpl(
-      `${DRIVE_FILES}/${encodeURIComponent(fileId)}?alt=media`,
+      `${DRIVE_FILES}/${encodeURIComponent(fileId)}?alt=media&${driveSupportsAll()}`,
       { headers: { authorization: `Bearer ${token}` } },
     );
     if (!res.ok || !res.body) {
@@ -326,4 +486,5 @@ export class GoogleDriveClient {
   }
 }
 
-export const GDRIVE_OAUTH_SCOPE = DEFAULT_SCOPE;
+export const GDRIVE_OAUTH_SCOPE = OAUTH_SCOPE;
+export const GDRIVE_SERVICE_ACCOUNT_SCOPE = SERVICE_ACCOUNT_SCOPE;

@@ -97,12 +97,36 @@ export async function loadSrtCues(srtPath: string): Promise<AssCue[]> {
   return parseSrtCues(raw);
 }
 
+/**
+ * Hold each caption through silence: extend endMs to the next cue's start
+ * (or video end). Never shrinks a cue; only fills gaps.
+ */
+export function extendCueEndsThroughSilence(
+  cues: AssCue[],
+  videoEndMs?: number | null,
+): AssCue[] {
+  if (cues.length === 0) return [];
+  const endCap =
+    videoEndMs != null && Number.isFinite(videoEndMs) && videoEndMs > 0
+      ? Math.round(videoEndMs)
+      : null;
+  return cues.map((cue, i) => {
+    const nextStart = cues[i + 1]?.startMs;
+    const holdUntil = nextStart ?? endCap;
+    if (holdUntil == null || holdUntil <= cue.endMs) return cue;
+    if (holdUntil <= cue.startMs) return cue;
+    return { ...cue, endMs: holdUntil };
+  });
+}
+
 export function buildOverlayAssContent(opts: {
   templateId: CaptionTemplateId | string;
   cues: AssCue[];
   hookText?: string | null;
   /** Hook visible for this many ms (default ~full short). */
   hookEndMs?: number;
+  /** When set, last caption holds until this time (ms). */
+  videoEndMs?: number | null;
   captionPosition?: OverlayPosition | string | null;
   hookPosition?: OverlayPosition | string | null;
   colorMode?: CaptionColorMode | string | null;
@@ -115,7 +139,8 @@ export function buildOverlayAssContent(opts: {
   const hook = hookAssStyleFields(opts.hookPosition);
   const playResX = opts.playResX ?? 1080;
   const playResY = opts.playResY ?? 1920;
-  const lastCueEnd = opts.cues.reduce((m, c) => Math.max(m, c.endMs), 0);
+  const heldCues = extendCueEndsThroughSilence(opts.cues, opts.videoEndMs);
+  const lastCueEnd = heldCues.reduce((m, c) => Math.max(m, c.endMs), 0);
   const hookEnd = Math.max(opts.hookEndMs ?? 8_000, lastCueEnd || 8_000);
   const isKaraoke = captionTemplateMeta(templateId).highlightMode === 'karaoke_word';
 
@@ -144,9 +169,18 @@ export function buildOverlayAssContent(opts: {
     );
   }
 
-  for (const cue of opts.cues) {
+  for (let i = 0; i < heldCues.length; i++) {
+    const cue = heldCues[i]!;
+    const spoken = opts.cues[i]!;
     if (isKaraoke) {
-      const frames = buildKaraokeAssCueEvents(cue, templateId, colorMode);
+      // Word slices stay on the spoken window; hold final line through silence.
+      const frames = buildKaraokeAssCueEvents(spoken, templateId, colorMode);
+      if (frames.length > 0 && cue.endMs > frames[frames.length - 1]!.endMs) {
+        frames[frames.length - 1] = {
+          ...frames[frames.length - 1]!,
+          endMs: cue.endMs,
+        };
+      }
       for (const frame of frames) {
         lines.push(
           `Dialogue: 0,${msToAssTime(frame.startMs)},${msToAssTime(frame.endMs)},${caption.name},,0,0,0,,${frame.text}`,
@@ -171,6 +205,7 @@ export async function writeOverlayAssFile(
     cues: AssCue[];
     hookText?: string | null;
     hookEndMs?: number;
+    videoEndMs?: number | null;
     captionPosition?: OverlayPosition | string | null;
     hookPosition?: OverlayPosition | string | null;
     colorMode?: CaptionColorMode | string | null;

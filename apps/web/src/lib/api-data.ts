@@ -515,6 +515,8 @@ export interface AiPipelineItem {
   selectedHookPosition?: string | null;
   /** Per-video color filter override. */
   selectedColorFilter?: string | null;
+  /** YouTube Short (9:16) vs Long (source aspect) for REPURPOSED posts. */
+  youtubeFormat?: 'SHORT' | 'LONG' | null;
   /** English summary for the active narration (non-English channels only). */
   englishSummary?: string;
   metadata: string | null;
@@ -596,7 +598,12 @@ export async function deleteSourceVideo(id: string): Promise<void> {
 /** Save owner edits to publish title / description / tags on the content item. */
 export async function updatePublishMetadata(
   id: string,
-  input: { title: string; description: string; tags: string[] },
+  input: {
+    title: string;
+    description: string;
+    tags: string[];
+    youtubeFormat?: 'SHORT' | 'LONG';
+  },
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/publish-metadata`, input);
 }
@@ -661,6 +668,14 @@ export async function selectColorFilter(
   selectedColorFilter: string,
 ): Promise<AiPipelineItem> {
   return api.patch<AiPipelineItem>(`/content/${id}/script`, { selectedColorFilter });
+}
+
+/** Persist YouTube Short vs Long before render (REPURPOSED / copyright flow). */
+export async function selectYoutubeFormat(
+  id: string,
+  youtubeFormat: 'SHORT' | 'LONG',
+): Promise<AiPipelineItem> {
+  return api.patch<AiPipelineItem>(`/content/${id}/script`, { youtubeFormat });
 }
 
 /** Ask AI to rewrite the narration from an instruction; caller PATCHes to save. */

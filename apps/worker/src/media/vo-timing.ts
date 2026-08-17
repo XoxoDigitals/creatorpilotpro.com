@@ -12,6 +12,44 @@ export const NARRATION_DURATION_MARGIN_SEC = 0.25;
 export const MAX_VO_FIT_SPEED = 1.15;
 /** Ignore tiny overruns — no need to speed 2% of slack. */
 export const MIN_VO_FIT_SPEED = 1.04;
+/**
+ * Natural pause between dialogue segments when concatenating TTS clips.
+ * ~320ms feels like a short-form breath without making VO sluggish.
+ */
+export const INTER_SEGMENT_GAP_SEC = 0.32;
+/** Silence shorter than this is skipped (ffmpeg concat noise floor). */
+export const MIN_SILENCE_SEC = 0.04;
+
+const SENTENCE_SPLIT = /(?<=[.!?。！？])\s+/;
+const MAX_SEGMENT_CHARS = 4000;
+
+/**
+ * Split narration into spoken segments (prefer one sentence each) so TTS
+ * concat can insert inter-segment gaps. Oversized sentences are hard-split.
+ */
+export function splitNarrationSegments(script: string): string[] {
+  const trimmed = script.trim();
+  if (!trimmed) return [];
+  const sentences = trimmed.split(SENTENCE_SPLIT).map((s) => s.trim()).filter(Boolean);
+  if (sentences.length === 0) return [trimmed];
+
+  const chunks: string[] = [];
+  for (const sentence of sentences) {
+    if (sentence.length <= MAX_SEGMENT_CHARS) {
+      chunks.push(sentence);
+      continue;
+    }
+    let rest = sentence;
+    while (rest.length > MAX_SEGMENT_CHARS) {
+      let cut = rest.lastIndexOf(' ', MAX_SEGMENT_CHARS);
+      if (cut < MAX_SEGMENT_CHARS / 2) cut = MAX_SEGMENT_CHARS;
+      chunks.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) chunks.push(rest);
+  }
+  return chunks.length > 0 ? chunks : [trimmed];
+}
 
 export function narrationBudgetSec(
   videoDurationSec: number | null | undefined,
@@ -257,11 +295,15 @@ export interface ConcatPadStep {
  * Insert leading/gap silence so clips land on analysis timestamps.
  * Natural pace: if a clip overruns into the next beat start, the next clip
  * starts after it (no speedup). Trailing pad-to-picture is at render mux.
+ * When clips abut or overrun, still insert at least `minGapSec` between them
+ * so dialogue does not run as one unbroken stream.
  */
 export function timelinePadPlan(
   clips: { startSec: number; durationSec: number }[],
   _videoDurationSec?: number | null,
+  opts?: { minGapSec?: number },
 ): ConcatPadStep[] {
+  const minGap = opts?.minGapSec ?? INTER_SEGMENT_GAP_SEC;
   const ordered = clips
     .map((c, index) => ({ ...c, index }))
     .filter((c) => c.durationSec > 0)
@@ -270,14 +312,35 @@ export function timelinePadPlan(
   let cursor = 0;
   for (const clip of ordered) {
     const gap = clip.startSec - cursor;
-    if (gap >= 0.04) {
-      steps.push({ kind: 'silence', durationSec: gap });
-      cursor += gap;
+    // First clip: honor leading pad only. Later clips: keep beat gaps, but
+    // never less than minGap when something was already placed.
+    const silenceSec = cursor > 0 ? Math.max(gap, minGap) : Math.max(gap, 0);
+    if (silenceSec >= MIN_SILENCE_SEC) {
+      steps.push({ kind: 'silence', durationSec: silenceSec });
+      cursor += silenceSec;
     }
     steps.push({ kind: 'audio', index: clip.index });
     cursor += clip.durationSec;
   }
   return steps;
+}
+
+/** Actual audio start times (sec) for each clip index after applying a pad plan. */
+export function clipStartsFromPadPlan(
+  plan: ConcatPadStep[],
+  clips: { durationSec: number }[],
+): number[] {
+  const starts: number[] = clips.map(() => 0);
+  let cursor = 0;
+  for (const step of plan) {
+    if (step.kind === 'silence' && step.durationSec != null) {
+      cursor += step.durationSec;
+    } else if (step.kind === 'audio' && step.index != null) {
+      starts[step.index] = cursor;
+      cursor += Math.max(0, clips[step.index]?.durationSec ?? 0);
+    }
+  }
+  return starts;
 }
 
 export function beatsForPrompt(beats: AnalysisBeat[]): {

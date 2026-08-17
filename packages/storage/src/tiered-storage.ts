@@ -128,14 +128,16 @@ export class TieredStorage implements StorageTier {
    * (e.g. `items/{contentItemId}/final`).
    */
   async archiveToDrive(obj: StoredObject, driveFolderPath: string): Promise<StoredObject> {
-    if (TieredStorage.backendIsGdrive()) {
-      requireGDriveConfig();
-    }
     const client = this.drive;
     if (!client) {
+      // Only fall back to env-only require when no client was injected (callers
+      // that use Settings should inject a resolved client first).
+      if (TieredStorage.backendIsGdrive()) {
+        requireGDriveConfig();
+      }
       throw new Error(
-        'archiveToDrive: Google Drive is not configured. Set GOOGLE_DRIVE_CLIENT_ID, ' +
-          'GOOGLE_DRIVE_CLIENT_SECRET, GOOGLE_DRIVE_REFRESH_TOKEN, GOOGLE_DRIVE_ROOT_FOLDER_ID.',
+        'archiveToDrive: Google Drive is not configured. Paste credentials in ' +
+          'Settings → General → Google Drive media library, or set GOOGLE_DRIVE_* env vars.',
       );
     }
     if (!obj.localPath) {

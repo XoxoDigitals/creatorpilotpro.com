@@ -145,6 +145,29 @@ export const VO_MIX_BED_LOUDNORM = 'loudnorm=I=-16:TP=-1.5:LRA=11';
 export const VO_MIX_BED_CONTROL =
   `${VO_MIX_BED_LOUDNORM},acompressor=threshold=-18dB:ratio=2:attack=10:release=120:makeup=1,alimiter=limit=0.95:attack=5:release=50`;
 /**
+ * Subtle transform on original/stripped bed audio before loudnorm + duck + VO mix.
+ * Content stays recognizable; pitch/tempo/EQ/width/dynamics/reverb shift just enough
+ * to sound different from the source. Does not touch the TTS voiceover leg.
+ *
+ * Pitch ≈ +1 semitone via asetrate (formants shift naturally with pitch);
+ * tempo restored then nudged to ~99%; light EQ / width / compression / aecho.
+ */
+export const BED_AUDIO_TRANSFORM_AF = [
+  'aformat=sample_rates=44100:channel_layouts=stereo',
+  // 44100 * 2^(1/12) ≈ 46692 → +1 semitone (+ formant shift)
+  'asetrate=46692',
+  'aresample=44100',
+  // Restore tempo after pitch, then ~99% playback speed
+  'atempo=0.94387',
+  'atempo=0.99',
+  'equalizer=f=80:t=q:w=1:g=1.5',
+  'equalizer=f=1200:t=q:w=1:g=-1',
+  'equalizer=f=6000:t=q:w=1:g=1',
+  'extrastereo=m=1.15',
+  'acompressor=threshold=-20dB:ratio=2.5:attack=20:release=200:makeup=1.5',
+  'aecho=0.8:0.9:40|60:0.15|0.1',
+].join(',');
+/**
  * Light sidechain duck under speech so VO stays clear without muting the bed
  * the user set with the percent control.
  */
@@ -199,7 +222,13 @@ function bedPrepChain(
   bedGain: number,
   extras: string[],
 ): string {
-  const parts = [...extras, VO_MIX_BED_CONTROL, `volume=${bedGain}`].filter(Boolean);
+  // Order: optional dialogue mute → bed character transform → loudnorm/limit → gain.
+  const parts = [
+    ...extras,
+    BED_AUDIO_TRANSFORM_AF,
+    VO_MIX_BED_CONTROL,
+    `volume=${bedGain}`,
+  ].filter(Boolean);
   return `[${bedInput}]${parts.join(',')}[bg]`;
 }
 

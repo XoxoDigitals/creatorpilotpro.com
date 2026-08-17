@@ -186,6 +186,19 @@ export class PublishingService {
       if (!Array.isArray(override.tags) && aiTags.length > 0) {
         override.tags = aiTags;
       }
+      // Persist YouTube Short/Long onto the publish target for render/publish.
+      if (
+        account.platform === 'YOUTUBE' &&
+        (typeof override.youtubeFormat !== 'string' || !override.youtubeFormat.trim())
+      ) {
+        const step = (content.currentStep ?? {}) as Record<string, unknown>;
+        const fromStep =
+          typeof step.youtubeFormat === 'string' ? step.youtubeFormat : null;
+        const fromMeta =
+          typeof aiMeta.youtubeFormat === 'string' ? aiMeta.youtubeFormat : null;
+        const fmt = (fromStep || fromMeta || '').toUpperCase();
+        if (fmt === 'SHORT' || fmt === 'LONG') override.youtubeFormat = fmt;
+      }
       this.guardMetadata(account.platform, override);
 
       let scheduledAt: Date;

@@ -39,9 +39,14 @@ const SETTINGS_WHITELIST: Record<string, SettingSpec> = {
    */
   'storage.gdrive': {
     schema: z.object({
+      /** System of record — preferred over STORAGE_BACKEND env. */
+      backend: z.enum(['local', 'gdrive']).optional(),
+      authMode: z.enum(['oauth', 'service_account']).optional(),
       clientId: z.string().optional(),
       clientSecret: z.string().optional(),
       refreshToken: z.string().optional(),
+      clientEmail: z.string().optional(),
+      privateKey: z.string().optional(),
       rootFolderId: z.string().optional(),
     }),
     secret: true,
@@ -106,6 +111,8 @@ const SECRET_STRING_FIELDS = new Set([
   'clientId',
   'clientSecret',
   'refreshToken',
+  'clientEmail',
+  'privateKey',
   'appId',
   'appSecret',
   'clientKey',
@@ -116,7 +123,7 @@ const SECRET_STRING_FIELDS = new Set([
 ]);
 
 /** Non-credential fields stored inside a secret object — return full value in preview. */
-const CLEAR_PREVIEW_FIELDS = new Set(['rootFolderId']);
+const CLEAR_PREVIEW_FIELDS = new Set(['rootFolderId', 'authMode', 'backend']);
 
 export interface SettingView {
   key: string;

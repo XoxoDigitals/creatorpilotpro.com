@@ -16,6 +16,8 @@ export const updatePublishMetadataSchema = z.object({
   title: z.string().min(1).max(300),
   description: z.string().max(5000).default(''),
   tags: z.array(z.string().min(1).max(100)).max(30).default([]),
+  /** YouTube Short vs Long (REPURPOSED / copyright flow). */
+  youtubeFormat: z.enum(['SHORT', 'LONG']).optional(),
 });
 export type UpdatePublishMetadataDto = z.infer<typeof updatePublishMetadataSchema>;
 
@@ -43,6 +45,8 @@ export const updateScriptSchema = z
     selectedHookPosition: z.string().min(1).max(20).optional(),
     /** Per-video color filter override (none / vivid / warm / cool / contrast). */
     selectedColorFilter: z.string().min(1).max(20).optional(),
+    /** YouTube Short (9:16 pad) vs Long (keep source aspect) for REPURPOSED posts. */
+    youtubeFormat: z.enum(['SHORT', 'LONG']).optional(),
   })
   .refine(
     (d) =>
@@ -54,11 +58,12 @@ export const updateScriptSchema = z
           d.selectedCaptionPosition?.trim() ||
           d.selectedCaptionColorMode?.trim() ||
           d.selectedHookPosition?.trim() ||
-          d.selectedColorFilter?.trim(),
+          d.selectedColorFilter?.trim() ||
+          d.youtubeFormat,
       ),
     {
       message:
-        'script, selectedScriptId, selectedHookTextId, selectedCaptionTemplateId, selectedCaptionPosition, selectedCaptionColorMode, selectedHookPosition, or selectedColorFilter is required',
+        'script, selectedScriptId, selectedHookTextId, selectedCaptionTemplateId, selectedCaptionPosition, selectedCaptionColorMode, selectedHookPosition, selectedColorFilter, or youtubeFormat is required',
     },
   );
 export type UpdateScriptDto = z.infer<typeof updateScriptSchema>;

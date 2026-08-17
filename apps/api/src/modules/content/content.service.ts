@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
 import type { ContentItemStatus, Prisma } from '@scp/db';
-import { withPublishReviewApproved, normalizeCaptionTemplateId, normalizeOverlayYPercent, normalizeCaptionColorMode, normalizeColorFilterPreset, isOverlayOffId, OVERLAY_OFF_ID } from '@scp/shared';
+import { withPublishReviewApproved, normalizeCaptionTemplateId, normalizeOverlayYPercent, normalizeCaptionColorMode, normalizeColorFilterPreset, normalizeYoutubeFormat, isOverlayOffId, OVERLAY_OFF_ID } from '@scp/shared';
 import { drivePreviewEmbedUrl } from '@scp/storage';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
@@ -177,6 +177,20 @@ function applySelectedColorFilter(
   if (!raw) return;
   const preset = normalizeColorFilterPreset(raw);
   step.selectedColorFilter = preset;
+}
+
+function applyYoutubeFormat(
+  step: Record<string, unknown>,
+  youtubeFormat?: string,
+): void {
+  const fmt = normalizeYoutubeFormat(youtubeFormat);
+  if (!fmt) return;
+  step.youtubeFormat = fmt;
+  const prev =
+    step.metadata && typeof step.metadata === 'object' && !Array.isArray(step.metadata)
+      ? (step.metadata as Record<string, unknown>)
+      : {};
+  step.metadata = { ...prev, youtubeFormat: fmt };
 }
 
 @Injectable()
@@ -609,7 +623,7 @@ export class ContentService {
    */
   async updatePublishMetadata(
     id: string,
-    dto: { title: string; description: string; tags: string[] },
+    dto: { title: string; description: string; tags: string[]; youtubeFormat?: 'SHORT' | 'LONG' },
   ): Promise<AiPipelineItemView> {
     const item = await this.prisma.client.contentItem.findFirst({
       where: { id, deletedAt: null },
@@ -645,12 +659,15 @@ export class ContentService {
       step.metadata && typeof step.metadata === 'object' && !Array.isArray(step.metadata)
         ? (step.metadata as Record<string, unknown>)
         : {};
+    const ytFmt = normalizeYoutubeFormat(dto.youtubeFormat) ?? normalizeYoutubeFormat(step.youtubeFormat);
     step.metadata = {
       ...prev,
       title: dto.title.trim(),
       description: dto.description,
       tags: dto.tags.map((t) => t.trim()).filter(Boolean),
+      ...(ytFmt ? { youtubeFormat: ytFmt } : {}),
     };
+    if (ytFmt) step.youtubeFormat = ytFmt;
     const updated = await this.prisma.client.contentItem.update({
       where: { id },
       data: {
@@ -699,6 +716,7 @@ export class ContentService {
       selectedCaptionColorMode?: string;
       selectedHookPosition?: string;
       selectedColorFilter?: string;
+      youtubeFormat?: 'SHORT' | 'LONG';
     },
   ): Promise<AiPipelineItemView> {
     const item = await this.findPipelineItem(id);
@@ -733,6 +751,10 @@ export class ContentService {
       applySelectedColorFilter(step, {
         selectedColorFilter: dto.selectedColorFilter,
       });
+    }
+
+    if (dto.youtubeFormat) {
+      applyYoutubeFormat(step, dto.youtubeFormat);
     }
 
     if (dto.selectedHookTextId?.trim()) {

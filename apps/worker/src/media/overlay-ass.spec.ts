@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildOverlayAssContent, msToAssTime, parseSrtCues } from './overlay-ass.js';
+import {
+  buildOverlayAssContent,
+  extendCueEndsThroughSilence,
+  msToAssTime,
+  parseSrtCues,
+} from './overlay-ass.js';
 
 describe('overlay-ass', () => {
   it('formats ASS timestamps', () => {
@@ -20,6 +25,63 @@ Second line
     expect(cues).toHaveLength(2);
     expect(cues[0]?.text).toBe('Hello world');
     expect(cues[1]?.startMs).toBe(2500);
+  });
+
+  it('extends cue ends through silence to next start or video end', () => {
+    const held = extendCueEndsThroughSilence(
+      [
+        { startMs: 0, endMs: 1000, text: 'a' },
+        { startMs: 2500, endMs: 3000, text: 'b' },
+      ],
+      5000,
+    );
+    expect(held[0]?.endMs).toBe(2500);
+    expect(held[1]?.endMs).toBe(5000);
+  });
+
+  it('does not shrink cues that already abut or overlap the next', () => {
+    const held = extendCueEndsThroughSilence([
+      { startMs: 0, endMs: 2000, text: 'a' },
+      { startMs: 1500, endMs: 2500, text: 'b' },
+    ]);
+    expect(held[0]?.endMs).toBe(2000);
+    expect(held[1]?.endMs).toBe(2500);
+  });
+
+  it('holds last caption through silence in ASS dialogues', () => {
+    const ass = buildOverlayAssContent({
+      templateId: 'impact_hormozi',
+      videoEndMs: 8000,
+      cues: [
+        { startMs: 0, endMs: 1000, text: 'first line here' },
+        { startMs: 3000, endMs: 4000, text: 'second line here' },
+      ],
+    });
+    const captions = ass
+      .split('\n')
+      .filter((l) => l.startsWith('Dialogue: 0,') && l.includes('Caption'));
+    expect(captions[0]).toContain(msToAssTime(0));
+    expect(captions[0]).toContain(msToAssTime(3000));
+    expect(captions[1]).toContain(msToAssTime(3000));
+    expect(captions[1]).toContain(msToAssTime(8000));
+  });
+
+  it('holds karaoke last word frame through silence without stretching slices', () => {
+    const ass = buildOverlayAssContent({
+      templateId: 'karaoke_word',
+      colorMode: 'dark',
+      cues: [{ startMs: 0, endMs: 900, text: 'hello world test' }],
+      videoEndMs: 5000,
+    });
+    const dialogues = ass
+      .split('\n')
+      .filter((l) => l.startsWith('Dialogue: 0,') && l.includes('Caption'));
+    expect(dialogues.length).toBe(3);
+    // First two frames stay within the spoken window; last holds to video end.
+    expect(dialogues[0]).toContain(msToAssTime(0));
+    expect(dialogues[2]).toContain(msToAssTime(5000));
+    // Middle frame should not extend to video end (word timing preserved).
+    expect(dialogues[1]).not.toContain(msToAssTime(5000));
   });
 
   it('builds ASS with hook + caption styles', () => {

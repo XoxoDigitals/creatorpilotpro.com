@@ -1,6 +1,6 @@
 import type { Asset, ContentItem } from '@scp/db';
 import { assetHasMedia, drivePreviewEmbedUrl } from '@scp/storage';
-import { buildHookTextVariants, isOverlayOffId, OVERLAY_OFF_ID, normalizeColorFilterPreset } from '@scp/shared';
+import { buildHookTextVariants, isOverlayOffId, OVERLAY_OFF_ID, normalizeColorFilterPreset, normalizeYoutubeFormat } from '@scp/shared';
 import { toAssetView, type AssetView } from '../storage/asset.view';
 
 /** Public view of a content item (docs/03 Domain 4). */
@@ -112,6 +112,11 @@ export interface AiPipelineItemView {
   selectedHookPosition: string | null;
   /** Per-video color filter override (null = account default). */
   selectedColorFilter: string | null;
+  /**
+   * YouTube Short (9:16 letterbox) vs Long (keep source aspect) for REPURPOSED posts.
+   * Null when not YouTube or unset (render defaults Short).
+   */
+  youtubeFormat: 'SHORT' | 'LONG' | null;
   /**
    * English summary for the selected (or sole) narration script when the channel
    * output language is not English. Empty string when English or unavailable.
@@ -269,11 +274,26 @@ function parsePublishMetadata(raw: unknown): {
     typeof meta.description === 'string' && meta.description.trim()
       ? meta.description.trim()
       : null;
-  const tags = Array.isArray(meta.tags)
-    ? (meta.tags as unknown[]).filter(
-        (t): t is string => typeof t === 'string' && t.trim().length > 0,
-      )
-    : [];
+  const asTagList = (raw: unknown): string[] => {
+    if (typeof raw === 'string' && raw.trim()) {
+      return raw
+        .split(/[\s,#\n]+/)
+        .map((s) => s.replace(/^#/, '').trim())
+        .filter((s) => s.length > 0);
+    }
+    if (!Array.isArray(raw)) return [];
+    return (raw as unknown[])
+      .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      .map((t) => t.replace(/^#/, '').trim())
+      .filter(Boolean);
+  };
+  // Prefer tags; fall back to hashtags / keywords (models often fill those instead).
+  const tags =
+    asTagList(meta.tags).length > 0
+      ? asTagList(meta.tags)
+      : asTagList(meta.hashtags).length > 0
+        ? asTagList(meta.hashtags)
+        : asTagList(meta.keywords);
   return { title, description, tags };
 }
 
@@ -359,6 +379,15 @@ export function toAiPipelineItemView(
       typeof step.selectedColorFilter === 'string' && step.selectedColorFilter.trim()
         ? normalizeColorFilterPreset(step.selectedColorFilter)
         : null,
+    youtubeFormat: (() => {
+      const fromStep = normalizeYoutubeFormat(step.youtubeFormat);
+      if (fromStep) return fromStep;
+      const meta =
+        step.metadata && typeof step.metadata === 'object' && !Array.isArray(step.metadata)
+          ? (step.metadata as Record<string, unknown>)
+          : {};
+      return normalizeYoutubeFormat(meta.youtubeFormat);
+    })(),
     englishSummary: selectedVariant?.englishSummary?.trim() || stepSummary || '',
     metadata: asText(step.metadata),
     publishTitle: publish.title,
@@ -442,10 +471,16 @@ function pickTags(
   const step = (c.currentStep ?? {}) as Record<string, unknown>;
   const meta = step.metadata;
   if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
-    const raw = (meta as Record<string, unknown>).tags;
-    if (Array.isArray(raw)) {
-      return raw.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-    }
+    const m = meta as Record<string, unknown>;
+    const pick = (raw: unknown): string[] =>
+      Array.isArray(raw)
+        ? raw.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+        : [];
+    const tags = pick(m.tags);
+    if (tags.length > 0) return tags;
+    const hashtags = pick(m.hashtags);
+    if (hashtags.length > 0) return hashtags;
+    return pick(m.keywords);
   }
   return [];
 }

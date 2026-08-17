@@ -31,6 +31,8 @@ import {
   normalizeCaptionColorMode,
   normalizeColorFilterPreset,
   isOverlayOffId,
+  shouldForceVertical9x16,
+  normalizeYoutubeFormat,
   type RenderSettings,
 } from '@scp/shared';
 import { resolveDemucsBinary } from '@scp/shared/bin';
@@ -127,6 +129,62 @@ async function resolveAccountRenderSettings(contentItemId: string): Promise<Rend
     select: { voiceSettings: true },
   });
   return renderSettingsFromVoiceSettings(profile?.voiceSettings);
+}
+
+/** Platform + YouTube Short/Long for 9:16 letterbox decision. */
+async function resolveRenderCanvasContext(contentItemId: string): Promise<{
+  platform: string | null;
+  youtubeFormat: string | null;
+}> {
+  const prisma = getPrisma();
+  const item = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    select: {
+      currentStep: true,
+      idea: { select: { account: { select: { platform: true } } } },
+      sourceVideo: {
+        select: {
+          watchedSource: {
+            select: { targetAccount: { select: { platform: true } } },
+          },
+        },
+      },
+      publishTargets: {
+        select: {
+          account: { select: { platform: true } },
+          metadataOverride: true,
+        },
+        take: 5,
+        orderBy: { createdAt: 'asc' },
+      },
+    },
+  });
+  const platform =
+    item?.publishTargets.find((t) => t.account?.platform)?.account?.platform ??
+    item?.sourceVideo?.watchedSource?.targetAccount?.platform ??
+    item?.idea?.account?.platform ??
+    null;
+  const step = (item?.currentStep ?? {}) as Record<string, unknown>;
+  const meta =
+    step.metadata && typeof step.metadata === 'object' && !Array.isArray(step.metadata)
+      ? (step.metadata as Record<string, unknown>)
+      : {};
+  let youtubeFormat =
+    normalizeYoutubeFormat(step.youtubeFormat) ??
+    normalizeYoutubeFormat(meta.youtubeFormat) ??
+    null;
+  for (const t of item?.publishTargets ?? []) {
+    const override =
+      t.metadataOverride && typeof t.metadataOverride === 'object' && !Array.isArray(t.metadataOverride)
+        ? (t.metadataOverride as Record<string, unknown>)
+        : {};
+    const fromOverride = normalizeYoutubeFormat(override.youtubeFormat);
+    if (fromOverride) {
+      youtubeFormat = fromOverride;
+      break;
+    }
+  }
+  return { platform, youtubeFormat };
 }
 
 /** Prefer FFMPEG_FONTFILE, then common OS fonts (drawtext needs an explicit file on Linux). */
@@ -515,6 +573,11 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     // Step 3b: Trim lead-in + optional flip / color / hook / burned captions.
     // Prefer a single ASS overlay (ffmpeg `ass=`) — more reliable than drawtext.
     const renderSettings = await resolveAccountRenderSettings(contentItemId);
+    const canvas = await resolveRenderCanvasContext(contentItemId);
+    const forceVertical9x16 = shouldForceVertical9x16({
+      platform: canvas.platform,
+      youtubeFormat: canvas.youtubeFormat,
+    });
     const step = (item.currentStep ?? {}) as Record<string, unknown>;
     const selectedTemplateRaw =
       typeof step.selectedCaptionTemplateId === 'string'
@@ -611,6 +674,11 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
           templateId: captionTemplateId,
           cues: effectiveSettings.burnCaptions.enabled ? cues : [],
           hookText: effectiveSettings.hookText.enabled ? hookOverlayText : null,
+          // Hold last caption through silence until picture end when known.
+          videoEndMs:
+            pictureSec != null && Number.isFinite(pictureSec)
+              ? Math.round(pictureSec * 1000)
+              : null,
           captionPosition,
           hookPosition,
           colorMode: captionColorMode,
@@ -634,6 +702,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
       subtitlePath,
       hookOverlayText,
       assPath,
+      forceVertical9x16,
     );
     console.log(
       `[worker:render] effects for ${contentItemId}: trim=${effectiveSettings.trimStartMs}ms` +
@@ -641,7 +710,12 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         ` color=${effectiveSettings.colorFilter.enabled ? effectiveSettings.colorFilter.preset : 'off'}` +
         ` hook=${hookOverlayText ? JSON.stringify(hookOverlayText) : 'off'}` +
         ` captions=${effectiveSettings.burnCaptions.enabled ? (subtitlePath ? 'yes' : 'no-srt') : 'off'}` +
-        ` ass=${assPath ? 'yes' : 'no'}`,
+        ` ass=${assPath ? 'yes' : 'no'}` +
+        ` canvas9x16=${forceVertical9x16 ? 'yes' : 'no'}` +
+        ` platform=${canvas.platform ?? 'unknown'}` +
+        (canvas.platform === 'YOUTUBE'
+          ? ` ytFormat=${canvas.youtubeFormat ?? 'SHORT(default)'}`
+          : ''),
     );
 
     if (needsEffectsPass) {
@@ -652,6 +726,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         subtitlePath: assPath ? null : subtitlePath,
         hookOverlayText: assPath ? null : hookOverlayText,
         fontFile: resolveDrawtextFontFile(),
+        forceVertical9x16,
       });
       let applied = false;
       let lastErr: unknown;
@@ -671,6 +746,7 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
               (effectiveSettings.colorFilter.enabled
                 ? ` [color:${effectiveSettings.colorFilter.preset}]`
                 : '') +
+              (forceVertical9x16 ? ' [9:16-pad]' : '') +
               (vf.includes('ass=') ? ' [ass]' : '') +
               (vf.includes('drawtext=') && hookOverlayText ? ` [hook:${hookOverlayText}]` : '') +
               (vf.includes('subtitles=') ? ' [captions]' : '') +

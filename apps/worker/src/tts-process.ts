@@ -4,9 +4,10 @@
  * package voiceovers (idea_tts). Chain default: Edge Neural → Kokoro → Gemini → OpenAI.
  *
  * Repurposed VO with timed lines[] is laid out on analysis beats: silence gaps
- * between scenes, natural speaking pace (never speed up a clip to fit a short
- * beat — if VO is longer than the beat, place it as-is and push later lines).
- * Without timed lines, falls back to one continuous synth of the full script.
+ * between scenes (minimum ~320ms between dialogue lines), natural speaking pace
+ * (never speed up a clip to fit a short beat — if VO is longer than the beat,
+ * place it as-is and push later lines). Without timed lines, falls back to
+ * sentence-chunked continuous synth with the same inter-segment gap.
  * Edge TTS timings (VTT/SRT) are preferred over re-transcription.
  */
 import { join, dirname } from 'node:path';
@@ -39,6 +40,10 @@ import {
   analysisDurationSec,
   timedLinesFromStep,
   timelinePadPlan,
+  clipStartsFromPadPlan,
+  splitNarrationSegments,
+  INTER_SEGMENT_GAP_SEC,
+  MIN_SILENCE_SEC,
   type TimedNarrationLine,
 } from './media/vo-timing.js';
 import type { RenderJob, IdeaTranscriptJob } from './ai-jobs.js';
@@ -46,23 +51,9 @@ import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.j
 
 const STORAGE_ROOT = process.env.STORAGE_ROOT ?? '';
 
-const SENTENCE_SPLIT = /(?<=[.!?。！？])\s+/;
-const MAX_CHUNK_CHARS = 4000;
-
 function chunkScript(script: string): string[] {
-  const sentences = script.split(SENTENCE_SPLIT).filter((s) => s.trim());
-  const chunks: string[] = [];
-  let current = '';
-
-  for (const sentence of sentences) {
-    if (current.length + sentence.length > MAX_CHUNK_CHARS && current) {
-      chunks.push(current.trim());
-      current = '';
-    }
-    current += (current ? ' ' : '') + sentence;
-  }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks.length > 0 ? chunks : [script];
+  const parts = splitNarrationSegments(script);
+  return parts.length > 0 ? parts : [script];
 }
 
 function buildKeyStore(prisma: PrismaClient, masterKey: Buffer): KeyStore {
@@ -406,6 +397,7 @@ async function synthesizeScript(opts: {
     allTimings.push(...offsetTimings(chunkTimings, offsetMs));
     const dur = await probeDurationMs(ffmpeg, wavChunk);
     offsetMs += dur > 0 ? dur : estimateDurationFromTimings(chunkTimings);
+    if (i < chunks.length - 1) offsetMs += Math.round(INTER_SEGMENT_GAP_SEC * 1000);
   }
 
   const finalPath = join(voDir, 'voiceover.wav');
@@ -469,6 +461,7 @@ async function synthesizeViaEdge(
     allTimings.push(...offsetTimings(synth.timings, offsetMs));
     const dur = await probeDurationMs(ffmpeg, wavChunk);
     offsetMs += dur > 0 ? dur : estimateDurationFromTimings(synth.timings);
+    if (i < chunks.length - 1) offsetMs += Math.round(INTER_SEGMENT_GAP_SEC * 1000);
     console.log(
       `[worker:tts] Edge chunk ${i + 1}/${chunks.length} done in ${Date.now() - chunkStart}ms (audio~${dur}ms)`,
     );
@@ -504,6 +497,7 @@ async function concatNormalize(
   chunkPaths: string[],
   voDir: string,
   finalPath: string,
+  gapSec: number = INTER_SEGMENT_GAP_SEC,
 ): Promise<void> {
   // Enhancement (EQ + compressor + loudnorm) requires ffmpeg. Fail clearly
   // rather than storing unprocessed TTS — ffmpeg is an operational dependency.
@@ -518,13 +512,25 @@ async function concatNormalize(
     return;
   }
 
+  const concatEntries: string[] = [];
+  const tempSilence: string[] = [];
+  for (let i = 0; i < chunkPaths.length; i++) {
+    if (i > 0 && gapSec >= MIN_SILENCE_SEC) {
+      const silPath = join(voDir, `gap_${String(i).padStart(3, '0')}.wav`);
+      await ffmpeg.generateSilenceWav(silPath, gapSec);
+      tempSilence.push(silPath);
+      concatEntries.push(silPath);
+    }
+    concatEntries.push(chunkPaths[i]!);
+  }
+
   const listPath = join(voDir, 'concat.txt');
   await writeFile(
     listPath,
-    chunkPaths.map((p) => `file '${p!.replace(/\\/g, '/')}'`).join('\n'),
+    concatEntries.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'),
   );
   const concatPath = join(voDir, 'concat_raw.wav');
-  // End-to-end concat (no inter-chunk silence) then enhance once.
+  // Sentence/segment clips with short silence between, then enhance once.
   await ffmpeg.exec([
     '-f',
     'concat',
@@ -539,6 +545,7 @@ async function concatNormalize(
   await ffmpeg.enhanceVoiceover(concatPath, finalPath);
   await unlink(listPath).catch(() => {});
   await unlink(concatPath).catch(() => {});
+  for (const s of tempSilence) await unlink(s).catch(() => {});
 }
 
 /**
@@ -557,8 +564,9 @@ async function trimWavToMaxDuration(ffmpeg: Ffmpeg, srcPath: string, maxSec: num
 
 /**
  * Synth each timed line at natural pace, insert silence so clips start on
- * analysis timestamps. If a clip is longer than its beat, do NOT speed it —
- * place as-is; later lines start after it (timelinePadPlan).
+ * analysis timestamps (with a minimum inter-line gap). If a clip is longer
+ * than its beat, do NOT speed it — place as-is; later lines start after it
+ * (timelinePadPlan). Caption timings follow the actual concat timeline.
  */
 async function synthesizeSceneAligned(opts: {
   lines: TimedNarrationLine[];
@@ -575,7 +583,7 @@ async function synthesizeSceneAligned(opts: {
 
   const clipPaths: string[] = [];
   const clipMeta: { startSec: number; durationSec: number }[] = [];
-  const allTimings: TimedSegment[] = [];
+  const rawLineTimings: TimedSegment[][] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -613,22 +621,28 @@ async function synthesizeSceneAligned(opts: {
       Math.max(0.4, text.split(/\s+/).filter(Boolean).length / 2.2);
     clipPaths.push(wavPath);
     clipMeta.push({ startSec: Math.max(0, line.startSec), durationSec: durSec });
-    const offsetMs = Math.round(line.startSec * 1000);
-    if (Array.isArray(synth.timings)) {
-      allTimings.push(...offsetTimings(synth.timings, offsetMs));
-    }
+    rawLineTimings.push(Array.isArray(synth.timings) ? synth.timings : []);
   }
 
   if (clipPaths.length === 0) {
     throw new Error('Scene-aligned TTS produced no clips');
   }
 
-  const plan = timelinePadPlan(clipMeta, videoDurationSec);
+  const plan = timelinePadPlan(clipMeta, videoDurationSec, {
+    minGapSec: INTER_SEGMENT_GAP_SEC,
+  });
+  const actualStarts = clipStartsFromPadPlan(plan, clipMeta);
+  const allTimings: TimedSegment[] = [];
+  for (let i = 0; i < rawLineTimings.length; i++) {
+    const offsetMs = Math.round((actualStarts[i] ?? 0) * 1000);
+    allTimings.push(...offsetTimings(rawLineTimings[i]!, offsetMs));
+  }
+
   const concatEntries: string[] = [];
   const tempSilence: string[] = [];
   let silenceIdx = 0;
   for (const step of plan) {
-    if (step.kind === 'silence' && step.durationSec != null && step.durationSec >= 0.04) {
+    if (step.kind === 'silence' && step.durationSec != null && step.durationSec >= MIN_SILENCE_SEC) {
       const silPath = join(voDir, `sil_${String(silenceIdx++).padStart(3, '0')}.wav`);
       await ffmpeg.generateSilenceWav(silPath, step.durationSec);
       tempSilence.push(silPath);

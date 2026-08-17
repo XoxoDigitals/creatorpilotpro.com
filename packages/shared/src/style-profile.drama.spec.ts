@@ -140,6 +140,9 @@ describe('drama/dialogue style helpers', () => {
     const narration = formatSceneVisualPromptRules(4, { narrationVoiceover: true });
     expect(narration).toContain(NEGATIVE_PROMPT_INLINE_PREFIX);
     expect(narration).toContain('sound design');
+    expect(narration).toContain('impact hits');
+    expect(narration).toContain('whooshes');
+    expect(narration).toContain('tension risers');
     expect(narration).toContain(DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT);
     expect(narration).toContain(DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT);
     expect(narration).toContain('animationNegativePrompt');
@@ -154,6 +157,7 @@ describe('drama/dialogue style helpers', () => {
     expect(drama).toContain('ultra realistic');
     expect(drama).toContain('do NOT add "no dialogue"');
     expect(drama).toContain('animationNegativePrompt');
+    expect(drama).toContain('impact hits');
     expect(drama).not.toContain('sound design / audio layer');
   });
 });

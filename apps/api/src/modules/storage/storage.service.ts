@@ -19,9 +19,11 @@ import {
   hotTierPath,
   md5File,
   resolveGDriveConfig,
+  resolveStorageBackend,
   requireGDriveConfig,
   type GDriveConfig,
   type GDriveSettingsPartial,
+  type StorageBackend,
 } from '@scp/storage';
 import {
   DEFAULT_TRIM_START_MS,
@@ -86,8 +88,17 @@ export class StorageService {
     private readonly settings: SettingsService,
   ) {}
 
-  /** STORAGE_BACKEND from config (`local` | `gdrive`). */
-  backend(): 'local' | 'gdrive' {
+  /**
+   * Media system of record: Settings → General (`storage.gdrive.backend`) preferred;
+   * `STORAGE_BACKEND` env is optional bootstrap fallback.
+   */
+  async resolveBackend(): Promise<StorageBackend> {
+    const stored = await this.settings.getDecrypted<GDriveSettingsPartial>('storage.gdrive');
+    return resolveStorageBackend(stored ?? null);
+  }
+
+  /** @deprecated Prefer {@link resolveBackend} — env-only snapshot for sync call sites. */
+  backend(): StorageBackend {
     const v = this.config.get<'local' | 'gdrive'>('storageBackend');
     return v === 'gdrive' ? 'gdrive' : 'local';
   }
@@ -107,7 +118,7 @@ export class StorageService {
 
   /**
    * Stream an uploaded file into the local hot tier (temp), optionally archive
-   * to Google Drive when STORAGE_BACKEND=gdrive, and register an Asset.
+   * to Google Drive when Settings (or env fallback) selects gdrive, and register an Asset.
    */
   async saveUpload(input: {
     contentItemId: string;
@@ -127,7 +138,7 @@ export class StorageService {
     const root = this.config.get<string>('storageRoot');
     if (!root) throw new BadRequestException('Storage root is not configured.');
 
-    const useDrive = this.backend() === 'gdrive';
+    const useDrive = (await this.resolveBackend()) === 'gdrive';
     const driveCfg = useDrive ? await this.resolveDriveConfig() : null;
     if (useDrive) {
       try {
@@ -244,14 +255,15 @@ export class StorageService {
 
   /** Status for Settings UI — backend + whether Drive credentials resolve. */
   async driveStatus(): Promise<{
-    backend: 'local' | 'gdrive';
+    backend: StorageBackend;
     configured: boolean;
     rootFolderId: string | null;
     previewExample: string | null;
     source: 'settings' | 'env' | 'mixed' | 'none';
+    auth: 'oauth' | 'service_account' | null;
   }> {
-    const backend = this.backend();
     const stored = await this.settings.getDecrypted<GDriveSettingsPartial>('storage.gdrive');
+    const backend = resolveStorageBackend(stored ?? null);
     const cfg = resolveGDriveConfig(stored ?? null);
     const envOnly = resolveGDriveConfig(null);
     let source: 'settings' | 'env' | 'mixed' | 'none' = 'none';
@@ -260,7 +272,11 @@ export class StorageService {
         stored?.clientId?.trim() ||
           stored?.clientSecret?.trim() ||
           stored?.refreshToken?.trim() ||
-          stored?.rootFolderId?.trim(),
+          stored?.clientEmail?.trim() ||
+          stored?.privateKey?.trim() ||
+          stored?.rootFolderId?.trim() ||
+          stored?.authMode ||
+          stored?.backend,
       );
       if (fromSettings && envOnly) source = 'mixed';
       else if (fromSettings) source = 'settings';
@@ -272,16 +288,17 @@ export class StorageService {
       rootFolderId: cfg?.rootFolderId ?? null,
       previewExample: cfg ? drivePreviewEmbedUrl('FILE_ID') : null,
       source,
+      auth: cfg?.auth ?? null,
     };
   }
 
   /**
    * Archive an existing local Asset to Drive and clear localPath when
-   * STORAGE_BACKEND=gdrive. Used by workers via shared @scp/storage helpers;
+   * Drive is the selected backend. Used by workers via shared @scp/storage helpers;
    * kept here for API-side finalize paths.
    */
   async archiveLocalAsset(assetId: string): Promise<AssetView> {
-    if (this.backend() !== 'gdrive') {
+    if ((await this.resolveBackend()) !== 'gdrive') {
       const asset = await this.prisma.client.asset.findUnique({ where: { id: assetId } });
       if (!asset) throw new NotFoundException('Asset not found.');
       return toAssetView(asset);

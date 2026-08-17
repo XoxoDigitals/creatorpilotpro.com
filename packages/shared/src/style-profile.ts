@@ -754,14 +754,15 @@ export function formatSceneVisualPromptRules(
 - Narration / voiceover mode (external VO is the real audio track — the video model must NOT generate spoken narration or character speech):
   - negativePrompt (image): forbid dialogue/talking characters for stills, plus still-image artifacts. Start from: ${DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT}. Embed only in imagePrompt.
   - animationNegativePrompt (video): forbid dialogue/talking AND cover motion/audio-related avoids (lip-sync speech, invented VO on the video track, sung vocals, morphing/flicker/jitter). Start from: ${DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT}. Embed only in animationPrompt.
-  - animationPrompt MUST include scene-based sound design / audio layer directions synced to the beat: music mood/genre/energy, sound effects (SFX), and ambient audio appropriate to the scene and narration beat. VO stays external — describe music/SFX/ambience only, never ask for spoken dialogue or VO on the video track.`
+  - animationPrompt MUST include scene-based sound design / audio layer directions synced to the beat: music mood/genre/energy, dramatic SFX (impact hits, whooshes, tension risers, stingers), and ambient bed cues appropriate to the scene and narration beat. VO stays external — describe music/SFX/ambience only, never ask for spoken dialogue or VO on the video track.`
     : '';
 
   if (drama) {
     return `${base}
 - Drama/dialogue detail: imagePrompt and animationPrompt must be especially specific about faces, wardrobe continuity, blocking, emotional beats, and prop interaction${clip ? ` across the full ~${clip}s clip` : ''}.
 - Always use expanded character references (never bare names alone) and include the quality phrase "ultra realistic" in imagePrompt and animationPrompt.
-- Include distinct negativePrompt (image) and animationNegativePrompt (video) per scene; embed each into its own prompt only. Dialogue is allowed — do NOT add "no dialogue" negatives.`;
+- Include distinct negativePrompt (image) and animationNegativePrompt (video) per scene; embed each into its own prompt only. Dialogue is allowed — do NOT add "no dialogue" negatives.
+- Where appropriate, animationPrompt should also call for dramatic production audio under/around dialogue (impact hits, whooshes, tension risers, ambient beds) without replacing spoken lines.`;
   }
 
   return `${base}${narrationBlock}`;

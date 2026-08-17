@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  INTER_SEGMENT_GAP_SEC,
   analysisBeats,
   analysisDurationSec,
   atempoFilter,
@@ -7,9 +8,11 @@ import {
   beatsForPrompt,
   clampTextToWordBudget,
   clampTimedLinesToBeats,
+  clipStartsFromPadPlan,
   fitSpeed,
   narrationBudgetSec,
   narrationWordBudget,
+  splitNarrationSegments,
   timedLinesFromNarration,
   timedLinesFromStep,
   timelinePadPlan,
@@ -111,6 +114,20 @@ describe('timedLinesFromStep', () => {
   });
 });
 
+describe('splitNarrationSegments', () => {
+  it('splits on sentence boundaries for inter-segment TTS gaps', () => {
+    expect(splitNarrationSegments('First beat. Second beat! Third?')).toEqual([
+      'First beat.',
+      'Second beat!',
+      'Third?',
+    ]);
+  });
+
+  it('keeps a single segment when there is no sentence break', () => {
+    expect(splitNarrationSegments('one continuous line')).toEqual(['one continuous line']);
+  });
+});
+
 describe('timelinePadPlan', () => {
   it('pads silence so lines land on scene timestamps', () => {
     const plan = timelinePadPlan(
@@ -125,6 +142,25 @@ describe('timelinePadPlan', () => {
       { kind: 'audio', index: 0 },
       { kind: 'silence', durationSec: 1.5 },
       { kind: 'audio', index: 1 },
+    ]);
+  });
+
+  it('inserts a minimum gap when dialogue clips abut', () => {
+    const plan = timelinePadPlan(
+      [
+        { startSec: 0, durationSec: 2 },
+        { startSec: 2, durationSec: 1 },
+      ],
+      10,
+    );
+    expect(plan).toEqual([
+      { kind: 'audio', index: 0 },
+      { kind: 'silence', durationSec: INTER_SEGMENT_GAP_SEC },
+      { kind: 'audio', index: 1 },
+    ]);
+    expect(clipStartsFromPadPlan(plan, [{ durationSec: 2 }, { durationSec: 1 }])).toEqual([
+      0,
+      2 + INTER_SEGMENT_GAP_SEC,
     ]);
   });
 });

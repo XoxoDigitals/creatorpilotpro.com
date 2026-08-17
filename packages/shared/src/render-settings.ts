@@ -449,6 +449,56 @@ export function colorFilterExpr(preset: ColorFilterPreset): string | null {
   }
 }
 
+/** Canonical vertical canvas for FB / TikTok / YouTube Shorts (ASS PlayRes match). */
+export const VERTICAL_9x16_WIDTH = 1080;
+export const VERTICAL_9x16_HEIGHT = 1920;
+
+/** Per-video YouTube format in the REPURPOSED (copyright) AI pipeline. */
+export const YOUTUBE_FORMATS = ['SHORT', 'LONG'] as const;
+export type YoutubeFormat = (typeof YOUTUBE_FORMATS)[number];
+
+export const YOUTUBE_FORMAT_LABELS: Record<YoutubeFormat, string> = {
+  SHORT: 'Short (9:16)',
+  LONG: 'Long (source format)',
+};
+
+export function normalizeYoutubeFormat(raw: unknown): YoutubeFormat | null {
+  const s = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+  if (s === 'SHORT' || s === 'LONG') return s;
+  return null;
+}
+
+/**
+ * ffmpeg scale+pad to a centered 9:16 black canvas (letterbox / pillarbox).
+ * Apply after flip/color and before burned captions so overlays match the canvas.
+ */
+export function letterboxVertical9x16Filter(
+  width: number = VERTICAL_9x16_WIDTH,
+  height: number = VERTICAL_9x16_HEIGHT,
+): string {
+  return (
+    `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`
+  );
+}
+
+/**
+ * Force 9:16 output for Facebook / TikTok always; for YouTube only when Short
+ * (default Short when unset — Long keeps source aspect).
+ */
+export function shouldForceVertical9x16(input: {
+  platform: string | null | undefined;
+  youtubeFormat?: string | null;
+}): boolean {
+  const platform = (input.platform ?? '').toUpperCase();
+  if (platform === 'FACEBOOK' || platform === 'TIKTOK') return true;
+  if (platform === 'YOUTUBE') {
+    const fmt = normalizeYoutubeFormat(input.youtubeFormat) ?? 'SHORT';
+    return fmt === 'SHORT';
+  }
+  return false;
+}
+
 export type FinalVideoEffectsInput = {
   settings: RenderSettings;
   /** Preferred: single ASS file with hook + caption dialogues (ffmpeg `ass=`). */
@@ -459,6 +509,8 @@ export type FinalVideoEffectsInput = {
   hookOverlayText?: string | null;
   /** Absolute font file for ffmpeg drawtext (required on many Linux hosts). */
   fontFile?: string | null;
+  /** Letterbox/pillarbox to 1080×1920 black canvas, video centered. */
+  forceVertical9x16?: boolean;
 };
 
 /**
@@ -476,6 +528,10 @@ export function buildFinalVideoFilterChain(input: FinalVideoEffectsInput): strin
   if (settings.colorFilter.enabled) {
     const eq = colorFilterExpr(settings.colorFilter.preset);
     if (eq) parts.push(eq);
+  }
+
+  if (input.forceVertical9x16) {
+    parts.push(letterboxVertical9x16Filter());
   }
 
   if (input.assPath?.trim()) {
@@ -511,7 +567,9 @@ export function finalVideoEffectsEnabled(
   subtitlePath?: string | null,
   hookOverlayText?: string | null,
   assPath?: string | null,
+  forceVertical9x16?: boolean,
 ): boolean {
+  if (forceVertical9x16) return true;
   if (settings.trimStartMs > 0) return true;
   if (settings.flipHorizontal.enabled) return true;
   if (settings.colorFilter.enabled && settings.colorFilter.preset !== 'none') return true;

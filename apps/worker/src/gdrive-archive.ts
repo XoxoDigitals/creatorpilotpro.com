@@ -1,9 +1,10 @@
 /**
- * Archive a local Asset row to Google Drive when STORAGE_BACKEND=gdrive.
+ * Archive a local Asset row to Google Drive when Settings (or env fallback)
+ * selects gdrive as the storage backend.
  * Clears localPath after a successful upload so Drive is the system of record.
  *
- * Credentials: Settings → General (`storage.gdrive`, encrypted) merged over
- * GOOGLE_DRIVE_* env bootstrap — same resolve path as the API.
+ * Credentials + backend: Settings → General (`storage.gdrive`, encrypted) merged
+ * over GOOGLE_DRIVE_* / STORAGE_BACKEND env bootstrap — same resolve path as the API.
  *
  * TODO(gdrive): also archive ORIGINAL source downloads + VOICEOVER/BG_AUDIO/
  * SUBTITLE intermediates once finals/thumbnails are stable in production.
@@ -15,8 +16,8 @@ import {
   TieredStorage,
   md5File,
   resolveGDriveConfig,
+  resolveStorageBackend,
   requireGDriveConfig,
-  storageBackendFromEnv,
   type GDriveSettingsPartial,
 } from '@scp/storage';
 import { getPrisma } from '@scp/db';
@@ -51,8 +52,8 @@ async function resolveDriveClient(): Promise<GoogleDriveClient | null> {
 }
 
 export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<void> {
-  if (storageBackendFromEnv() !== 'gdrive') return;
   const settings = await loadGDriveSettingsFromDb();
+  if (resolveStorageBackend(settings) !== 'gdrive') return;
   requireGDriveConfig(process.env, settings);
 
   const prisma = getPrisma();

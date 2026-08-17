@@ -137,9 +137,20 @@ export function resolveMetadata(
     profile?.schedulingPrefs && typeof profile.schedulingPrefs === 'object'
       ? (profile.schedulingPrefs as Record<string, unknown>)
       : {};
-  const aiTags = Array.isArray(ai.tags)
-    ? (ai.tags as unknown[]).filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
-    : [];
+  const listTags = (raw: unknown): string[] =>
+    Array.isArray(raw)
+      ? (raw as unknown[])
+          .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+          .map((t) => t.replace(/^#/, '').trim())
+          .filter(Boolean)
+      : [];
+  // Prefer tags; fall back to keywords (AI often fills keywords and omits tags).
+  const aiTags =
+    listTags(ai.tags).length > 0
+      ? listTags(ai.tags)
+      : listTags(ai.hashtags).length > 0
+        ? listTags(ai.hashtags)
+        : listTags(ai.keywords);
   const title =
     str(override.title) ?? str(ai.title) ?? str(profile?.titleTemplate) ?? contentTitle;
   const description =
@@ -147,11 +158,13 @@ export function resolveMetadata(
     str(ai.description) ??
     str(profile?.descriptionTemplate) ??
     '';
-  const tags = Array.isArray(override.tags)
-    ? (override.tags as string[])
-    : aiTags.length > 0
-      ? aiTags
-      : (profile?.defaultTags ?? []);
+  const overrideTags = listTags(override.tags);
+  const tags =
+    overrideTags.length > 0
+      ? overrideTags
+      : aiTags.length > 0
+        ? aiTags
+        : (profile?.defaultTags ?? []);
   const visibility =
     (str(override.visibility) as ResolvedMetadata['visibility']) ??
     (str(sched.defaultVisibility) as ResolvedMetadata['visibility']) ??

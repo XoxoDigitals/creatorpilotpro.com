@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractNarrationScript,
+  extractHashtagLabels,
+  finalizeMetadataOutput,
+  metadataOutputSchema,
   repurposePromptVersion,
   REPURPOSE_PROMPT_REV,
   videoAnalysisOutputSchema,
@@ -72,10 +75,72 @@ describe('metadata prompt language', () => {
     expect(prompt).toContain('LANGUAGE POLICY');
   });
 
+  it('requires a YouTube tags array separate from description hashtags', () => {
+    const prompt = defaultMetadataPrompt('YOUTUBE', 'en');
+    expect(prompt).toContain('REQUIRED');
+    expect(prompt).toContain('8–15 YouTube search tags');
+    expect(prompt).toContain('tags" must be filled');
+  });
+
   it('limits Facebook hashtags to at most 5', () => {
     const prompt = defaultMetadataPrompt('FACEBOOK', 'en');
     expect(prompt).toContain('at most 5 hashtags');
     expect(prompt).toContain('0–5 topical labels');
+  });
+});
+
+describe('finalizeMetadataOutput', () => {
+  it('coerces comma-separated tags strings via schema', () => {
+    const parsed = metadataOutputSchema.parse({
+      title: 'T',
+      description: 'D',
+      tags: 'diy, tiny home, #renovation',
+    });
+    expect(parsed.tags).toEqual(['diy', 'tiny home', 'renovation']);
+  });
+
+  it('fills tags from keywords when tags are empty', () => {
+    const out = finalizeMetadataOutput(
+      {
+        title: 'T',
+        description: 'A video about cooking.',
+        tags: [],
+        keywords: ['#ASMR', 'mini hot pot', 'asmr'],
+      },
+      'YOUTUBE',
+    );
+    expect(out.tags).toEqual(['ASMR', 'mini hot pot']);
+  });
+
+  it('fills tags from description hashtags when tags and keywords are empty', () => {
+    expect(extractHashtagLabels('Try this.\n\n#diy #tinyhome #build')).toEqual([
+      'diy',
+      'tinyhome',
+      'build',
+    ]);
+    const out = finalizeMetadataOutput(
+      {
+        title: 'T',
+        description: 'Watch the build.\n\n#diy #shorts',
+        tags: [],
+        keywords: [],
+      },
+      'YOUTUBE',
+    );
+    expect(out.tags).toEqual(['diy', 'shorts']);
+  });
+
+  it('caps Facebook tags at 5', () => {
+    const out = finalizeMetadataOutput(
+      {
+        title: 'T',
+        description: 'D',
+        tags: ['a', 'b', 'c', 'd', 'e', 'f'],
+        keywords: [],
+      },
+      'FACEBOOK',
+    );
+    expect(out.tags).toEqual(['a', 'b', 'c', 'd', 'e']);
   });
 });
 
@@ -99,6 +164,8 @@ describe('narration prompt', () => {
     expect(prompt).toContain('hasDialogue');
     expect(prompt).toContain('natural TTS');
     expect(prompt).toContain('maxWords');
+    expect(prompt).toContain('breathing room');
+    expect(prompt).toContain('0.2–0.5s');
   });
 });
 
@@ -107,6 +174,8 @@ describe('video analysis prompt', () => {
     expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('dialogueRanges');
     expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('ACTION + CHANGE + CONSEQUENCE');
     expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('spoken-word windows');
+    expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('whooshes');
+    expect(DEFAULT_VIDEO_ANALYSIS_PROMPT).toContain('tension risers');
   });
 });
 

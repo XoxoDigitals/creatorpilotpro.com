@@ -12,6 +12,7 @@ import {
   VO_MIX_DIALOGUE_BED_GAIN,
   VO_MIX_DEMUCS_BED_GAIN,
   VO_MIX_BED_CONTROL,
+  BED_AUDIO_TRANSFORM_AF,
   VO_MIX_SIDECHAIN,
   VO_MIX_DIALOGUE_SIDECHAIN,
   VOCAL_STRIP_AF,
@@ -180,9 +181,31 @@ describe('voiceoverBedMixFilter', () => {
     expect(VO_MIX_SIDECHAIN).not.toContain('knee=10');
     const graph = voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN);
     expect(graph).toContain(`[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`);
-    expect(graph).toContain(`[0:a]${VO_MIX_BED_CONTROL},volume=${VO_MIX_BED_GAIN}[bg]`);
+    expect(graph).toContain(
+      `[0:a]${BED_AUDIO_TRANSFORM_AF},${VO_MIX_BED_CONTROL},volume=${VO_MIX_BED_GAIN}[bg]`,
+    );
     expect(graph).toContain(`[bg][vo_sc]${VO_MIX_SIDECHAIN}[ducked]`);
     expect(graph).toContain('amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]');
+  });
+
+  it('applies subtle bed transforms before loudnorm/duck (not on VO)', () => {
+    expect(BED_AUDIO_TRANSFORM_AF).toContain('asetrate=46692');
+    expect(BED_AUDIO_TRANSFORM_AF).toContain('atempo=0.94387');
+    expect(BED_AUDIO_TRANSFORM_AF).toContain('atempo=0.99');
+    expect(BED_AUDIO_TRANSFORM_AF).toContain('extrastereo=m=1.15');
+    expect(BED_AUDIO_TRANSFORM_AF).toContain('aecho=');
+    expect(BED_AUDIO_TRANSFORM_AF).toContain('equalizer=f=80');
+    const graph = voiceoverBedMixFilter('0:a', VO_MIX_BED_GAIN);
+    expect(graph).toContain(BED_AUDIO_TRANSFORM_AF);
+    // Transform is on the bed leg only — VO path stays volume + asplit.
+    expect(graph).toMatch(
+      new RegExp(
+        `\\[1:a\\]volume=${VO_MIX_VOICE_GAIN},asplit=2\\[vo\\]\\[vo_sc\\]`,
+      ),
+    );
+    expect(graph.indexOf(BED_AUDIO_TRANSFORM_AF)).toBeLessThan(
+      graph.indexOf(VO_MIX_BED_CONTROL),
+    );
   });
 
   it('keeps background playing after the voiceover ends (no mute-after-VO)', () => {
@@ -199,7 +222,9 @@ describe('voiceoverBedMixFilter', () => {
     expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('ratio=4');
     expect(VO_MIX_DIALOGUE_SIDECHAIN).toContain('threshold=0.06');
     const graph = voiceoverDialogueBedMixFilter('2:a');
-    expect(graph).toContain(`[2:a]${VO_MIX_BED_CONTROL},volume=${VO_MIX_DIALOGUE_BED_GAIN}[bg]`);
+    expect(graph).toContain(
+      `[2:a]${BED_AUDIO_TRANSFORM_AF},${VO_MIX_BED_CONTROL},volume=${VO_MIX_DIALOGUE_BED_GAIN}[bg]`,
+    );
     expect(graph).toContain(VO_MIX_DIALOGUE_SIDECHAIN);
     expect(graph).toContain(`[1:a]volume=${VO_MIX_VOICE_GAIN},asplit=2[vo][vo_sc]`);
   });

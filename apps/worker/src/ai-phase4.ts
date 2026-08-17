@@ -1743,7 +1743,7 @@ ${
   dramaOrDialogue
     ? 'thumbnailPrompt must include the phrase "ultra realistic". Also return thumbnailNegativePrompt plus per-scene negativePrompt (image) and animationNegativePrompt (video) — embed each into its own prompt only.'
     : narrationVoiceover
-      ? 'Also return per-scene negativePrompt (image, with no-dialogue forbids) and animationNegativePrompt (video, with no-dialogue plus motion/audio avoids). Embed image negatives only in imagePrompt and video negatives only in animationPrompt. Animation prompts must include scene sound design (music/SFX/ambience); VO is external.'
+      ? 'Also return per-scene negativePrompt (image, with no-dialogue forbids) and animationNegativePrompt (video, with no-dialogue plus motion/audio avoids). Embed image negatives only in imagePrompt and video negatives only in animationPrompt. Animation prompts must include scene sound design (music, dramatic SFX such as impact hits/whooshes/tension risers, ambience); VO is external.'
       : 'Also return per-scene negativePrompt (image) and animationNegativePrompt (video); embed each into its own prompt only — do not reuse the same list.'
 }
 ${

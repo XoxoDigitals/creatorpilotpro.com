@@ -42,6 +42,7 @@ import {
   selectCaptionColorMode,
   selectHookPosition,
   selectColorFilter,
+  selectYoutubeFormat,
   updateNarrationScript,
   updatePublishMetadata,
   type AiPipelineItem,
@@ -58,17 +59,21 @@ import {
   OVERLAY_OFF_ID,
   COLOR_FILTER_PRESETS,
   COLOR_FILTER_LABELS,
+  YOUTUBE_FORMATS,
+  YOUTUBE_FORMAT_LABELS,
   captionTemplateMeta,
   normalizeCaptionTemplateId,
   normalizeOverlayYPercent,
   overlayPreviewTopPercent,
   normalizeCaptionColorMode,
   normalizeColorFilterPreset,
+  normalizeYoutubeFormat,
   colorFilterCss,
   previewCaptionLines,
   isOverlayOffId,
   type CaptionColorMode,
   type ColorFilterPreset,
+  type YoutubeFormat,
 } from '@scp/shared';
 
 function defaultCaptionPreviewY(templateId: string | null | undefined): number {
@@ -465,6 +470,9 @@ function FinalPreviewPanel({
   const [title, setTitle] = useState(parsed.title);
   const [description, setDescription] = useState(parsed.description);
   const [tagsText, setTagsText] = useState(parsed.tags.join(', '));
+  const [youtubeFormat, setYoutubeFormat] = useState<YoutubeFormat>(
+    normalizeYoutubeFormat(item.youtubeFormat) ?? 'SHORT',
+  );
   const [saving, setSaving] = useState(false);
   const [thumbBroken] = useState(false);
 
@@ -474,10 +482,19 @@ function FinalPreviewPanel({
     setTitle(next.title);
     setDescription(next.description);
     setTagsText(next.tags.join(', '));
-  }, [item.id, item.metadata, item.publishTitle, item.publishDescription, item.publishTags]);
+    setYoutubeFormat(normalizeYoutubeFormat(item.youtubeFormat) ?? 'SHORT');
+  }, [
+    item.id,
+    item.metadata,
+    item.publishTitle,
+    item.publishDescription,
+    item.publishTags,
+    item.youtubeFormat,
+  ]);
 
   const showMetadataEditor = item.status === 'METADATA_READY';
   const hasVideo = item.hasFinalVideo !== false; // default true for older payloads
+  const showYoutubeFormat = item.platform === 'YOUTUBE';
 
   async function onSave() {
     setSaving(true);
@@ -490,6 +507,7 @@ function FinalPreviewPanel({
         title: title.trim() || item.title,
         description,
         tags,
+        ...(showYoutubeFormat ? { youtubeFormat } : {}),
       });
       onSaved(next);
       toast('Publish metadata saved.', 'success');
@@ -624,6 +642,37 @@ function FinalPreviewPanel({
                   </div>
                 )}
               </div>
+              {showYoutubeFormat && (
+                <div className="space-y-1.5">
+                  <Label>YouTube format</Label>
+                  <p className="text-[11px] text-zinc-500">
+                    Short uses a 9:16 black canvas. Long keeps the source format. Change before
+                    render when possible; after render, use Re-render if you switch.
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {YOUTUBE_FORMATS.map((fmt) => {
+                      const active = fmt === youtubeFormat;
+                      return (
+                        <button
+                          key={fmt}
+                          type="button"
+                          disabled={saving || busy}
+                          onClick={() => setYoutubeFormat(fmt)}
+                          className={
+                            'rounded-md border px-2 py-1 text-[11px] font-medium ' +
+                            (active
+                              ? 'border-sky-300 bg-sky-50 text-sky-900'
+                              : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+                          }
+                        >
+                          {YOUTUBE_FORMAT_LABELS[fmt]}
+                          {active ? ' · selected' : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <Button size="sm" onClick={() => void onSave()} disabled={saving || busy}>
                 {saving ? 'Saving…' : 'Save metadata'}
               </Button>
@@ -716,6 +765,7 @@ function NarrationScriptPanel({
   const [savingCaptionColor, setSavingCaptionColor] = useState(false);
   const [savingHookPos, setSavingHookPos] = useState(false);
   const [savingColorFilter, setSavingColorFilter] = useState(false);
+  const [savingYoutubeFormat, setSavingYoutubeFormat] = useState(false);
   const [localCaptionY, setLocalCaptionY] = useState<number | null>(null);
   const [localHookY, setLocalHookY] = useState<number | null>(null);
   const locked =
@@ -729,7 +779,8 @@ function NarrationScriptPanel({
     savingCaptionPos ||
     savingCaptionColor ||
     savingHookPos ||
-    savingColorFilter;
+    savingColorFilter ||
+    savingYoutubeFormat;
   const captionsOff = isOverlayOffId(item.selectedCaptionTemplateId);
   const selectedCaptionId = captionsOff
     ? OVERLAY_OFF_ID
@@ -748,6 +799,9 @@ function NarrationScriptPanel({
   const selectedHookY =
     localHookY ?? normalizeOverlayYPercent(item.selectedHookPosition, 'top');
   const selectedFilter = normalizeColorFilterPreset(item.selectedColorFilter);
+  const selectedYoutubeFormat: YoutubeFormat =
+    normalizeYoutubeFormat(item.youtubeFormat) ?? 'SHORT';
+  const showYoutubeFormat = item.platform === 'YOUTUBE';
 
   useEffect(() => {
     if (mode !== 'view') return;
@@ -866,6 +920,19 @@ function NarrationScriptPanel({
       toast(err instanceof ApiError ? err.message : 'Failed to update color filter', 'error');
     } finally {
       setSavingColorFilter(false);
+    }
+  }
+
+  async function onSelectYoutubeFormat(format: YoutubeFormat) {
+    if (!canEdit || format === selectedYoutubeFormat || locked) return;
+    setSavingYoutubeFormat(true);
+    try {
+      const next = await selectYoutubeFormat(item.id, format);
+      onSaved(next);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to update YouTube format', 'error');
+    } finally {
+      setSavingYoutubeFormat(false);
     }
   }
 
@@ -1257,6 +1324,40 @@ function NarrationScriptPanel({
           })}
         </div>
       </div>
+
+      {showYoutubeFormat && (
+        <div className="mb-2 shrink-0 space-y-1">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+            YouTube format
+          </div>
+          <p className="text-[10px] text-zinc-500">
+            Short pads to 9:16 on a black canvas. Long keeps the source aspect ratio. Choose before
+            approving the script.
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {YOUTUBE_FORMATS.map((fmt) => {
+              const active = fmt === selectedYoutubeFormat;
+              return (
+                <button
+                  key={fmt}
+                  type="button"
+                  disabled={locked || !canEdit}
+                  onClick={() => void onSelectYoutubeFormat(fmt)}
+                  className={
+                    'rounded-md border px-2 py-1 text-[11px] font-medium ' +
+                    (active
+                      ? 'border-sky-300 bg-sky-50 text-sky-900'
+                      : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100')
+                  }
+                >
+                  {YOUTUBE_FORMAT_LABELS[fmt]}
+                  {active ? ' · selected' : ''}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50/60 px-2 py-1.5">
         <p className="text-[11px] font-medium text-zinc-600">Reaction avatar</p>

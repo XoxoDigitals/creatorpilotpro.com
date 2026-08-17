@@ -13,6 +13,11 @@ import {
   DEFAULT_RENDER_SETTINGS,
   captionForceStyle,
   colorFilterExpr,
+  letterboxVertical9x16Filter,
+  shouldForceVertical9x16,
+  normalizeYoutubeFormat,
+  VERTICAL_9x16_WIDTH,
+  VERTICAL_9x16_HEIGHT,
 } from './render-settings.js';
 
 describe('resolveTrimStartMs', () => {
@@ -204,6 +209,45 @@ describe('buildFinalVideoFilterChain', () => {
     expect(vf.startsWith('hflip,')).toBe(true);
     expect(vf).toContain('eq=');
     expect(vf).toContain('subtitles=');
+  });
+
+  it('letterboxes to 1080x1920 before overlays when forceVertical9x16', () => {
+    const pad = letterboxVertical9x16Filter();
+    expect(pad).toContain(`scale=${VERTICAL_9x16_WIDTH}:${VERTICAL_9x16_HEIGHT}:force_original_aspect_ratio=decrease`);
+    expect(pad).toContain(`pad=${VERTICAL_9x16_WIDTH}:${VERTICAL_9x16_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black`);
+    expect(pad).toContain('setsar=1');
+
+    const vf = buildFinalVideoFilterChain({
+      settings: {
+        ...base,
+        flipHorizontal: { enabled: true },
+      },
+      forceVertical9x16: true,
+      assPath: '/tmp/overlay.ass',
+    });
+    expect(vf.indexOf('hflip')).toBeLessThan(vf.indexOf('scale='));
+    expect(vf.indexOf('pad=')).toBeLessThan(vf.indexOf('ass='));
+    expect(finalVideoEffectsEnabled({ ...base, trimStartMs: 0 }, null, null, null, true)).toBe(
+      true,
+    );
+  });
+});
+
+describe('shouldForceVertical9x16', () => {
+  it('forces Facebook and TikTok always', () => {
+    expect(shouldForceVertical9x16({ platform: 'FACEBOOK' })).toBe(true);
+    expect(shouldForceVertical9x16({ platform: 'TIKTOK', youtubeFormat: 'LONG' })).toBe(true);
+  });
+
+  it('forces YouTube Short (default) but not Long', () => {
+    expect(shouldForceVertical9x16({ platform: 'YOUTUBE' })).toBe(true);
+    expect(shouldForceVertical9x16({ platform: 'YOUTUBE', youtubeFormat: 'SHORT' })).toBe(true);
+    expect(shouldForceVertical9x16({ platform: 'YOUTUBE', youtubeFormat: 'LONG' })).toBe(false);
+    expect(normalizeYoutubeFormat('long')).toBe('LONG');
+  });
+
+  it('does not force unknown platforms', () => {
+    expect(shouldForceVertical9x16({ platform: null })).toBe(false);
   });
 });
 

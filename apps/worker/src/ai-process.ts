@@ -43,9 +43,12 @@ import { getPrisma, raiseIncident, type PrismaClient } from './publish-support.j
 import {
   builtinSystemPrompt,
   extractNarrationScript,
+  finalizeMetadataOutput,
   normalizeNarrationVariants,
+  platformMetadataGuidance,
   repurposePromptVersion,
   schemaForRepurposeTask,
+  type MetadataOutput,
 } from './repurpose-prompts.js';
 import { summarizeVoiceoverVariantsInEnglish } from './english-voiceover-summary.js';
 import { analysisPeople, analysisIndicatesDialogue } from './media/dialogue-audio.js';
@@ -389,11 +392,13 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
   const platform = accountCtx?.platform ?? null;
   const channelStyle = await loadChannelStyle(prisma, accountId);
   const prompt = await getActivePrompt(prisma, spec.task, 'default', accountId);
-  const systemPrompt = withChannelStyle(
-    prompt?.template ??
-      builtinSystemPrompt(spec.task, channelStyle?.language, platform),
-    channelStyle,
-  );
+  const builtin = builtinSystemPrompt(spec.task, channelStyle?.language, platform);
+  // Custom DB METADATA templates may omit platform tag rules — always append them.
+  const baseSystem =
+    prompt?.template && kind === 'metadata'
+      ? `${prompt.template.trim()}\n\n${platformMetadataGuidance(platform)}`
+      : (prompt?.template ?? builtin);
+  const systemPrompt = withChannelStyle(baseSystem, channelStyle);
   const promptVersion = repurposePromptVersion(prompt?.version);
 
   // Use currentStep (Json) to store/retrieve AI results
@@ -506,7 +511,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       hasDialogue,
       // Present when the owner clicks Regenerate script — busts the AI cache.
       ...(currentStep.scriptNonce != null ? { regenerateNonce: currentStep.scriptNonce } : {}),
-      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 6 on-screen attention phrases — mix punchy short (2–3 words) and longer viral (4–8 words or two short lines separated by | ). Prefer curiosity, stakes, contrast, taboo, money, identity, or reveal angles — never generic ("you won't believe", "watch this"). The hooky/hype variant (styleB) must open with a sharper scroll-stop line and keep sentences shorter/more rhythmic than explainer. ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
+      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Prefer short sentences with natural pauses between lines so TTS gaps and original SFX/ambience can breathe. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 6 on-screen attention phrases — mix punchy short (2–3 words) and longer viral (4–8 words or two short lines separated by | ). Prefer curiosity, stakes, contrast, taboo, money, identity, or reveal angles — never generic ("you won't believe", "watch this"). The hooky/hype variant (styleB) must open with a sharper scroll-stop line and keep sentences shorter/more rhythmic than explainer. ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
     });
     runInput = { kind: 'text', text: inputText };
   } else {
@@ -521,7 +526,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
         ? { regenerateNonce: currentStep.metadataNonce }
         : {}),
       instruction:
-        'Write publish-ready title, description, and tags optimized for the given platform. Follow channel style. Title, description, and tags must use the channel output language. Return JSON only.',
+        'Write publish-ready title, description, and tags optimized for the given platform. Follow channel style. Title, description, and tags must use the channel output language. Always include a non-empty "tags" string array for YouTube (search tags, not only description hashtags). Return JSON only.',
     });
     runInput = { kind: 'text', text: inputText };
   }
@@ -626,11 +631,12 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       });
       console.log(`[worker:ai] narration done for ${contentItemId} — awaiting script approval`);
     } else {
-      updatedStep.metadata = result.output;
-      const metaOut =
+      const rawMeta =
         result.output && typeof result.output === 'object' && !Array.isArray(result.output)
-          ? (result.output as Record<string, unknown>)
-          : {};
+          ? (result.output as MetadataOutput)
+          : ({ title: item.title || 'Untitled', description: '', tags: [], keywords: [] } as MetadataOutput);
+      const metaOut = finalizeMetadataOutput(rawMeta, platform);
+      updatedStep.metadata = metaOut;
       const aiTitle =
         typeof metaOut.title === 'string' && metaOut.title.trim() ? metaOut.title.trim() : '';
       const placeholderTitle = !item.title?.trim() || /^untitled(\s+source)?(\s+video)?$/i.test(item.title.trim());
@@ -646,7 +652,9 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       await boss.send(QUEUE.AI, { kind: 'ab_suggestions', contentItemId }, {
         singletonKey: `ab-${contentItemId}`,
       });
-      console.log(`[worker:ai] metadata done for ${contentItemId} — enqueued A/B suggestions`);
+      console.log(
+        `[worker:ai] metadata done for ${contentItemId} (tags=${metaOut.tags.length}) — enqueued A/B suggestions`,
+      );
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

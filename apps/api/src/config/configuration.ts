@@ -22,12 +22,15 @@ export const envSchema = z.object({
   // Local hot-tier storage root (docs/02 §6). Absolute paths are stored on
   // assets so the worker reads the exact file the API wrote (shared filesystem).
   STORAGE_ROOT: z.string().optional(),
-  // Media system of record: `local` (default) or `gdrive` (Drive library; fail
-  // clear when Drive env is incomplete — do not silently keep forever-local).
+  // Media system of record: Settings → General preferred; STORAGE_BACKEND is
+  // optional bootstrap/fallback (`local` default, or `gdrive`).
   STORAGE_BACKEND: z.enum(['local', 'gdrive']).default('local'),
+  GOOGLE_DRIVE_AUTH_MODE: z.enum(['oauth', 'service_account']).optional(),
   GOOGLE_DRIVE_CLIENT_ID: z.string().optional(),
   GOOGLE_DRIVE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_DRIVE_REFRESH_TOKEN: z.string().optional(),
+  GOOGLE_DRIVE_CLIENT_EMAIL: z.string().optional(),
+  GOOGLE_DRIVE_PRIVATE_KEY: z.string().optional(),
   GOOGLE_DRIVE_ROOT_FOLDER_ID: z.string().optional(),
 });
 
@@ -55,9 +58,12 @@ export function configuration() {
       : resolve(process.cwd(), '.data'),
     storageBackend: env.STORAGE_BACKEND,
     googleDrive: {
+      authMode: env.GOOGLE_DRIVE_AUTH_MODE,
       clientId: env.GOOGLE_DRIVE_CLIENT_ID,
       clientSecret: env.GOOGLE_DRIVE_CLIENT_SECRET,
       refreshToken: env.GOOGLE_DRIVE_REFRESH_TOKEN,
+      clientEmail: env.GOOGLE_DRIVE_CLIENT_EMAIL,
+      privateKey: env.GOOGLE_DRIVE_PRIVATE_KEY,
       rootFolderId: env.GOOGLE_DRIVE_ROOT_FOLDER_ID,
     },
     isProduction: env.NODE_ENV === 'production',
