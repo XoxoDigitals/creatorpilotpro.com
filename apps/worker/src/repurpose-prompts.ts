@@ -7,10 +7,10 @@
  * even when the DB PromptVersion row is unchanged / absent.
  */
 import { z } from 'zod';
-import { TaskType, formatIdeaTitleLanguageRules, formatOutputLanguagePolicy, languageDisplayName, parseTtsEmotion } from '@scp/shared';
+import { TaskType, formatIdeaTitleLanguageRules, formatOutputLanguagePolicy, formatRepurposedVoiceEmotionRules, languageDisplayName, parseTtsEmotion } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 17;
+export const REPURPOSE_PROMPT_REV = 18;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -419,7 +419,7 @@ Timing:
 - Fill the runtime. Leave only ~0.2–0.5s of breathing room between sentences (TTS concatenates with a short gap). Do not leave long silent stretches unless a reveal needs a brief beat of air.
 - Prefer complete short sentences ending in . ! or ? so TTS can pause between them.
 - Align narration with the relevant visual beat. Early teasing is allowed only when intentional.
-- Each lines[] item MUST include emotion from that beat's situation (whatHappens / mood / speechOrAudio): argument → angry, loss → sad, reveal → excited, warmth → cheerful, comfort → empathetic, quiet wait → calm, facts → newscast, else default. Emotion may change line to line. Write wording TTS can deliver for that emotion (rhythm and punctuation). Do not print the emotion, stage directions, or brackets in text.
+- ${formatRepurposedVoiceEmotionRules()}
 - script must exactly equal all lines[].text concatenated in order as plain prose (spaces, no timestamps).
 - estimatedSpokenSec must reflect actual spoken wording, not video duration.
 - When dialogue exists, still narrate what was said/replied — keep those lines within the beat maxWords (summarize the exchange if needed).

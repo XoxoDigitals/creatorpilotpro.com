@@ -294,10 +294,11 @@ describe('repurpose schemas', () => {
     expect(parsed.variants?.[0]?.lines?.[0]?.emotion).toBe('sad');
   });
 
-  it('asks the narration prompt to tag each line emotion from the situation', () => {
+  it('asks the narration prompt to use calm for the whole repurposed VO', () => {
     const prompt = defaultNarrationRewritePrompt('en');
     expect(prompt).toContain('"emotion"');
-    expect(prompt).toContain('beat\'s situation');
-    expect(prompt).toContain('Do not print the emotion');
+    expect(prompt).toContain('calm');
+    expect(prompt).toContain('Do not name the emotion');
+    expect(prompt).not.toContain('beat\'s situation');
   });
 });

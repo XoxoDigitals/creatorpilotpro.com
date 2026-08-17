@@ -8,6 +8,7 @@ import {
   NEGATIVE_PROMPT_INLINE_PREFIX,
   parseStyleProfile,
 } from './style-profile.js';
+import { formatDocumentaryVoiceEmotionRules } from './voice-settings.js';
 
 /** Verbatim STYLE BLOCK from engine STATE 7 (include in every image prompt). */
 export const DOCUMENTARY_COLLAGE_STYLE_BLOCK =
@@ -44,9 +45,9 @@ export const DOCUMENTARY_TITLE_SHAPES = [
   'What Really Happened to [subject]',
 ] as const;
 
-/** Calm documentary voice direction for TTS / narration notes (Edge TTS, not ElevenLabs GUI). */
+/** Newscast delivery for documentary VO (Edge TTS, not ElevenLabs GUI). */
 export const DOCUMENTARY_VOICEOVER_DIRECTION =
-  'calm deadpan male narrator, mid-range, mild gravitas, about 155 wpm, minimal emotion spikes, documentary read';
+  'newscast delivery, crisp authoritative even pacing, mid-range, about 155 wpm, news-reader energy across the full track';
 
 const UNIVERSAL_VIDEO_PROMPT_MARKER = 'Universal video prompt:';
 const THUMBNAIL_VARIANTS_MARKER = 'Thumbnail prompt variants:';
@@ -128,14 +129,14 @@ export function formatFernNarrationRules(durationSec: number): string {
 - Continuous narration only: one flowing prose block. No chapter labels, no headers, no camera directions, no visual cues.
 - Word count: target about ${target} spoken words for ${Math.round(durationSec)}s at ~2.5 words/sec (acceptable range ${min}-${max}, within ~5%).
 - Cold open: first 3-4 sentences (about 30-40 words) open on a precise date, a location, and one small concrete action. Example shape: "November 24, 1971. Portland International Airport. A man in a dark suit buys a one-way ticket under the name Dan Cooper."
-- Calm, precise documentary tone. Short declaratives mixed with one longer explanatory sentence per stretch. Temporal and causal connectives carry the story: then, by morning, three days later, because of this, which meant.
+- Crisp, precise documentary tone. Short declaratives mixed with one longer explanatory sentence per stretch. Temporal and causal connectives carry the story: then, by morning, three days later, because of this, which meant.
 - Every sentence ends cleanly on a full stop. Every sentence is one self-contained idea (sentences become visual beats later).
 - Facts stay accurate. If a detail is uncertain, write around it. Never invent names, dates, or numbers.
 - Real-tragedy restraint: no gore, no suffering close-ups, no mockery of victims. Tension lives in objects, places, documents, and time.
 - No sponsor copy, no subscribe prompts, no sign-offs.
 - Mandatory cliffhanger ending: final line 12 words or fewer, ending on a noun, a name, a date, or a short declarative.
 - Never use em dashes (—) anywhere. Use commas, colons, parentheses, or plain hyphens instead.
-- Overlay per-sentence speaking emotion from the situation onto this Fern DNA (keep facts, cold open, and cliffhanger). Grief/loss → sad; reveal/shock → excited; report/facts → newscast; argument → angry; warmth → cheerful; comfort → empathetic; waiting/quiet → calm; otherwise default. Energy of the wording must match that beat. Do not name the emotion, and do not put stage directions, in the spoken words. Also return narrationLines: [{ "text", "emotion" }] one spoken sentence per item; narrationScript stays the concatenated prose.
+- ${formatDocumentaryVoiceEmotionRules()} Also return narrationLines: [{ "text", "emotion" }] one spoken sentence per item; narrationScript stays the concatenated prose.
 - Voice direction note for TTS: ${DOCUMENTARY_VOICEOVER_DIRECTION}.`.trim();
 }
 

@@ -29,9 +29,12 @@ import {
   isDocumentaryIdeaGeneration,
   isDocumentaryVoiceoverPackage,
   isNarrationVoiceoverPackage,
+  isCartoonPackage,
+  stripCartoonAnimeNegatives,
   languageDisplayName,
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
+  formatYoutubeAiDescriptionRules,
   DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT,
   DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT,
@@ -52,6 +55,7 @@ import {
   serializeSpokenNarrationLines,
   ttsEmotionFromVoiceSettings,
   TTS_EMOTIONS,
+  DOCUMENTARY_VOICE_EMOTION,
   type AiPerformanceInsights,
   type ChannelStyleFields,
   type TtsEmotion,
@@ -866,6 +870,7 @@ export const productionBriefOutputSchema = z.object({
       negativePrompt: z.string().optional(),
       animationNegativePrompt: z.string().optional(),
       videoNegativePrompt: z.string().optional(),
+      audioMode: z.enum(['narration', 'dialogue', 'both']).optional(),
       dialogue: z.union([z.string(), z.array(dialogueLineSchema)]),
     }),
   ),
@@ -970,14 +975,23 @@ export function normalizeProductionBriefOutput(
     dramaOrDialogue?: boolean;
     documentaryCollage?: boolean;
     narrationVoiceover?: boolean;
+    cartoonPackage?: boolean;
   },
 ) {
   const brief = (output && typeof output === 'object' ? output : {}) as Record<string, unknown>;
   const drama = options.dramaOrDialogue === true;
   const documentary = options.documentaryCollage === true;
+  const cartoon = options.cartoonPackage === true;
+  const mixed = options.presentation === 'mixed';
   const narrationVoiceover =
     options.narrationVoiceover === true ||
     (!drama && (options.presentation === 'voiceover' || documentary));
+  const dramaImageNeg = cartoon
+    ? stripCartoonAnimeNegatives(DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT)
+    : DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT;
+  const dramaVideoNeg = cartoon
+    ? stripCartoonAnimeNegatives(DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT)
+    : DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT;
   const sharedNegative = text(
     brief.sharedNegativePrompt ?? brief.negativePrompt ?? brief.thumbnailNegativePrompt,
   );
@@ -1036,20 +1050,32 @@ export function normalizeProductionBriefOutput(
     if (drama && characters.length) {
       imagePrompt = expandCharacterReferencesInText(imagePrompt, characters);
       animationPrompt = expandCharacterReferencesInText(animationPrompt, characters);
-      imagePrompt = ensureUltraRealistic(imagePrompt);
-      animationPrompt = ensureUltraRealistic(animationPrompt);
+      if (!cartoon) {
+        imagePrompt = ensureUltraRealistic(imagePrompt);
+        animationPrompt = ensureUltraRealistic(animationPrompt);
+      }
     }
     if (documentary) {
       if (imagePrompt) imagePrompt = ensureDocumentaryCollageImagePrompt(imagePrompt);
       animationPrompt = ensureDocumentaryUniversalVideoPrompt(animationPrompt);
     }
+    const rawAudioMode =
+      row.audioMode === 'narration' || row.audioMode === 'dialogue' || row.audioMode === 'both'
+        ? row.audioMode
+        : undefined;
+    const sceneIsDialogue =
+      mixed &&
+      (rawAudioMode === 'dialogue' || rawAudioMode === 'both' || dialogue.length > 0);
+    const sceneIsNarrationMixed = mixed && !sceneIsDialogue;
     const negativePrompt =
       text(row.negativePrompt ?? row.negative) ||
       (drama
-        ? sharedNegative || DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT
-        : narrationVoiceover
+        ? sharedNegative || dramaImageNeg
+        : sceneIsNarrationMixed || narrationVoiceover
           ? sharedNegative || DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT
-          : sharedNegative);
+          : sceneIsDialogue
+            ? sharedNegative || dramaImageNeg
+            : sharedNegative);
     const animationNegativePrompt =
       text(
         row.animationNegativePrompt ??
@@ -1058,10 +1084,12 @@ export function normalizeProductionBriefOutput(
           row.videoNegative,
       ) ||
       (drama
-        ? DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT
-        : narrationVoiceover
+        ? dramaVideoNeg
+        : sceneIsNarrationMixed || narrationVoiceover
           ? DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT
-          : negativePrompt);
+          : sceneIsDialogue
+            ? dramaVideoNeg
+            : negativePrompt);
     // Bake distinct negatives into copy-paste prompts (image vs video).
     if (negativePrompt) {
       imagePrompt = embedNegativeGuidanceInPrompt(imagePrompt, negativePrompt);
@@ -1085,6 +1113,7 @@ export function normalizeProductionBriefOutput(
       animationPrompt,
       negativePrompt,
       animationNegativePrompt,
+      audioMode: rawAudioMode,
       dialogue,
     };
   });
@@ -1098,6 +1127,8 @@ export function normalizeProductionBriefOutput(
   }
   const narrationLines = normalizeNarrationLines(
     brief.narrationLines ?? brief.lines ?? brief.spokenLines,
+  ).map((line) =>
+    documentary ? { ...line, emotion: DOCUMENTARY_VOICE_EMOTION } : line,
   );
 
   let thumbnailPrompt = text(brief.thumbnailPrompt);
@@ -1105,14 +1136,16 @@ export function normalizeProductionBriefOutput(
     if (characters.length) {
       thumbnailPrompt = expandCharacterReferencesInText(thumbnailPrompt, characters);
     }
-    thumbnailPrompt = ensureUltraRealistic(thumbnailPrompt);
+    if (!cartoon) {
+      thumbnailPrompt = ensureUltraRealistic(thumbnailPrompt);
+    }
   }
   if (documentary && thumbnailPrompt) {
     thumbnailPrompt = ensureDocumentaryThumbnailPrompt(thumbnailPrompt);
   }
   const thumbnailNegativePrompt =
     text(brief.thumbnailNegativePrompt) ||
-    (drama ? sharedNegative || DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT : '');
+    (drama ? sharedNegative || dramaImageNeg : '');
 
   const rawVariants = brief.thumbnailPromptVariants ?? brief.thumbnailVariants;
   const thumbnailPromptVariants = Array.isArray(rawVariants)
@@ -1185,6 +1218,11 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
   const sceneCount = Math.max(1, Math.round(videoDurationSec / clipDurationSec));
 
   const channelStyle = await loadChannelStyle(prisma, idea.accountId);
+  const account = await prisma.socialAccount.findUnique({
+    where: { id: idea.accountId },
+    select: { platform: true },
+  });
+  const youtubeAi = (account?.platform ?? '').toUpperCase() === 'YOUTUBE';
   const styleAnswers = parseStyleProfile(channelStyle?.styleProfile).answers;
   const presentation = normalizedPresentation(styleAnswers.presentation);
   const dramaOrDialogue = isDramaOrDialoguePackage(channelStyle?.styleProfile);
@@ -1192,6 +1230,13 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
   const narrationVoiceover =
     documentaryCollage || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
   const channelLanguage = channelStyle?.language ?? 'en';
+  const documentaryIdeas = isDocumentaryIdeaGeneration(channelStyle?.styleProfile);
+  const youtubeDescriptionRules = youtubeAi
+    ? formatYoutubeAiDescriptionRules({
+        documentary: documentaryCollage || documentaryIdeas,
+        language: channelLanguage,
+      })
+    : `- videoDescription is publish-facing: write it in ${languageDisplayName(channelLanguage)}.`;
   const needsVo = presentationNeedsVoiceover(channelStyle?.styleProfile);
   const audioFirst = presentation === 'voiceover' || presentation === 'mixed';
   const prompt = await getActivePrompt(prisma, task, 'default', idea.accountId);
@@ -1241,6 +1286,7 @@ Do NOT include sceneBreakdown, imagePrompt, or animationPrompt yet — visuals a
       "animationPrompt": string,
       "negativePrompt": string,
       "animationNegativePrompt": string,
+      "audioMode": "narration" | "dialogue" | "both",
       "dialogue": [{"speaker": string, "line": string, "emotion": "${TTS_EMOTIONS.join('|')}"}]
     }
   ],
@@ -1256,48 +1302,64 @@ Do NOT include sceneBreakdown, imagePrompt, or animationPrompt yet — visuals a
   "targetDurationSec": number
 }`;
 
+  const cartoonPackage = isCartoonPackage(channelStyle?.styleProfile);
+  const hookRetentionReminder = `HOOK & RETENTION (mandatory): cold-open hook in the first 1–3 seconds; re-hooks / curiosity gaps throughout (not only the opening); at least one mid-video twist ("but then" / false conclusion / new question); cliffhanger or payoff on the last line. Never a flat lecture. Visual prompts must follow the channel Visual prompt DNA (SCENE / STYLE / FRAMING / LIGHTING / MOTION 0-2/2-4/4-6/6-8 / AUDIO-IN-PROMPT / CLOSER).`;
+  const mixedVoLayupRules = `VO LAYUP TIMELINE (mandatory in editingInstructions): list every scene with cumulative timestamps covering the full ${videoDurationSec}s:
+Scene N  mm:ss–mm:ss  NARRATION (lay generated VO here)
+Scene N  mm:ss–mm:ss  DIALOGUE (no VO; speech is in animationPrompt)
+Scenes may alternate. Opening scene should usually be NARRATION hook unless the hook is a spoken character line. narrationScript / narrationLines cover ONLY narrator windows.`;
+
   const presentationInstructions =
     presentation === 'voiceover'
       ? documentaryCollage
         ? `Presentation mode is DOCUMENTARY VOICEOVER NARRATION (audio-first pipeline).
 ${formatFernNarrationRules(videoDurationSec)}
+- ${hookRetentionReminder}
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
-- Do not invent scene image/video prompts yet.`
-        : `Presentation mode is VOICEOVER NARRATION (audio-first pipeline).
+- Do not invent scene image/video prompts yet. Visuals must NOT invent spoken speech (existing narration negatives apply later).`
+        : `Presentation mode is NARRATION / VOICEOVER (audio-first pipeline). TTS is generated from narrationScript.
 - narrationScript must be one complete, cohesive narration covering the full ${videoDurationSec} seconds (roughly ${Math.round(videoDurationSec * 2.3)}-${Math.round(videoDurationSec * 2.8)} spoken words).
+- ${hookRetentionReminder}
 - Open with a HOOKY first sentence. If the idea/hook/angle is about a person (or characters[] will include a notable person), write like a compelling host: "this person from [place] is famous for…" / "you've seen this face — here's why they matter…" — specific to the idea, never a generic template, never invent biography.
-- Also return narrationLines: one spoken sentence per item as { text, emotion }. emotion is chosen from THAT sentence's situation (${TTS_EMOTIONS.join(', ')}), not one mood for the whole video. Write wording TTS can deliver (rhythm/punctuation). Do not name the emotion or put stage directions in spoken text. narrationScript must equal narrationLines[].text concatenated in order.
+- Also return narrationLines: one spoken sentence per item as { text, emotion }. Use one even narrator delivery and tag emotion as "default". Do not name the emotion in spoken text. narrationScript must equal narrationLines[].text concatenated in order.
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
-- Do not invent scene image/video prompts yet.`
+- Do not invent scene image/video prompts yet. Later visuals MUST NOT invent spoken speech, lip-sync, or character dialogue.`
       : presentation === 'dialogue'
-        ? `Presentation mode is STORYTELLING / DIALOGUE.
+        ? `Presentation mode is DIALOGUES ONLY — no TTS. Spoken lines live in image/animation prompts + scene.dialogue[].
 - narrationScript must be an empty string.
-- Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. emotion is chosen from THAT line's situation (${TTS_EMOTIONS.join(', ')}). The line must ALSO appear, labeled "Dialogue (emotion): Speaker: line", inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
-- animationPrompt must combine camera, motion, action, timing, and exact dialogue so it can be pasted directly into a video-generation tool.
-- Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s).
+- ${hookRetentionReminder}
+- Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion on dialogue is optional (use a fitting value when it helps). The line must ALSO appear, labeled "Dialogue (emotion): Speaker: line" when emotion is set, inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
+- animationPrompt must combine camera, motion, timed beats, action, and exact dialogue so it can be pasted directly into a video-generation tool.
+- Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".
 - Dialogue language: ALL spoken lines MUST be in ${languageDisplayName(channelLanguage)}.`
         : presentation === 'mixed'
           ? documentaryCollage
             ? `Presentation mode is MIXED with DOCUMENTARY NARRATOR portions (audio-first for narrator).
 ${formatFernNarrationRules(videoDurationSec)}
-- narrationScript contains only the narrator portions (Fern continuous prose), cohesive across the full ${videoDurationSec} seconds (in ${languageDisplayName(channelLanguage)}).
+- ${hookRetentionReminder}
+- ${mixedVoLayupRules}
+- narrationScript contains only the narrator portions (Fern continuous prose) for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not dialogue-only clips.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
-- Note any character dialogue ideas inside storySummary or editingInstructions for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
-            : `Presentation mode is MIXED VOICEOVER + DIALOGUE (audio-first for narrator).
-- narrationScript contains only the narrator portions, cohesive across the full ${videoDurationSec} seconds (in ${languageDisplayName(channelLanguage)}).
+- Note planned DIALOGUE windows and spoken character lines inside editingInstructions (and storySummary) for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
+            : `Presentation mode is NARRATION + DIALOGUES (audio-first for narrator windows only).
+- ${hookRetentionReminder}
+- ${mixedVoLayupRules}
+- narrationScript contains only the narrator portions for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not a lecture over dialogue clips.
 - Open narrator portions with a hooky person/subject line when the idea is about a notable person (same "this person from [place] is famous for…" energy), then continue the story.
-- Also return narrationLines: one narrator sentence per item as { text, emotion } from THAT sentence's situation (${TTS_EMOTIONS.join(', ')}). Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
+- Also return narrationLines: one narrator sentence per item as { text, emotion }. Use one even narrator delivery and tag emotion as "default". Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
-- Note any character dialogue ideas inside storySummary or editingInstructions for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
-          : `Presentation mode is ${presentation || 'unspecified'}. Use narrationScript only when the saved style explicitly calls for narration.`;
+- Note planned DIALOGUE windows and spoken character lines inside editingInstructions (and storySummary) for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
+          : `Presentation mode is ${presentation || 'unspecified'}. Use narrationScript only when the saved style explicitly calls for narration.
+- ${hookRetentionReminder}`;
 
   const dramaRules = dramaOrDialogue
     ? `\n${formatDramaDialoguePackageRules({
         clipDurationSec,
         language: channelLanguage,
         includeNegativePrompts: !audioFirst,
+        cartoonPackage,
       })}`
     : '';
 
@@ -1327,7 +1389,7 @@ ${packageOutputContract}
 ${languageRules}
 ${topicSummaryInstruction}
 - videoTitle is publish-facing. ${formatIdeaTitleLanguageRules(channelLanguage)}
-- videoDescription is publish-facing: write it in ${languageDisplayName(channelLanguage)}.
+${youtubeDescriptionRules}
 - storySummary and character appearance/wardrobe/personality stay in English.
 - narrationScript (voiceover) and dialogue[].line are spoken output: write them in ${languageDisplayName(channelLanguage)}.
 - imagePrompt, animationPrompt, and thumbnailPrompt stay in English except quoted on-screen text and spoken lines, which must be in ${languageDisplayName(channelLanguage)}.
@@ -1342,12 +1404,15 @@ ${formatSceneVisualPromptRulesWithChannel(sceneCount, channelStyle, {
   dramaOrDialogue,
   clipDurationSec,
   narrationVoiceover,
+  cartoonPackage,
 })}`
 }
 ${thumbnailInstructions}
 ${
   dramaOrDialogue
-    ? 'thumbnailPrompt must include the phrase "ultra realistic". Also return thumbnailNegativePrompt.'
+    ? cartoonPackage
+      ? 'Keep cartoon/CGI look on the thumbnail. Also return thumbnailNegativePrompt. Do not forbid cartoon or anime.'
+      : 'thumbnailPrompt must include the phrase "ultra realistic". Also return thumbnailNegativePrompt.'
     : ''
 }
 ${
@@ -1375,6 +1440,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     dramaOrDialogue,
     documentaryCollage,
     narrationVoiceover,
+    cartoonPackage,
     language: channelLanguage,
     thumbnailReferencePrompt: channelStyle?.thumbnailReferencePrompt?.trim() || undefined,
   });
@@ -1385,7 +1451,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     promptVersion,
     styleVersion: styleVersionFromProfile(channelStyle),
     inputContentHash: hashText(
-      `creative-package-v9:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${channelLanguage}:${inputText}`,
+      `creative-package-v11:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : 'live'}:${youtubeAi ? 'yt' : 'other'}:${channelLanguage}:${inputText}`,
     ),
   });
 
@@ -1430,6 +1496,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
       dramaOrDialogue,
       documentaryCollage,
       narrationVoiceover,
+      cartoonPackage,
     });
     const scriptText = normalized.narrationScript;
     const editingInstructions = joinProductionBriefEditingExtras({
@@ -1662,6 +1729,7 @@ const visualPromptsOutputSchema = z.object({
       negativePrompt: z.string().optional(),
       animationNegativePrompt: z.string().optional(),
       videoNegativePrompt: z.string().optional(),
+      audioMode: z.enum(['narration', 'dialogue', 'both']).optional(),
       dialogue: z.union([z.string(), z.array(dialogueLineSchema)]).optional(),
     }),
   ),
@@ -1721,6 +1789,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
     parseStyleProfile(channelStyle?.styleProfile).answers.presentation,
   );
   const dramaOrDialogue = isDramaOrDialoguePackage(channelStyle?.styleProfile);
+  const cartoonPackage = isCartoonPackage(channelStyle?.styleProfile);
   const documentaryCollage = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
   const narrationVoiceover =
     documentaryCollage || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
@@ -1737,6 +1806,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
         clipDurationSec,
         language: channelLanguage,
         includeNegativePrompts: true,
+        cartoonPackage,
       })}`
     : '';
   const documentaryRules = documentaryCollage
@@ -1750,8 +1820,20 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
     ? formatDocumentaryThumbnailInstructions(channelStyle?.thumbnailReferencePrompt)
     : formatThumbnailPromptInstructions(channelStyle);
   const languageRules = formatOutputLanguagePolicy(channelLanguage);
+  const mixedVisualRules =
+    presentation === 'mixed'
+      ? `- Mixed narration + dialogues: cover the FULL ${videoDurationSec}s video, not only the VO transcript. Follow any VO LAYUP TIMELINE in the provided editingInstructions.
+- Tag each scene with audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
+- NARRATION scenes: narrationSegment = exact VO text for that window; dialogue[] empty; visual prompts MUST NOT invent speech; use narration (no-talking) negatives; AUDIO-IN-PROMPT is SFX/music/ambience only.
+- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue (emotion): Speaker: line" (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. Do NOT add "no dialogue" negatives on these scenes.
+- Keep/update the VO LAYUP TIMELINE in editingInstructions: Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE.`
+      : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';
   const systemPrompt = withChannelStyle(
-    `You generate production visual prompts for a short-form video whose voiceover already exists.
+    `You generate production visual prompts for a short-form video${
+      presentation === 'mixed'
+        ? ' that mixes generated narrator VO with dialogue-only clips'
+        : ' whose voiceover already exists'
+    }.
 Return JSON only:
 {
   "thumbnailPrompt": string,
@@ -1762,6 +1844,7 @@ Return JSON only:
     "startMs": number,
     "endMs": number,
     "durationSec": number,
+    "audioMode": "narration" | "dialogue" | "both",
     "narrationSegment": string,
     "imagePrompt": string,
     "animationPrompt": string,
@@ -1774,19 +1857,17 @@ Return JSON only:
 Rules:
 ${languageRules}
 - imagePrompt and animationPrompt bodies stay in English; quote any on-screen overlay text and spoken dialogue in ${languageDisplayName(channelLanguage)}.
-- Return about ${sceneCount} scenes covering the full narration timeline (~${videoDurationSec}s total${
+- Return about ${sceneCount} scenes covering the full ${
+      presentation === 'mixed' ? 'video' : 'narration'
+    } timeline (~${videoDurationSec}s total${
       documentaryCollage
         ? ', preferring ~2-3s beats / 5-8 words per beat where practical'
         : `, ~${clipDurationSec}s per clip`
     }).
-- Each scene MUST include startMs/endMs aligned to the timed transcript ranges (or evenly cover the narration if ranges must be grouped).
-- narrationSegment is the exact voiceover text spoken during that time range.
+- Each scene MUST include startMs/endMs aligned to the timed transcript ranges (or the VO LAYUP TIMELINE for mixed; or evenly cover the narration if ranges must be grouped).
+- narrationSegment is the exact voiceover text spoken during that time range (empty on dialogue-only mixed scenes).
 - imagePrompt and animationPrompt must match that narration segment only — no unrelated dialogue for pure voiceover.
-${
-  presentation === 'mixed'
-    ? `- Mixed mode: narrator text stays in narrationSegment; put any character dialogue in dialogue[] as {speaker, line, emotion} (emotion from that line's situation: ${TTS_EMOTIONS.join(', ')}) AND embed it in animationPrompt labeled "Dialogue (emotion): Speaker: line" (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}.`
-    : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.'
-}
+${mixedVisualRules}
 ${
   documentaryCollage
     ? documentaryRules
@@ -1794,21 +1875,27 @@ ${
         dramaOrDialogue,
         clipDurationSec,
         narrationVoiceover,
+        mixedPresentation: presentation === 'mixed',
+        cartoonPackage,
       })
 }
 ${dramaRules}
 ${thumbnailInstructions}
 ${
   dramaOrDialogue
-    ? 'thumbnailPrompt must include the phrase "ultra realistic". Also return thumbnailNegativePrompt plus per-scene negativePrompt (image) and animationNegativePrompt (video) — embed each into its own prompt only.'
-    : narrationVoiceover
-      ? 'Also return per-scene negativePrompt (image, with no-dialogue forbids) and animationNegativePrompt (video, with no-dialogue plus motion/audio avoids). Embed image negatives only in imagePrompt and video negatives only in animationPrompt. Animation prompts must include scene sound design (music, dramatic SFX such as impact hits/whooshes/tension risers, ambience); VO is external.'
-      : 'Also return per-scene negativePrompt (image) and animationNegativePrompt (video); embed each into its own prompt only — do not reuse the same list.'
+    ? cartoonPackage
+      ? 'Keep cartoon/CGI look on the thumbnail. Also return thumbnailNegativePrompt plus per-scene negativePrompt (image) and animationNegativePrompt (video) — embed each into its own prompt only. Do not forbid cartoon or anime.'
+      : 'thumbnailPrompt must include the phrase "ultra realistic". Also return thumbnailNegativePrompt plus per-scene negativePrompt (image) and animationNegativePrompt (video) — embed each into its own prompt only.'
+    : presentation === 'mixed'
+      ? 'NARRATION scenes: no-dialogue negatives + sound design (VO external). DIALOGUE scenes: allow speech in prompts; distinct image vs video negatives without "no dialogue". Embed each list into its own prompt only.'
+      : narrationVoiceover
+        ? 'Also return per-scene negativePrompt (image, with no-dialogue forbids) and animationNegativePrompt (video, with no-dialogue plus motion/audio avoids). Embed image negatives only in imagePrompt and video negatives only in animationPrompt. Animation prompts must include scene sound design (music, dramatic SFX such as impact hits/whooshes/tension risers, ambience); VO is external.'
+        : 'Also return per-scene negativePrompt (image) and animationNegativePrompt (video); embed each into its own prompt only — do not reuse the same list.'
 }
 ${
   documentaryCollage
     ? 'Never use em dashes (—). Each imagePrompt must be fully self-contained with the verbatim style block and closer so prompts can be exported blank-line-separated for bulk generation.'
-    : 'Reuse character appearance details from the provided character sheets when people appear.'
+    : 'Reuse character appearance details from the provided character sheets when people appear. Lock wardrobe/appearance across scenes.'
 }`,
     channelStyle,
   );
@@ -1823,12 +1910,15 @@ ${
     clipDurationSec,
     videoDurationSec,
     suggestedSceneCount: sceneCount,
+    presentation,
     dramaOrDialogue,
     documentaryCollage,
     narrationVoiceover,
+    cartoonPackage,
     language: channelLanguage,
     thumbnailReferencePrompt: channelStyle?.thumbnailReferencePrompt?.trim() || undefined,
     universalVideoPrompt: documentaryCollage ? DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT : undefined,
+    editingInstructions: priorEditing.editingInstructions || undefined,
   });
 
   try {
@@ -1844,7 +1934,7 @@ ${
         promptVersion: 1,
         styleVersion: styleVersionFromProfile(channelStyle),
         inputContentHash: hashText(
-          `visual-prompts-v5:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${channelLanguage}:${ideaId}:${hashText(inputText)}`,
+          `visual-prompts-v6:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : 'live'}:${channelLanguage}:${ideaId}:${hashText(inputText)}`,
         ),
       }),
     });
@@ -1869,6 +1959,7 @@ ${
         dramaOrDialogue,
         documentaryCollage,
         narrationVoiceover,
+        cartoonPackage,
       },
     );
 
@@ -1891,13 +1982,21 @@ ${
         typeof raw.endMs === 'number'
           ? raw.endMs
           : timings[index]?.endMs ?? startMs + beatMs;
+      const fromTimings = timings
+        .filter((t) => t.startMs < endMs && t.endMs > startMs)
+        .map((t) => t.text)
+        .join(' ');
+      const dialogueOnly =
+        presentation === 'mixed' &&
+        (raw.audioMode === 'dialogue' ||
+          (!raw.narrationSegment && Array.isArray(scene.dialogue) && scene.dialogue.length > 0));
       const narrationSegment =
         typeof raw.narrationSegment === 'string' && raw.narrationSegment.trim()
           ? raw.narrationSegment.trim()
-          : timings
-              .filter((t) => t.startMs < endMs && t.endMs > startMs)
-              .map((t) => t.text)
-              .join(' ') || scene.dialogue.map((d) => d.line).join(' ');
+          : dialogueOnly
+            ? ''
+            : fromTimings ||
+              (presentation === 'mixed' ? '' : scene.dialogue.map((d) => d.line).join(' '));
       return {
         ...scene,
         startMs,
@@ -2142,7 +2241,7 @@ export async function runDramaEpisode(episodeId: string, _boss: PgBoss): Promise
 ${formatOutputLanguagePolicy(channelStyle?.language)}
 - summary, recap, and productionNotes stay in English.
 - script and narration are spoken output: write them in ${lang}.
-- In script, tag every spoken line with a situation-based emotion from ${TTS_EMOTIONS.join(', ')}, e.g. "HINA (angry): Get out." Pick emotion from that moment only — not one mood for the episode. Do not put the emotion word inside the spoken words.
+- In script, spoken lines may include an optional emotion tag, e.g. "HINA (angry): Get out." This is optional. Do not put the emotion word inside the spoken words.
 - scenePrompts description/imagePrompt/videoPrompt stay in English; quote spoken dialogue and on-screen text in ${lang}.`,
     channelStyle,
   );

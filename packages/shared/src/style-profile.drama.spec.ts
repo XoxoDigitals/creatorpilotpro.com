@@ -4,15 +4,24 @@ import {
   DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT,
+  STYLE_QUESTIONS,
+  composeChannelStyles,
+  dramaImageNegativePromptFor,
+  dramaVideoNegativePromptFor,
   embedNegativeGuidanceInPrompt,
   expandCharacterReferencesInText,
   formatCharacterReference,
+  formatDramaDialoguePackageRules,
   formatSceneVisualPromptRules,
   formatChannelStyleBlock,
   formatOurChannelAboutBlock,
+  isCartoonPackage,
   isDramaOrDialoguePackage,
   isNarrationVoiceoverPackage,
+  presentationNeedsVoiceover,
   NEGATIVE_PROMPT_INLINE_PREFIX,
+  parseStyleProfile,
+  stripCartoonAnimeNegatives,
 } from './style-profile.js';
 import { languageDisplayName } from './content-languages.js';
 
@@ -163,13 +172,119 @@ describe('drama/dialogue style helpers', () => {
     expect(drama).not.toContain('sound design / audio layer');
   });
 
-  it('injects situation-based spoken emotion into the channel style block', () => {
+  it('injects documentary newscast and repurposed calm into the channel style block', () => {
     const block = formatChannelStyleBlock({ language: 'en', ttsEmotion: 'calm' });
-    expect(block).toContain('Spoken emotion');
-    expect(block).toContain('SITUATION');
-    expect(block).toContain('angry');
-    expect(block).toContain('sad');
-    expect(block).toContain('Voice-tab default');
+    expect(block).toContain('Voice delivery');
+    expect(block).toContain('newscast');
     expect(block).toContain('calm');
+    expect(block).not.toContain('SITUATION');
+  });
+});
+
+describe('brand questionnaire & master prompt', () => {
+  it('puts presentation first in STYLE_QUESTIONS', () => {
+    expect(STYLE_QUESTIONS[0]?.id).toBe('presentation');
+  });
+
+  it('keeps voiceover / dialogue / mixed voiceover flags unchanged', () => {
+    const voiceover = { version: 1 as const, answers: { presentation: 'voiceover' } };
+    const dialogue = { version: 1 as const, answers: { presentation: 'dialogue' } };
+    const mixed = { version: 1 as const, answers: { presentation: 'mixed' } };
+    expect(isNarrationVoiceoverPackage(voiceover)).toBe(true);
+    expect(isNarrationVoiceoverPackage(dialogue)).toBe(false);
+    expect(isNarrationVoiceoverPackage(mixed)).toBe(false);
+    expect(presentationNeedsVoiceover(voiceover)).toBe(true);
+    expect(presentationNeedsVoiceover(dialogue)).toBe(false);
+    expect(presentationNeedsVoiceover(mixed)).toBe(true);
+    expect(isDramaOrDialoguePackage(mixed)).toBe(false);
+  });
+
+  it('parses old profiles without retentionStyle', () => {
+    const parsed = parseStyleProfile({
+      version: 1,
+      answers: { presentation: 'voiceover', niche: 'history shorts' },
+    });
+    expect(parsed.answers.presentation).toBe('voiceover');
+    expect(parsed.answers.retentionStyle).toBe('');
+  });
+
+  it('composeChannelStyles includes Hook & retention and Visual prompt DNA', () => {
+    const composed = composeChannelStyles(
+      parseStyleProfile({
+        version: 1,
+        answers: {
+          presentation: 'voiceover',
+          niche: 'forgotten inventors',
+          visualStyles: ['fast_motion_graphics'],
+          pacing: 'high',
+          hookStyle: 'shock_fact',
+          retentionStyle: 'rehook_8s',
+        },
+      }).answers,
+      'en',
+    );
+    expect(composed.masterPrompt).toContain('## 2. Hook & retention engine');
+    expect(composed.masterPrompt).toContain('## 3. Visual prompt DNA');
+    expect(composed.masterPrompt).toContain('re-hook about every ~8 seconds');
+    expect(composed.masterPrompt).not.toContain('VO LAYUP TIMELINE');
+  });
+
+  it('mixed compose includes VO LAYUP TIMELINE guidance', () => {
+    const composed = composeChannelStyles(
+      parseStyleProfile({
+        version: 1,
+        answers: {
+          presentation: 'mixed',
+          niche: 'story channel',
+          formats: ['storytime'],
+        },
+      }).answers,
+      'en',
+    );
+    expect(composed.masterPrompt).toContain('## 5. Mixed VO timeline');
+    expect(composed.masterPrompt).toContain('VO LAYUP TIMELINE');
+    expect(composed.masterPrompt).toContain('NARRATION (lay generated VO here)');
+    expect(composed.masterPrompt).toContain('DIALOGUE (no VO; speech is in animationPrompt)');
+  });
+
+  it('does not overwrite owner-pasted animation guidelines', () => {
+    const composed = composeChannelStyles(
+      parseStyleProfile({
+        version: 1,
+        answers: { presentation: 'voiceover', visualStyles: ['fast_motion_graphics'] },
+      }).answers,
+      'en',
+      { animationReferencePrompt: 'OWNER MOTION: always dolly left' },
+    );
+    expect(composed.masterPrompt).toContain('OWNER MOTION: always dolly left');
+    expect(composed.masterPrompt).not.toContain('Seeded motion DNA from brand answers');
+  });
+
+  it('cartoon package does not forbid cartoon in default drama negatives helper', () => {
+    const cartoon = {
+      version: 1 as const,
+      answers: { visualStyles: ['2d_cartoon'], animationStyle: '2d_cartoon' },
+    };
+    expect(isCartoonPackage(cartoon)).toBe(true);
+    expect(DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT).toContain('cartoon');
+    expect(dramaImageNegativePromptFor(cartoon)).not.toMatch(/\bcartoon\b/i);
+    expect(dramaImageNegativePromptFor(cartoon)).not.toMatch(/\banime\b/i);
+    expect(dramaVideoNegativePromptFor(cartoon)).not.toMatch(/\bcartoon\b/i);
+    expect(stripCartoonAnimeNegatives(DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT)).not.toMatch(
+      /\bcartoon\b/i,
+    );
+    const rules = formatDramaDialoguePackageRules({
+      clipDurationSec: 8,
+      cartoonPackage: true,
+    });
+    expect(rules).not.toMatch(/Start from:.*\bcartoon\b/i);
+    expect(rules).not.toContain('include the exact phrase "ultra realistic"');
+
+    const sceneRules = formatSceneVisualPromptRules(3, {
+      dramaOrDialogue: true,
+      cartoonPackage: true,
+    });
+    expect(sceneRules).toContain('Do NOT add cartoon or anime');
+    expect(sceneRules).not.toContain('include the quality phrase "ultra realistic"');
   });
 });

@@ -49,6 +49,8 @@ export const styleProfileAnswersSchema = z.object({
   tones: z.array(z.string()).default([]),
   pacing: z.string().default(''),
   hookStyle: z.string().default(''),
+  /** Retention cadence: rehook_8s | two_twists | slow_burn. Empty = recommended re-hooks. */
+  retentionStyle: z.string().default(''),
   captionStyle: z.string().default(''),
   avoid: z.string().default(''),
   extraNotes: z.string().default(''),
@@ -75,8 +77,25 @@ export function parseStyleProfile(raw: unknown): StyleProfile {
   return parsed.success ? parsed.data : emptyStyleProfile();
 }
 
-/** Questionnaire definition shown in account settings. */
+/** Questionnaire definition shown in account settings. Presentation is always first. */
 export const STYLE_QUESTIONS: StyleQuestion[] = [
+  {
+    id: 'presentation',
+    label: 'Audio mode',
+    help: 'First production decision. Narration: the system generates TTS voiceover; visual prompts must not invent spoken speech. Dialogues only: no TTS — spoken lines live in image/animation prompts and scene.dialogue[]. Narration + Dialogues: TTS only on narrator time windows; talking clips keep speech in prompts. After Generate, mixed packages include a VO LAYUP TIMELINE with exact mm:ss windows.',
+    type: 'single',
+    required: true,
+    options: [
+      { value: 'voiceover', label: 'Narration — AI generates voiceover' },
+      { value: 'dialogue', label: 'Dialogues only — speech in video prompts, no TTS' },
+      {
+        value: 'mixed',
+        label: 'Narration + Dialogues — VO on narrator windows, speech in prompts for talking scenes',
+      },
+      { value: 'on_camera', label: 'On-camera host' },
+      { value: 'text_only', label: 'Text-on-screen only (no VO)' },
+    ],
+  },
   {
     id: 'nicheTags',
     label: 'What is your channel about?',
@@ -133,27 +152,18 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
     ],
   },
   {
-    id: 'presentation',
-    label: 'How is the video presented?',
-    type: 'single',
-    required: true,
-    options: [
-      { value: 'voiceover', label: 'Voiceover narration' },
-      { value: 'dialogue', label: 'Dialogue / characters talking' },
-      { value: 'on_camera', label: 'On-camera host' },
-      { value: 'mixed', label: 'Mixed (VO + dialogue or host)' },
-      { value: 'text_only', label: 'Text-on-screen only (no VO)' },
-    ],
-  },
-  {
     id: 'visualStyles',
     label: 'Visual / editing style',
     type: 'multi',
     required: true,
     options: [
+      { value: 'fast_motion_graphics', label: 'Fast-paced motion graphics (recommended)' },
+      { value: '2d_cartoon', label: '2D cartoon / illustrated' },
+      { value: '3d_cartoon', label: '3D cartoon / CGI characters' },
       { value: 'fast_cuts', label: 'Fast cuts' },
       { value: 'cinematic', label: 'Cinematic / slow' },
       { value: 'motion_graphics', label: 'Motion graphics' },
+      { value: 'paper_collage', label: 'Documentary paper collage' },
       { value: 'stock_collage', label: 'Stock footage collage' },
       { value: 'broll_doc', label: 'Documentary B-roll' },
       { value: 'ai_visuals', label: 'AI-generated visuals' },
@@ -167,6 +177,8 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
     label: 'Animation style (if any)',
     type: 'single',
     options: [
+      { value: '2d_cartoon', label: '2D cartoon animation' },
+      { value: '3d_cartoon', label: '3D cartoon / CGI animation' },
       { value: 'none', label: 'None / live footage' },
       { value: '2d_motion', label: '2D motion graphics' },
       { value: 'kinetic_type', label: 'Kinetic typography' },
@@ -195,26 +207,42 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
   {
     id: 'pacing',
     label: 'Pacing & energy',
+    help: 'Fast-paced graphics is the house default recommendation. High energy = snappy cuts, graphic punches, no sleepy holds.',
     type: 'single',
     required: true,
     options: [
-      { value: 'calm', label: 'Calm & measured' },
-      { value: 'moderate', label: 'Moderate' },
-      { value: 'high', label: 'High-energy / fast' },
+      { value: 'high', label: 'High-energy / fast (recommended)' },
       { value: 'builds', label: 'Variable (builds tension)' },
+      { value: 'moderate', label: 'Moderate' },
+      { value: 'calm', label: 'Calm & measured' },
     ],
   },
   {
     id: 'hookStyle',
     label: 'Preferred hook style',
+    help: 'Cold-open formula for the first 1–3 seconds. Re-hooks later in the video still apply.',
     type: 'single',
     options: [
+      { value: 'shock_fact', label: 'Shocking fact' },
       { value: 'question', label: 'Cold-open question' },
       { value: 'bold_claim', label: 'Bold claim' },
       { value: 'story', label: 'Story cold open' },
+      { value: 'how_its_made', label: 'How-it’s-made / process' },
+      { value: 'secret_reveal', label: 'Secret reveal' },
+      { value: 'comparison', label: 'Comparison / vs' },
       { value: 'list_tease', label: 'List tease (#3 will…)' },
-      { value: 'shock_fact', label: 'Shocking fact' },
       { value: 'relatable', label: 'Relatable scenario' },
+    ],
+  },
+  {
+    id: 'retentionStyle',
+    label: 'Hook & twist cadence',
+    help: 'Where re-hooks and twists land after the opening. Recommended: re-hook about every 8 seconds plus a mid-video twist.',
+    type: 'single',
+    options: [
+      { value: 'rehook_8s', label: 'Re-hook every ~8s + mid-video twist (recommended)' },
+      { value: 'two_twists', label: 'Opening hook + two twist points + cliffhanger' },
+      { value: 'slow_burn', label: 'Slow build, one late twist' },
     ],
   },
   {
@@ -242,6 +270,81 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
     placeholder: 'Signature phrases, recurring segments, brand rules…',
   },
 ];
+
+export interface StyleQuestionSection {
+  id: string;
+  title: string;
+  help?: string;
+  questionIds: (keyof StyleProfileAnswers)[];
+}
+
+/** UI grouping for the brand questionnaire. */
+export const STYLE_QUESTION_SECTIONS: StyleQuestionSection[] = [
+  {
+    id: 'audio',
+    title: 'Audio mode',
+    help: 'Choose how speech is produced before anything else. This drives TTS vs prompt-speech vs mixed VO layup.',
+    questionIds: ['presentation'],
+  },
+  {
+    id: 'niche',
+    title: 'Niche & audience',
+    help: 'What the channel is about and who it is for.',
+    questionIds: ['nicheTags', 'niche', 'audience', 'formats'],
+  },
+  {
+    id: 'visuals',
+    title: 'Visuals & animation',
+    help: 'Look and motion language. Fast-paced graphics is recommended; 2D/3D cartoon are first-class styles.',
+    questionIds: ['visualStyles', 'animationStyle'],
+  },
+  {
+    id: 'story',
+    title: 'Story, hooks & pacing',
+    help: 'Tone plus the retention engine: opening hook, re-hooks, twists, captions.',
+    questionIds: ['tones', 'pacing', 'hookStyle', 'retentionStyle', 'captionStyle'],
+  },
+  {
+    id: 'guardrails',
+    title: 'Guardrails',
+    help: 'Hard avoids and extra owner notes folded into the master prompt.',
+    questionIds: ['avoid', 'extraNotes'],
+  },
+];
+
+const CARTOONISH_VALUES = new Set(['2d_cartoon', '3d_cartoon', '2d_motion']);
+
+function answersUseCartoon(answers: StyleProfileAnswers): boolean {
+  if (CARTOONISH_VALUES.has(answers.animationStyle)) return true;
+  return answers.visualStyles.some((value) => CARTOONISH_VALUES.has(value));
+}
+
+/** True when the brand package is 2D/3D cartoon (or cartoon-ish 2D motion). */
+export function isCartoonPackage(styleProfile: unknown): boolean {
+  return answersUseCartoon(parseStyleProfile(styleProfile).answers);
+}
+
+/** Drop bare cartoon/anime tokens from a comma-separated negative list. */
+export function stripCartoonAnimeNegatives(list: string): string {
+  return list
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => {
+      const lower = token.toLowerCase();
+      return lower !== 'cartoon' && lower !== 'anime';
+    })
+    .join(', ');
+}
+
+export function dramaImageNegativePromptFor(styleProfile?: unknown): string {
+  const base = DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT;
+  return styleProfile && isCartoonPackage(styleProfile) ? stripCartoonAnimeNegatives(base) : base;
+}
+
+export function dramaVideoNegativePromptFor(styleProfile?: unknown): string {
+  const base = DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT;
+  return styleProfile && isCartoonPackage(styleProfile) ? stripCartoonAnimeNegatives(base) : base;
+}
 
 /**
  * True when the style questionnaire indicates drama/skit format and/or
@@ -397,12 +500,26 @@ export function formatDramaDialoguePackageRules(options: {
   clipDurationSec: number;
   language?: string | null;
   includeNegativePrompts?: boolean;
+  cartoonPackage?: boolean;
+  styleProfile?: unknown;
 }): string {
   const lang = languageDisplayName(options.language);
   const clip = Math.max(1, Math.round(options.clipDurationSec));
   const minWords = Math.max(12, Math.round(clip * 2.0));
   const maxWords = Math.max(minWords + 4, Math.round(clip * 2.8));
   const negatives = options.includeNegativePrompts !== false;
+  const cartoon =
+    options.cartoonPackage === true ||
+    (options.styleProfile != null && isCartoonPackage(options.styleProfile));
+  const imageNeg = cartoon
+    ? stripCartoonAnimeNegatives(DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT)
+    : DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT;
+  const videoNeg = cartoon
+    ? stripCartoonAnimeNegatives(DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT)
+    : DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT;
+  const qualityLine = cartoon
+    ? '- Quality: keep a consistent 2D or 3D cartoon / CGI look (do NOT require photoreal or "ultra realistic"; do NOT forbid cartoon or anime in negatives).'
+    : '- Quality keyword: include the exact phrase "ultra realistic" in every imagePrompt and animationPrompt (and thumbnailPrompt when writing one).';
 
   return `DRAMA / DIALOGUE package rules (mandatory):
 - Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions stay in English; only the spoken words must match ${lang}.
@@ -411,11 +528,11 @@ export function formatDramaDialoguePackageRules(options: {
 - Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Different speakers can feel different things in the same scene. Do not print the emotion inside the spoken line.
 - animationPrompt must label each spoken line with its emotion: "Dialogue (angry): Name: line".
 - Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for dialogue speaker labels inside animationPrompt where practical.
-- Quality keyword: include the exact phrase "ultra realistic" in every imagePrompt and animationPrompt (and thumbnailPrompt when writing one).
+${qualityLine}
 ${
   negatives
-    ? `- negativePrompt: for every scene return a comma-separated still-image avoid list. Start from: ${DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT}. Adapt per scene when useful. Optionally also return thumbnailNegativePrompt for the thumbnail.
-- animationNegativePrompt (alias videoNegativePrompt): for every scene return a SEPARATE comma-separated video/animation avoid list focused on motion/temporal artifacts. Start from: ${DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT}. Do not reuse the image list verbatim.
+    ? `- negativePrompt: for every scene return a comma-separated still-image avoid list. Start from: ${imageNeg}. Adapt per scene when useful. Optionally also return thumbnailNegativePrompt for the thumbnail.
+- animationNegativePrompt (alias videoNegativePrompt): for every scene return a SEPARATE comma-separated video/animation avoid list focused on motion/temporal artifacts. Start from: ${videoNeg}. Do not reuse the image list verbatim.
 - Self-contained prompts: embed negativePrompt at the end of imagePrompt as "${NEGATIVE_PROMPT_INLINE_PREFIX} …", and embed animationNegativePrompt at the end of animationPrompt as "${NEGATIVE_PROMPT_INLINE_PREFIX} …". Image and video negatives must differ. Dialogue is allowed — do NOT add "no dialogue" / "no talking" negatives.`
     : ''
 }`.trim();
@@ -502,6 +619,226 @@ export function composeDefaultTags(
   return out.slice(0, max);
 }
 
+function hookFormulaLine(hookStyle: string): string {
+  switch (hookStyle) {
+    case 'shock_fact':
+      return 'Hook formula: lead with a concrete shocking fact (number, date, or irreversible action) — not a vague teaser.';
+    case 'question':
+      return 'Hook formula: open on a specific unanswered question the viewer cannot shrug off.';
+    case 'bold_claim':
+      return 'Hook formula: a bold, testable claim in the first sentence, then immediately start proving it.';
+    case 'story':
+      return 'Hook formula: story cold open — name a person, place, and concrete action in the first 3–4 sentences.';
+    case 'how_its_made':
+      return 'Hook formula: how-it-is-made — show the finished object or outcome first, then rewind into the process.';
+    case 'secret_reveal':
+      return 'Hook formula: secret reveal — imply hidden information, then start disclosing it immediately.';
+    case 'comparison':
+      return 'Hook formula: comparison / vs — put two concrete things in tension in the first line.';
+    case 'list_tease':
+      return 'Hook formula: list tease — promise a ranked payoff (#3 will…) without stalling the story.';
+    case 'relatable':
+      return 'Hook formula: relatable scenario the audience has lived, then twist it with a specific fact.';
+    default:
+      return 'Hook formula: cold-open with date/place/concrete action or a sharp question — never a topic title card.';
+  }
+}
+
+function retentionCadenceLines(retentionStyle: string): string[] {
+  const cadence = retentionStyle || 'rehook_8s';
+  const lines = [
+    'Retention engine (mandatory for EVERY video — not only the first 2 seconds):',
+    '- Cold-open hook in the first 1–3 seconds matching the hook style above.',
+    '- Re-hooks and curiosity gaps throughout: new question, false conclusion, or "but then" beat so the viewer cannot predict the next second.',
+    '- At least one mid-video twist.',
+    '- Cliffhanger or payoff on the last line. Never a flat lecture.',
+    '- Story map: hook → rising action → twist → payoff → cliffhanger.',
+  ];
+  if (cadence === 'two_twists') {
+    lines.push(
+      'Cadence: opening hook + two distinct twist points in the body + a cliffhanger or payoff close.',
+    );
+  } else if (cadence === 'slow_burn') {
+    lines.push(
+      'Cadence: slow build with one late twist — still open with a hook and close with a payoff; do not drone.',
+    );
+  } else {
+    lines.push(
+      'Cadence: re-hook about every ~8 seconds (one scene of energy) plus a mid-video twist. Treat ~8s as the default scene energy window; scale if clip length differs.',
+    );
+  }
+  return lines;
+}
+
+function styleBlockForAnswers(answers: StyleProfileAnswers): string {
+  const bits: string[] = [];
+  if (answers.visualStyles.includes('2d_cartoon') || answers.animationStyle === '2d_cartoon') {
+    bits.push('2D cartoon / illustrated characters and worlds (NOT photoreal)');
+  }
+  if (answers.visualStyles.includes('3d_cartoon') || answers.animationStyle === '3d_cartoon') {
+    bits.push('3D cartoon / CGI characters, stylized (NOT photoreal live-action)');
+  }
+  if (
+    answers.visualStyles.includes('fast_motion_graphics') ||
+    answers.visualStyles.includes('fast_cuts') ||
+    answers.animationStyle === '2d_motion' ||
+    answers.animationStyle === 'kinetic_type' ||
+    answers.pacing === 'high'
+  ) {
+    bits.push('fast-paced motion graphics, snappy cuts, graphic punches, kinetic type');
+  }
+  if (answers.visualStyles.includes('paper_collage')) {
+    bits.push('documentary paper collage, hand-cut editorial layers');
+  }
+  const labeled = labelsFor('visualStyles', answers.visualStyles);
+  const anim = labelFor('animationStyle', answers.animationStyle);
+  if (labeled.length) bits.push(joinList(labeled));
+  if (anim && anim !== 'None / live footage') bits.push(anim);
+  return bits.filter(Boolean).join('; ') || 'fast-paced motion graphics (house default)';
+}
+
+function audioInPromptRule(presentation: string): string {
+  if (presentation === 'dialogue') {
+    return 'quoted spoken Dialogue lines in the output language + SFX/music under them. No TTS voiceover.';
+  }
+  if (presentation === 'mixed') {
+    return 'NARRATION scenes: SFX/music/ambience only (VO is external). DIALOGUE scenes: quoted spoken lines in the output language + SFX/music; no VO on those clips.';
+  }
+  if (presentation === 'text_only') {
+    return 'SFX/music/ambience only. No spoken speech.';
+  }
+  if (presentation === 'on_camera') {
+    return 'host speech only when the host is visibly talking; otherwise SFX/music. Do not invent extra VO.';
+  }
+  return 'SFX, music, ambience only. Do NOT invent spoken narration, lip-sync, or character dialogue — TTS voiceover is an external track.';
+}
+
+/** Owner-editable visual prompt skeleton composed from questionnaire answers. */
+export function formatVisualPromptDna(answers: StyleProfileAnswers): string {
+  const a = styleProfileAnswersSchema.parse(answers);
+  const cartoon = answersUseCartoon(a);
+  const fast =
+    a.pacing === 'high' ||
+    a.visualStyles.includes('fast_motion_graphics') ||
+    a.visualStyles.includes('fast_cuts') ||
+    a.animationStyle === 'kinetic_type' ||
+    a.animationStyle === '2d_motion';
+  const closer = cartoon
+    ? 'Keep cartoon/CGI look consistent. Do NOT add cartoon or anime to negatives.'
+    : 'Avoid blurry, watermark, burned-in subtitles, extra limbs, deformed face.';
+  return [
+    'SCENE: one hero subject (~70% visual weight) + 2–3 supporting elements. One visual idea only — never a collage of unrelated beats.',
+    `STYLE: ${styleBlockForAnswers(a)}`,
+    'FRAMING: shot type, camera angle, lens feel.',
+    'LIGHTING / MOOD: time of day, contrast, color grade.',
+    'MOTION (animationPrompt): timed beats 0-2 / 2-4 / 4-6 / 6-8 for ~8s clips (scale if clip length differs). Universal motion language in the animation guidelines below.',
+    `AUDIO-IN-PROMPT: ${audioInPromptRule(a.presentation)}`,
+    `CLOSER / NEGATIVES: ${closer}`,
+    fast
+      ? 'Pace: snappy cuts, graphic punches, kinetic type, impact every 1–2s, no sleepy holds.'
+      : a.pacing === 'calm'
+        ? 'Pace: measured holds are allowed, but still change the frame before attention dies.'
+        : 'Pace: keep energy moving; prefer graphic punches over static lectures.',
+  ].join('\n');
+}
+
+/** Seeded motion language when the owner has not pasted animation guidelines. */
+export function composeDefaultAnimationDna(answers: StyleProfileAnswers): string {
+  const a = styleProfileAnswersSchema.parse(answers);
+  const lines = [
+    'Universal MOTION DNA (apply to every clip; owner may edit this once):',
+    'Timed action breakdown for ~8s clips (scale proportionally if clip length differs):',
+    '0-2s: hook visual / first impact or entrance.',
+    '2-4s: develop the hero action; camera or graphic punch.',
+    '4-6s: complication, twist cue, or supporting element lands.',
+    '6-8s: payoff, sting, or bridge into the next scene.',
+  ];
+  if (a.visualStyles.includes('2d_cartoon') || a.animationStyle === '2d_cartoon') {
+    lines.push(
+      '2D cartoon animation: pose-to-pose, clear silhouettes, smear frames on fast action, snappy holds. Not photoreal live-action.',
+    );
+  } else if (a.visualStyles.includes('3d_cartoon') || a.animationStyle === '3d_cartoon') {
+    lines.push(
+      '3D cartoon / CGI: stylized characters, squash/stretch on impacts, kinetic camera, not photoreal skin.',
+    );
+  } else if (a.visualStyles.includes('paper_collage')) {
+    lines.push(
+      'Paper-collage motion: elements land as cutouts with paper-drag and stamp settles; no smooth CGI morphs.',
+    );
+  } else {
+    lines.push(
+      'Fast-paced motion graphics (house default): snappy cuts, kinetic type, graphic punches, whooshes and impact hits. No sleepy locked holds.',
+    );
+  }
+  lines.push(
+    'Camera: punch-ins, whip pans, or motivated moves — locked-off only when the graphic itself is moving fast.',
+  );
+  return lines.join('\n');
+}
+
+function audioModeSection(
+  answers: StyleProfileAnswers,
+  lang: string,
+  extras: { existingNarration: string; voiceNotes: string; pacing: string; captions: string },
+): string {
+  const mode = answers.presentation;
+  const label = labelFor('presentation', mode) || 'unspecified';
+  const lines = [
+    '## 1. Audio mode',
+    `Presentation: ${label}`,
+  ];
+  if (mode === 'dialogue') {
+    lines.push(
+      'Dialogues only — NO TTS voiceover. Leave narrationScript empty.',
+      'Every spoken line lives in scene.dialogue[] AND as quoted Dialogue lines inside animationPrompt (and in imagePrompt when a talking still is shown).',
+      `Spoken lines in ${lang}. Visual prompt bodies stay English.`,
+    );
+  } else if (mode === 'mixed') {
+    lines.push(
+      'Narration + Dialogues in the SAME video.',
+      'TTS voiceover is generated ONLY for narrator windows. narrationScript / narrationLines cover those narrator windows only — not dialogue-only clips and not the full runtime as one lecture.',
+      `Talking scenes: no VO on those clips; spoken lines go in dialogue[] and quoted in animationPrompt, in ${lang}.`,
+      'See section 5 for the VO LAYUP TIMELINE the editor uses to place generated VO vs dialogue clips.',
+    );
+  } else if (mode === 'on_camera') {
+    lines.push(
+      'On-camera host. TTS voiceover is not the default. Host speech may appear in prompts only when the host is visibly talking.',
+    );
+  } else if (mode === 'text_only') {
+    lines.push(
+      'Text-on-screen only. No TTS. No spoken dialogue. Visual prompts must not invent speech.',
+    );
+  } else {
+    lines.push(
+      'Narration — the system generates TTS voiceover from narrationScript / narrationLines.',
+      'Visual prompts (imagePrompt + animationPrompt) MUST NOT invent spoken speech, lip-sync, talking heads, or character dialogue.',
+      'AUDIO-IN-PROMPT = music, SFX, ambience only. Voiceover is an external audio track laid over the video.',
+      `Spoken narration in ${lang}.`,
+    );
+  }
+  if (extras.pacing) lines.push(`Pacing & energy: ${extras.pacing}`);
+  if (extras.captions) lines.push(`Captions / on-screen text: ${extras.captions}`);
+  if (extras.existingNarration) lines.push(`Narration style notes: ${extras.existingNarration}`);
+  if (extras.voiceNotes) lines.push(`Voice / TTS notes: ${extras.voiceNotes}`);
+  lines.push(
+    `Keep delivery natural for this audio mode. Align on-screen text with caption rules and write overlay lettering in ${lang}.`,
+  );
+  return lines.join('\n');
+}
+
+function mixedVoTimelineSection(): string {
+  return [
+    '## 5. Mixed VO timeline',
+    'editingInstructions MUST include a VO LAYUP TIMELINE with cumulative timestamps covering the full video:',
+    'Scene N  mm:ss–mm:ss  NARRATION (lay generated VO here)',
+    'Scene N  mm:ss–mm:ss  DIALOGUE (no VO; speech is in animationPrompt)',
+    'Scenes may alternate. Opening scene should usually be NARRATION hook unless the hook is a spoken character line.',
+    'narrationScript / narrationLines = narrator windows only.',
+    'Dialogue scenes: dialogue[] + quoted lines in animationPrompt; narrationSegment empty for those clips.',
+    'After package generation, the editor uses this timeline to place the generated voiceover vs dialogue-only clips.',
+  ].join('\n');
+}
+
 /** Compose freeform style fields from questionnaire answers. */
 export function composeChannelStyles(
   answers: StyleProfileAnswers,
@@ -518,8 +855,9 @@ export function composeChannelStyles(
   const animation = labelFor('animationStyle', a.animationStyle);
   const pacing = labelFor('pacing', a.pacing);
   const hook = labelFor('hookStyle', a.hookStyle);
+  const retention = labelFor('retentionStyle', a.retentionStyle);
   const captions = labelFor('captionStyle', a.captionStyle);
-  const animationGuidelines = options?.animationReferencePrompt?.trim() ?? '';
+  const ownerAnimationGuidelines = options?.animationReferencePrompt?.trim() ?? '';
   const thumbnailGuidelines = options?.thumbnailReferencePrompt?.trim() ?? '';
   const titleTemplate = options?.titleTemplate?.trim() ?? '';
   const descriptionTemplate = options?.descriptionTemplate?.trim() ?? '';
@@ -527,6 +865,11 @@ export function composeChannelStyles(
   const voiceNotes = options?.voiceNotes?.trim() ?? '';
   const existingWriting = options?.writingStyle?.trim() ?? '';
   const existingNarration = options?.narrationStyle?.trim() ?? '';
+  const cartoon = answersUseCartoon(a);
+  const documentaryFormat = a.formats.some((value) => {
+    const v = value.toLowerCase().trim();
+    return v === 'documentary' || v.includes('documentary');
+  });
 
   const sections: string[] = [];
 
@@ -535,7 +878,8 @@ export function composeChannelStyles(
       '## Role',
       'You are the creative system for this short-form social video channel.',
       'Inject this master brief into EVERY AI task: idea generation, scripts, narration, captions, titles, descriptions, tags, thumbnails, and scene animation prompts.',
-      'Obey brand voice, presentation rules, do/don\'t constraints, and visual guidelines without inventing an unrelated niche.',
+      'Obey brand voice, audio-mode rules, do/don\'t constraints, and visual prompt DNA without inventing an unrelated niche.',
+      'Owners may edit numbered sections below (especially 2 Hook & retention and 3 Visual prompt DNA) after Generate; treat edited text as ground truth.',
     ].join('\n'),
   );
 
@@ -553,14 +897,62 @@ export function composeChannelStyles(
   if (formats.length) identity.push(`Preferred content formats: ${joinList(formats)}`);
   sections.push(identity.join('\n'));
 
-  const voice: string[] = ['## Brand voice & writing'];
-  if (tones.length) voice.push(`Tone: ${joinList(tones)}`);
-  if (hook) {
-    voice.push(`Hook style: ${hook}`);
-    voice.push(
-      'Open every script with a strong hook in the first 1–2 seconds that matches the preferred hook style.',
+  sections.push(
+    audioModeSection(a, lang, {
+      existingNarration,
+      voiceNotes,
+      pacing,
+      captions,
+    }),
+  );
+
+  const hookSec: string[] = ['## 2. Hook & retention engine (mandatory for every video)'];
+  if (hook) hookSec.push(`Preferred opening hook: ${hook}`);
+  hookSec.push(hookFormulaLine(a.hookStyle));
+  if (retention) hookSec.push(`Retention style: ${retention}`);
+  hookSec.push(...retentionCadenceLines(a.retentionStyle));
+  sections.push(hookSec.join('\n'));
+
+  const dna: string[] = [
+    '## 3. Visual prompt DNA',
+    'Edit this block — it is the template the model must fill per scene. One idea per beat. Hero ~70% + 2–3 supports. Self-contained image prompt.',
+  ];
+  if (visuals.length) dna.push(`Visual / editing style: ${joinList(visuals)}`);
+  if (animation && animation !== 'None / live footage') {
+    dna.push(`Animation style preference: ${animation}`);
+  }
+  dna.push(formatVisualPromptDna(a));
+  if (cartoon) {
+    dna.push(
+      'Cartoon package: STYLE must say 2D cartoon or 3D CGI cartoon as selected. MUST NOT forbid cartoon or anime in negatives.',
     );
   }
+  if (thumbnailGuidelines) {
+    dna.push('Thumbnail style reference (match composition, typography, lighting, and mood):');
+    dna.push(thumbnailGuidelines);
+  }
+  dna.push(
+    'Keep thumbnails, cuts, and scene framing consistent with this DNA across the whole package.',
+  );
+  sections.push(dna.join('\n'));
+
+  sections.push(
+    [
+      '## 4. Character consistency',
+      'When people or mascots appear, lock name, face, body, age, wardrobe, and signature props across every scene.',
+      'Never use a bare character name alone in imagePrompt or animationPrompt — expand to "Name (appearance + wardrobe / consistency)" from the character sheets.',
+      cartoon
+        ? '2D/3D cartoon: keep model sheet proportions, palette, and outfit identical shot to shot.'
+        : 'Wardrobe and appearance stay invariant unless the story explicitly changes them.',
+    ].join('\n'),
+  );
+
+  if (a.presentation === 'mixed') {
+    sections.push(mixedVoTimelineSection());
+  }
+
+  const voice: string[] = ['## Brand voice & writing'];
+  if (tones.length) voice.push(`Tone: ${joinList(tones)}`);
   if (existingWriting) voice.push(`Writing style notes: ${existingWriting}`);
   voice.push(
     `Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. Keep publish descriptions, tags, and on-screen captions in ${lang}. Publish titles follow the LANGUAGE POLICY title-language rules.`,
@@ -577,46 +969,30 @@ export function composeChannelStyles(
   }
   sections.push(voice.join('\n'));
 
-  const delivery: string[] = ['## Presentation, pacing & narration'];
-  if (presentation) delivery.push(`Presentation mode: ${presentation}`);
-  if (pacing) delivery.push(`Pacing & energy: ${pacing}`);
-  if (captions) delivery.push(`Captions / on-screen text: ${captions}`);
-  if (existingNarration) delivery.push(`Narration style notes: ${existingNarration}`);
-  if (voiceNotes) delivery.push(`Voice / TTS notes: ${voiceNotes}`);
-  delivery.push(
-    `Match pacing to the energy profile. Keep narration natural for the chosen presentation mode, spoken in ${lang}. Align on-screen text with caption rules and write overlay lettering in ${lang}.`,
+  const motion = ownerAnimationGuidelines || composeDefaultAnimationDna(a);
+  sections.push(
+    [
+      '## Animation / video generation guidelines',
+      ownerAnimationGuidelines
+        ? 'Owner-pasted motion rules (do not replace — apply to every scene animationPrompt):'
+        : 'Seeded motion DNA from brand answers (edit after Generate if you want a different universal motion language):',
+      motion,
+    ].join('\n'),
   );
-  sections.push(delivery.join('\n'));
 
-  const visualsSec: string[] = ['## Visual & editing style'];
-  if (visuals.length) visualsSec.push(`Visual / editing style: ${joinList(visuals)}`);
-  if (animation && animation !== 'None / live footage') {
-    visualsSec.push(`Animation style preference: ${animation}`);
-  }
-  if (thumbnailGuidelines) {
-    visualsSec.push('Thumbnail style reference (match composition, typography, lighting, and mood):');
-    visualsSec.push(thumbnailGuidelines);
-  }
-  visualsSec.push(
-    'Keep thumbnails, cuts, and scene framing consistent with the visual style above across the whole package.',
-  );
-  sections.push(visualsSec.join('\n'));
-
-  if (animationGuidelines) {
-    sections.push(
-      [
-        '## Animation / video generation guidelines',
-        'Apply these rules to every scene animationPrompt and motion brief:',
-        animationGuidelines,
-      ].join('\n'),
-    );
-  }
-
-  const rules: string[] = ['## Hard rules'];
+  const rules: string[] = ['## 6. Hard rules'];
   if (a.avoid.trim()) rules.push(`Do NOT: ${a.avoid.trim()}`);
   rules.push('Stay strictly on-niche and on-audience.');
   rules.push('Do not invent conflicting brand rules or unrelated topics.');
-  rules.push('Prefer reusable patterns that match tone, pacing, hooks, and presentation above.');
+  rules.push('Prefer reusable patterns that match tone, pacing, hooks, audio mode, and visual DNA above.');
+  if (documentaryFormat) {
+    rules.push(
+      'Real-tragedy / documentary: no gore, no suffering close-ups, no exploitation of victims — keep dignity and editorial distance.',
+    );
+  }
+  if (cartoon) {
+    rules.push('Do not add cartoon or anime to negative prompts for this channel.');
+  }
   sections.push(rules.join('\n'));
 
   if (a.extraNotes.trim()) {
@@ -627,18 +1003,24 @@ export function composeChannelStyles(
     [
       '## Operating checklist',
       '- Idea titles follow the title-language rules; idea angle/hook/rationale/topicSummary and story drafts stay English, on-niche, format-fit, hook-first.',
-      `- Scripts / narration / dialogue: match presentation, pacing, and tone; speak ${lang}.`,
+      `- Scripts / narration / dialogue: match audio mode, pacing, and tone; speak ${lang}.`,
       `- On-screen text, publish descriptions, and tags: ${lang}; publish titles follow the title-language rules; follow templates and caption style when set.`,
-      '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language.',
+      '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language; fill Visual prompt DNA per scene.',
       '- Tags: discoverable, niche-relevant, no spam stuffing.',
-      '- Thumbnails & animationPrompts: obey visual + animation guideline sections.',
-    ].join('\n'),
+      '- Thumbnails & animationPrompts: obey visual DNA + animation guideline sections.',
+      a.presentation === 'mixed'
+        ? '- Mixed: VO LAYUP TIMELINE in editingInstructions with mm:ss NARRATION vs DIALOGUE windows.'
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
   );
 
   const writingBits = [
     tones.length ? `Tone: ${joinList(tones)}` : '',
     formats.length ? `Formats: ${joinList(formats)}` : '',
     hook ? `Hooks: ${hook}` : '',
+    retention ? `Retention: ${retention}` : '',
     existingWriting || '',
     a.avoid.trim() ? `Avoid: ${a.avoid.trim()}` : '',
   ].filter(Boolean);
@@ -738,6 +1120,21 @@ export interface SceneVisualPromptRuleOptions {
    * Must be false for drama/dialogue packages.
    */
   narrationVoiceover?: boolean;
+  /** Mixed VO + dialogue: per-scene narration vs talking rules. */
+  mixedPresentation?: boolean;
+  cartoonPackage?: boolean;
+  visualPromptDna?: string;
+}
+
+function timedBeatHint(clipDurationSec: number | null): string {
+  if (!clipDurationSec || clipDurationSec <= 0) {
+    return 'timed beats 0-2 / 2-4 / 4-6 / 6-8 for ~8s clips (scale if clip length differs)';
+  }
+  if (clipDurationSec <= 4) {
+    return `timed beats across the full ~${clipDurationSec}s clip (scale the 0-2 / 2-4 / 4-6 / 6-8 pattern)`;
+  }
+  const q = Math.max(1, Math.round(clipDurationSec / 4));
+  return `timed beats 0-${q} / ${q}-${q * 2} / ${q * 2}-${q * 3} / ${q * 3}-${clipDurationSec}s (scale of the 8s 0-2/2-4/4-6/6-8 pattern)`;
 }
 
 /**
@@ -748,17 +1145,31 @@ export function formatSceneVisualPromptRules(
   options?: SceneVisualPromptRuleOptions,
 ): string {
   const drama = options?.dramaOrDialogue === true;
-  const narration = options?.narrationVoiceover === true && !drama;
+  const mixed = options?.mixedPresentation === true && !drama;
+  const narration = options?.narrationVoiceover === true && !drama && !mixed;
+  const cartoon = options?.cartoonPackage === true;
   const clip =
     typeof options?.clipDurationSec === 'number' && options.clipDurationSec > 0
       ? Math.round(options.clipDurationSec)
       : null;
+  const dna = (options?.visualPromptDna ?? '').trim();
 
   const base = `Scene image & video prompt quality (required for every scene):
 - Return scenes ordered Scene 1 through Scene ${sceneCount} (sceneIndex 1..${sceneCount}). Each prompt string must be human-readable prose ready to copy-paste — never dump nested JSON inside the prompt text.
+- Fill this visual prompt DNA per scene (one idea only): SCENE (hero ~70% + 2–3 supports) / STYLE / FRAMING / LIGHTING / MOOD / MOTION (${timedBeatHint(clip)}) / AUDIO-IN-PROMPT / CLOSER + negatives.
 - imagePrompt: a long, detailed, standalone still-image generation prompt. Include subject(s) and what they are doing; character appearance/wardrobe consistency from the character sheets when people appear; framing and composition (shot type, camera angle, lens feel); lighting; environment and background; time of day / era; art style and medium; mood/atmosphere; and key props. Tie the still only to that scene's narration segment, dialogue, and time range.
 - animationPrompt: a long, detailed, standalone video/animation generation prompt covering the full clip duration. Include what happens over time; camera move (pan, tilt, dolly, zoom, or locked-off); subject motion; environmental motion; pacing; transition into/out of the shot; and sync with narration or dialogue (quote or clearly time the spoken lines). Maintain continuity with adjacent scenes when relevant.
-- Self-contained negatives (mandatory): for every scene return BOTH negativePrompt (still-image avoid list) AND animationNegativePrompt / videoNegativePrompt (video/motion avoid list). Embed negativePrompt only at the end of imagePrompt, and animationNegativePrompt only at the end of animationPrompt, each as "${NEGATIVE_PROMPT_INLINE_PREFIX} …". The two lists MUST differ — do not copy the same string into both prompts.`;
+- Self-contained negatives (mandatory): for every scene return BOTH negativePrompt (still-image avoid list) AND animationNegativePrompt / videoNegativePrompt (video/motion avoid list). Embed negativePrompt only at the end of imagePrompt, and animationNegativePrompt only at the end of animationPrompt, each as "${NEGATIVE_PROMPT_INLINE_PREFIX} …". The two lists MUST differ — do not copy the same string into both prompts.${
+    cartoon
+      ? '\n- Cartoon package: STYLE must say 2D cartoon or 3D CGI cartoon. Do NOT add cartoon or anime to negatives.'
+      : ''
+  }`;
+
+  const dnaBlock = dna
+    ? `
+Visual prompt DNA (fill every scene from this skeleton):
+${dna}`
+    : '';
 
   const narrationBlock = narration
     ? `
@@ -768,15 +1179,26 @@ export function formatSceneVisualPromptRules(
   - animationPrompt MUST include scene-based sound design / audio layer directions synced to the beat: music mood/genre/energy, dramatic SFX (impact hits, whooshes, tension risers, stingers), and ambient bed cues appropriate to the scene and narration beat. VO stays external — describe music/SFX/ambience only, never ask for spoken dialogue or VO on the video track.`
     : '';
 
+  const mixedBlock = mixed
+    ? `
+- Mixed narration + dialogues: tag each scene as audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
+  - NARRATION scenes (audioMode=narration, dialogue[] empty): treat as voiceover — no talking in prompts; start negatives from ${DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT} (image) and ${DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT} (video). AUDIO-IN-PROMPT = SFX/music/ambience only.
+  - DIALOGUE scenes (audioMode=dialogue, dialogue[] filled): quoted speech allowed in imagePrompt/animationPrompt; do NOT add "no dialogue" / "no talking" negatives. narrationSegment should be empty; no VO on these clips.
+  - editingInstructions must keep/update the VO LAYUP TIMELINE (Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE).`
+    : '';
+
   if (drama) {
-    return `${base}
+    const quality = cartoon
+      ? '- Always use expanded character references (never bare names alone). Keep the cartoon/CGI look; do NOT require "ultra realistic"; do NOT forbid cartoon or anime.'
+      : '- Always use expanded character references (never bare names alone) and include the quality phrase "ultra realistic" in imagePrompt and animationPrompt.';
+    return `${base}${dnaBlock}
 - Drama/dialogue detail: imagePrompt and animationPrompt must be especially specific about faces, wardrobe continuity, blocking, emotional beats, and prop interaction${clip ? ` across the full ~${clip}s clip` : ''}.
-- Always use expanded character references (never bare names alone) and include the quality phrase "ultra realistic" in imagePrompt and animationPrompt.
+${quality}
 - Include distinct negativePrompt (image) and animationNegativePrompt (video) per scene; embed each into its own prompt only. Dialogue is allowed — do NOT add "no dialogue" negatives.
 - Where appropriate, animationPrompt should also call for dramatic production audio under/around dialogue (impact hits, whooshes, tension risers, ambient beds) without replacing spoken lines.`;
   }
 
-  return `${base}${narrationBlock}`;
+  return `${base}${dnaBlock}${mixedBlock}${narrationBlock}`;
 }
 
 /**
@@ -787,9 +1209,23 @@ export function formatSceneVisualPromptRulesWithChannel(
   profile: ChannelStyleFields | null | undefined,
   options?: SceneVisualPromptRuleOptions,
 ): string {
-  const base = formatSceneVisualPromptRules(sceneCount, options);
-  const anim = formatAnimationPromptInstructions(profile);
-  return anim ? `${base}\n\n${anim}` : base;
+  const parsed = parseStyleProfile(profile?.styleProfile);
+  const cartoon = options?.cartoonPackage ?? isCartoonPackage(profile?.styleProfile);
+  const mixed =
+    options?.mixedPresentation ?? parsed.answers.presentation === 'mixed';
+  const dna = options?.visualPromptDna ?? formatVisualPromptDna(parsed.answers);
+  const base = formatSceneVisualPromptRules(sceneCount, {
+    ...options,
+    cartoonPackage: cartoon,
+    mixedPresentation: mixed,
+    visualPromptDna: dna,
+  });
+  const ownerAnim = formatAnimationPromptInstructions(profile);
+  const seeded = ownerAnim
+    ? ownerAnim
+    : `Channel animation / video guidelines (seeded MOTION DNA — apply to every scene animationPrompt):
+${composeDefaultAnimationDna(parsed.answers)}`;
+  return `${base}\n\n${seeded}`;
 }
 
 /**

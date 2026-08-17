@@ -701,8 +701,8 @@ export default function AccountSettingsPage() {
       {settingsSection === 'brand' && (
       <Card>
         <CardHeader
-          title="Brand & master prompt"
-          description="Questionnaire + guidelines → one master brief injected into every AI task"
+          title="Brand & structured master prompt"
+          description="Audio mode first, then niche, visuals, and story. Generate a numbered master brief (hooks, visual DNA, mixed VO timeline) that you can edit and save."
         />
         <div className="space-y-4 p-4">
           <StyleQuestionnaire

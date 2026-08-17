@@ -15,11 +15,16 @@ import { writeFile, mkdir, unlink, copyFile, stat } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
 import {
   QUEUE,
+  DOCUMENTARY_VOICE_EMOTION,
+  REPURPOSED_VOICE_EMOTION,
+  isDocumentaryIdeaGeneration,
+  isDocumentaryVoiceoverPackage,
   parseSpokenNarrationLines,
   parseVoiceSettings,
   splitProductionBriefEditingExtras,
   ttsEmotionFromVoiceSettings,
   resolveSpokenEmotion,
+  type TtsEmotion,
   type VoiceSettings,
 } from '@scp/shared';
 import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
@@ -47,9 +52,7 @@ import {
 import { Ffmpeg, FfmpegNotAvailableError } from './media/ffmpeg.js';
 import { writeTtsAudioRef } from './media/tts-audio-ref.js';
 import {
-  analysisBeats,
   analysisDurationSec,
-  applySituationalLineEmotions,
   timedLinesFromStep,
   timelinePadPlan,
   clipStartsFromPadPlan,
@@ -272,18 +275,19 @@ function spokenChunks(
   script: string,
   voice: VoiceSettings,
   lines?: TimedNarrationLine[],
+  forceEmotion?: TtsEmotion,
 ): { text: string; emotion: string }[] {
-  const fallback = ttsEmotionFromVoiceSettings(voice);
+  const fallback = forceEmotion ?? ttsEmotionFromVoiceSettings(voice);
   const usable = (lines ?? []).filter((l) => l.text.trim());
   if (usable.length > 0) {
     return usable.map((l) => ({
       text: l.text.trim(),
-      emotion: resolveSpokenEmotion(l.emotion, fallback, l.text),
+      emotion: forceEmotion ?? resolveSpokenEmotion(l.emotion, fallback, l.text),
     }));
   }
   return chunkScript(script).map((text) => ({
     text,
-    emotion: resolveSpokenEmotion(undefined, fallback, text),
+    emotion: forceEmotion ?? resolveSpokenEmotion(undefined, fallback, text),
   }));
 }
 
@@ -353,8 +357,9 @@ async function synthesizeScript(opts: {
   voDir: string;
   contentItemId?: string;
   lines?: TimedNarrationLine[];
+  forceEmotion?: TtsEmotion;
 }): Promise<SynthBundle> {
-  const { prisma, masterKey, script, voice, voDir, contentItemId, lines } = opts;
+  const { prisma, masterKey, script, voice, voDir, contentItemId, lines, forceEmotion } = opts;
   if (!script.trim()) {
     throw new Error('Empty narration text — cannot synthesize voiceover.');
   }
@@ -375,7 +380,7 @@ async function synthesizeScript(opts: {
         { code: 'EDGE_TTS_NOT_CONFIGURED' },
       );
     }
-    return await synthesizeViaEdge(script, voice, voDir, lines);
+    return await synthesizeViaEdge(script, voice, voDir, lines, forceEmotion);
   }
 
   const keyStore = buildKeyStore(prisma, masterKey);
@@ -389,7 +394,7 @@ async function synthesizeScript(opts: {
     registry: buildRegistry(preferred),
   });
 
-  const chunks = spokenChunks(script, voice, lines);
+  const chunks = spokenChunks(script, voice, lines, forceEmotion);
   const chunkPaths: string[] = [];
   const allTimings: TimedSegment[] = [];
   let offsetMs = 0;
@@ -453,8 +458,9 @@ async function synthesizeViaEdge(
   voice: VoiceSettings,
   voDir: string,
   lines?: TimedNarrationLine[],
+  forceEmotion?: TtsEmotion,
 ): Promise<SynthBundle> {
-  const chunks = spokenChunks(script, voice, lines);
+  const chunks = spokenChunks(script, voice, lines, forceEmotion);
   const ffmpeg = new Ffmpeg();
   const ffmpegAvail = await ffmpeg.available();
   const chunkWavs: string[] = [];
@@ -827,11 +833,9 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
         videoDur = await probeFfmpeg.probeDurationSec(asset.localPath);
       }
     }
-    const timedLines = applySituationalLineEmotions(
-      timedLinesFromStep(currentStep).filter((l) => l.text.trim()),
-      analysisBeats(currentStep.analysis),
-      ttsEmotionFromVoiceSettings(voice),
-    );
+    const timedLines = timedLinesFromStep(currentStep)
+      .filter((l) => l.text.trim())
+      .map((l) => ({ ...l, emotion: REPURPOSED_VOICE_EMOTION }));
     let synth: SynthBundle;
     if (timedLines.length >= 2) {
       console.log(
@@ -859,6 +863,7 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
           voDir,
           contentItemId,
           lines: timedLines,
+          forceEmotion: REPURPOSED_VOICE_EMOTION,
         });
         if (videoDur != null) {
           const ffmpeg = new Ffmpeg();
@@ -880,6 +885,7 @@ export async function runTts(contentItemId: string, boss: PgBoss): Promise<void>
         voDir,
         contentItemId,
         lines: timedLines,
+        forceEmotion: REPURPOSED_VOICE_EMOTION,
       });
       if (videoDur != null) {
         const ffmpeg = new Ffmpeg();
@@ -1060,6 +1066,14 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
   });
 
   const voice = await resolveChannelVoice(prisma, idea.accountId);
+  const styleRow = await prisma.channelProfile.findUnique({
+    where: { accountId: idea.accountId },
+    select: { styleProfile: true },
+  });
+  const documentaryVo =
+    isDocumentaryVoiceoverPackage(styleRow?.styleProfile) ||
+    isDocumentaryIdeaGeneration(styleRow?.styleProfile);
+  const forceEmotion = documentaryVo ? DOCUMENTARY_VOICE_EMOTION : undefined;
   const voDir = join(STORAGE_ROOT, 'ideas', ideaId, 'tts');
   const words = script.split(/\s+/).filter(Boolean).length;
   const extras = splitProductionBriefEditingExtras(idea.brief.editingInstructions ?? '');
@@ -1080,6 +1094,7 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
       voice,
       voDir,
       lines: storedLines,
+      ...(forceEmotion ? { forceEmotion } : {}),
     });
 
     const transcriptPath =

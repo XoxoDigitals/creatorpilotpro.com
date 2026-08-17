@@ -12,11 +12,10 @@ export const EDGE_DEFAULT_VOICE = 'en-US-AriaNeural';
 export const EDGE_DEFAULT_LOCALE = 'en-US';
 
 /**
- * Per-line speaking emotion. Chosen from the scene situation (not a channel-wide
- * mood). Edge CLI has no mstts:express-as, so delivery is rate/pitch/speed plus
- * wording. Folded into AI cache keys via SPEECH_EMOTION_RULES_REV.
+ * Pipeline voice delivery. Documentary = newscast, repurposed = calm.
+ * Folded into AI cache keys via SPEECH_EMOTION_RULES_REV.
  */
-export const SPEECH_EMOTION_RULES_REV = 2;
+export const SPEECH_EMOTION_RULES_REV = 3;
 
 export const TTS_EMOTIONS = [
   'default',
@@ -29,6 +28,11 @@ export const TTS_EMOTIONS = [
   'newscast',
 ] as const;
 export type TtsEmotion = (typeof TTS_EMOTIONS)[number];
+
+/** Whole-track delivery for documentary packages (not per-line). */
+export const DOCUMENTARY_VOICE_EMOTION: TtsEmotion = 'newscast';
+/** Whole-track delivery for repurposed / reaction voiceover. */
+export const REPURPOSED_VOICE_EMOTION: TtsEmotion = 'calm';
 
 export const TTS_EMOTION_LABELS: Record<TtsEmotion, string> = {
   default: 'Neutral',
@@ -220,33 +224,25 @@ export function mergeEmotionProsody(
   };
 }
 
-/** Injected into narration + dialogue prompts: emotion is per line from the situation. */
-export function formatSituationalSpeechEmotionRules(): string {
-  const allowed = TTS_EMOTIONS.join(', ');
-  return `Spoken emotion (mandatory, per line, from the SITUATION — never one mood for the whole video):
-- Allowed emotion values: ${allowed}.
-- For EVERY dialogue line and every narration lines[] beat, set emotion to match what is happening in THAT beat only. Examples: argument/insult/betrayal → angry; loss/goodbye/grief → sad; win/reveal/shock → excited; joke/reunion/warmth → cheerful; comfort/apology → empathetic; waiting/planning/quiet → calm; report/facts/headline → newscast; otherwise default.
-- Different speakers in the same scene can have different emotions. Emotion may change from line to line as the situation changes.
-- Spoken words must NOT include the emotion name, stage directions, or brackets.
-- In animationPrompt, label each spoken line with its emotion: "Dialogue (angry): Name: line".`;
+/** Documentary narrator: one newscast delivery for the whole VO. */
+export function formatDocumentaryVoiceEmotionRules(): string {
+  return `Voice delivery: newscast for the entire documentary voiceover (${TTS_EMOTION_NARRATION_HINTS.newscast}) Tag every narrationLines[].emotion as "${DOCUMENTARY_VOICE_EMOTION}". Do not change emotion line by line. Do not name the emotion or put stage directions in spoken words.`;
+}
+
+/** Repurposed narrator: one calm delivery for the whole VO. */
+export function formatRepurposedVoiceEmotionRules(): string {
+  return `Voice delivery: calm for the entire repurposed voiceover (${TTS_EMOTION_NARRATION_HINTS.calm}) Tag every lines[].emotion as "${REPURPOSED_VOICE_EMOTION}". Do not change emotion line by line. Do not name the emotion or put stage directions in spoken words.`;
 }
 
 /**
- * Injected into every withChannelStyle path: per-line situation rules, TTS
- * wording hints, and the optional channel Voice-tab fallback.
+ * Injected into channel style: pipeline defaults, not per-line "must" tagging.
  */
-export function formatNarrationEmotionBlock(fallback?: TtsEmotion | null): string {
-  const situational = formatSituationalSpeechEmotionRules();
-  const fb = parseTtsEmotion(fallback);
-  const wording = TTS_EMOTIONS.map((e) => `  - ${e}: ${TTS_EMOTION_NARRATION_HINTS[e]}`).join('\n');
-  const fallbackLine =
-    fb !== 'default'
-      ? `- If a beat's situation is unclear, use "${fb}" as the fallback emotion (channel Voice-tab default).`
-      : `- If a beat's situation is unclear, use "default".`;
-  return `${situational}
-- Write spoken wording TTS can deliver for that emotion (rhythm and punctuation only — never name the emotion in spoken text):
-${wording}
-${fallbackLine}`;
+export function formatNarrationEmotionBlock(_fallback?: TtsEmotion | null): string {
+  return `Voice delivery:
+- Documentary voiceover uses ${DOCUMENTARY_VOICE_EMOTION} for the whole track — crisp, even, news-reader. Do not vary narrator emotion line by line.
+- Repurposed voiceover uses ${REPURPOSED_VOICE_EMOTION} for the whole track — steady and unhurried. Do not vary narrator emotion line by line.
+- Drama character dialogue may use a fitting emotion per spoken line when it helps; this is optional, not required.
+- Never write the emotion name, stage directions, or brackets in spoken words.`;
 }
 
 export const voiceSettingsSchema = z.object({
@@ -263,8 +259,8 @@ export const voiceSettingsSchema = z.object({
   /** Numeric speed for Kokoro / Gemini (1.0 = normal). */
   speed: z.number().positive().optional(),
   /**
-   * Channel fallback emotion when a spoken line has no situation tag.
-   * Per-line situation emotion on scripts is the primary delivery.
+   * Channel Voice-tab fallback. Documentary/repurposed pipelines override this
+   * with newscast/calm for the whole track.
    */
   emotion: z.enum(TTS_EMOTIONS).optional(),
   language: z.string().optional(),

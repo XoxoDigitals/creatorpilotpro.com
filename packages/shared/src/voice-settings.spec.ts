@@ -59,19 +59,20 @@ describe('mergeEmotionProsody', () => {
 });
 
 describe('formatNarrationEmotionBlock', () => {
-  it('requires per-line situation emotion and lists allowed values', () => {
+  it('sets documentary newscast and repurposed calm without per-line musts', () => {
     const block = formatNarrationEmotionBlock();
-    expect(block).toContain('SITUATION');
-    for (const emotion of TTS_EMOTIONS) {
-      expect(block).toContain(emotion);
-    }
-    expect(block).toContain('never name the emotion');
+    expect(block).toContain('newscast');
+    expect(block).toContain('calm');
+    expect(block).toContain('Documentary');
+    expect(block).toContain('Repurposed');
+    expect(block.toLowerCase()).not.toContain('mandatory');
+    expect(block).not.toContain('SITUATION');
   });
 
-  it('mentions the channel Voice-tab fallback when set', () => {
+  it('does not require a Voice-tab fallback line', () => {
     const block = formatNarrationEmotionBlock('empathetic');
-    expect(block).toContain('empathetic');
-    expect(block).toContain('Voice-tab default');
+    expect(block).toContain('newscast');
+    expect(block).not.toContain('Voice-tab default');
   });
 });
 
