@@ -12,6 +12,7 @@ function ideaRow(overrides: Partial<IdeaRow> = {}): IdeaRow {
     angle: 'angle',
     hook: 'hook',
     rationale: 'rationale',
+    topicSummary: 'English summary of what the episode is about.',
     category: 'RELEVANT',
     viralScore: 80,
     status: 'IN_PRODUCTION',
@@ -145,5 +146,13 @@ describe('toIdeaView final upload state', () => {
     expect(view.hasFinalVideo).toBe(true);
     expect(view.hasThumbnail).toBe(false);
     expect(view.contentItemId).toBe('content-partial');
+  });
+});
+
+describe('toIdeaView topicSummary', () => {
+  it('exposes the stored English topic summary', () => {
+    expect(toIdeaView(ideaRow()).topicSummary).toBe(
+      'English summary of what the episode is about.',
+    );
   });
 });

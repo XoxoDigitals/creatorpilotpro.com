@@ -52,9 +52,17 @@ describe('parseAiJson', () => {
       angle: 'Fresh angle',
       hook: 'Watch this',
       rationale: 'Strong fit',
+      topicSummary: '',
       category: 'UNIQUE',
       viralScore: 91,
     });
+  });
+
+  it('extracts topicSummary from generated ideas', () => {
+    const parsed = parseAiJson(
+      '[{"title":"Plain title","angle":"Fresh angle","hook":"Watch this","rationale":"Strong fit","topicSummary":"The episode explains a 90-second reset used before meetings. It covers who it helps, why the pause matters, and the core claim that a short ritual beats scrolling."}]',
+    ) as unknown[];
+    expect(normalizeGeneratedIdea(parsed[0]).topicSummary).toContain('90-second reset');
   });
 });
 
@@ -184,6 +192,21 @@ describe('generated idea titles', () => {
     };
     const parsed = ideaGenerationSchema(2).parse([idea, idea, idea]);
     expect(parsed).toHaveLength(2);
+  });
+
+  it('accepts topicSummary on each generated idea', () => {
+    const idea = {
+      title: 'x'.repeat(IDEA_TITLE_ACCEPTED_MIN),
+      angle: 'Angle',
+      hook: 'Hook',
+      rationale: 'Rationale',
+      topicSummary:
+        'The video is about a hidden Antarctic ice core. Scientists found a climate signal that changes the timeline. The core claim is that the ice records a sudden melt, not a slow thaw.',
+      category: 'UNIQUE' as const,
+      viralScore: 80,
+    };
+    const parsed = ideaGenerationSchema(1).parse([idea]);
+    expect(parsed[0]?.topicSummary).toContain('Antarctic ice core');
   });
 
   it('collapses model whitespace without truncating or rewriting words', () => {

@@ -105,21 +105,21 @@ export function contentLanguageSelectOptions(current?: string | null): ContentLa
 
 /**
  * Idea/publish title language for ChannelProfile.language.
- * Angle, hook, and rationale stay English for operator review.
+ * Angle, hook, rationale, and topicSummary stay English for operator review.
  */
 export function formatIdeaTitleLanguageRules(language?: string | null): string {
   const code = parseLanguageCode(language);
   const lang = languageDisplayName(language);
   if (code === 'hi') {
-    return 'Titles MUST mix Hindi (Devanagari) and English in roughly equal parts in ONE title, like Indian YouTube: Hindi words + English keywords (Secret, Never, Why, Exposed). Not fully Hindi, not fully English. Angle/hook/rationale stay English.';
+    return 'Titles MUST mix Hindi (Devanagari) and English in roughly equal parts in ONE title, like Indian YouTube: Hindi words + English keywords (Secret, Never, Why, Exposed). Not fully Hindi, not fully English. Angle/hook/rationale stay English. topicSummary stays English.';
   }
   if (code === 'ur') {
-    return 'Titles MUST be Roman Urdu (Latin letters only), natural spoken Urdu romanization. No Arabic/Urdu script. Angle/hook/rationale stay English.';
+    return 'Titles MUST be Roman Urdu (Latin letters only), natural spoken Urdu romanization. No Arabic/Urdu script. Angle/hook/rationale stay English. topicSummary stays English.';
   }
   if (!isEnglishContentLanguage(language)) {
-    return `Titles MUST be written in ${lang} (native script OK). Angle/hook/rationale stay English.`;
+    return `Titles MUST be written in ${lang} (native script OK). Angle/hook/rationale stay English. topicSummary stays English.`;
   }
-  return 'Titles MUST be written in English. Angle/hook/rationale stay English.';
+  return 'Titles MUST be written in English. Angle/hook/rationale stay English. topicSummary stays English.';
 }
 
 /**
@@ -131,12 +131,12 @@ export function formatOutputLanguagePolicy(language?: string | null): string {
   const lang = languageDisplayName(language);
   const titleRules = formatIdeaTitleLanguageRules(language);
   if (isEnglishContentLanguage(language)) {
-    return `LANGUAGE POLICY: English for idea titles, angle/hook/rationale, stories, image/video prompts, voiceover, dialogue, on-screen text, and publish title/description/tags.`;
+    return `LANGUAGE POLICY: English for idea titles, angle/hook/rationale/topicSummary, stories, image/video prompts, voiceover, dialogue, on-screen text, and publish title/description/tags.`;
   }
   return `LANGUAGE POLICY (mandatory; overrides any earlier "write everything in ${lang}" instruction):
 - Keep these instructions and all AI system prompts in English.
 - Idea title (and publish videoTitle/title): ${titleRules}
-- Idea angle, hook, and rationale MUST stay in English (topicSummary if present stays English).
+- Idea angle, hook, rationale, and topicSummary MUST stay in English.
 - Story drafts / storySummary / bible / episode summaries MUST be written in English.
 - imagePrompt, animationPrompt, thumbnailPrompt, videoPrompt, and negative-prompt bodies MUST stay in English (camera, lighting, composition, motion).
 - Voiceover / narrationScript: write EVERY spoken narrator word in ${lang}.

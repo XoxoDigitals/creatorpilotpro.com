@@ -1100,6 +1100,7 @@ interface ApiIdea {
   angle: string;
   hook: string;
   rationale: string;
+  topicSummary?: string;
   category: string | null;
   viralScore?: number | null;
   status: string;
@@ -1148,7 +1149,8 @@ interface ApiProductionBrief {
   packageStage?: string;
   packageStageError?: string | null;
   packageStageLabel?: string;
-  timedTranscript?: Array<{ startMs: number; endMs: number; text: string }>;
+  timedTranscript?: Array<{ startMs: number; endMs: number; text: string; emotion?: string }>;
+  narrationLines?: Array<{ text: string; emotion: string }>;
   transcriptReady?: boolean;
   voiceIdUsed?: string | null;
   version: number;
@@ -1186,6 +1188,7 @@ function mapBrief(b: ApiProductionBrief): ProductionBrief {
     thumbnailNegativePrompt,
     universalVideoPrompt,
     thumbnailPromptVariants,
+    narrationLines: extrasNarrationLines,
   } = splitEditingExtras(b.editingInstructions ?? '', {
     thumbnailNegativePrompt: b.thumbnailNegativePrompt ?? '',
     universalVideoPrompt: b.universalVideoPrompt ?? '',
@@ -1286,6 +1289,7 @@ function mapBrief(b: ApiProductionBrief): ProductionBrief {
     packageStageError: b.packageStageError ?? null,
     packageStageLabel: b.packageStageLabel ?? b.packageStage ?? 'NONE',
     timedTranscript: Array.isArray(b.timedTranscript) ? b.timedTranscript : [],
+    narrationLines: mapNarrationLines(b, extrasNarrationLines),
     transcriptReady: !!b.transcriptReady,
     voiceIdUsed: b.voiceIdUsed ?? null,
     version: b.version,
@@ -1305,11 +1309,13 @@ function splitEditingExtras(
   thumbnailNegativePrompt: string;
   universalVideoPrompt: string;
   thumbnailPromptVariants: string;
+  narrationLines: string;
 } {
   let rest = editingInstructions ?? '';
   let thumbnailNegativePrompt = (explicit.thumbnailNegativePrompt ?? '').trim();
   let thumbnailPromptVariants = (explicit.thumbnailPromptVariants ?? '').trim();
   let universalVideoPrompt = (explicit.universalVideoPrompt ?? '').trim();
+  let narrationLines = '';
 
   const takeMarker = (markerTitle: string, already: string): string => {
     if (already) return already;
@@ -1329,6 +1335,7 @@ function splitEditingExtras(
     return '';
   };
 
+  narrationLines = takeMarker('Narration lines:', narrationLines);
   thumbnailNegativePrompt = takeMarker('Thumbnail negative prompt:', thumbnailNegativePrompt);
   thumbnailPromptVariants = takeMarker('Thumbnail prompt variants:', thumbnailPromptVariants);
   universalVideoPrompt = takeMarker('Universal video prompt:', universalVideoPrompt);
@@ -1338,7 +1345,50 @@ function splitEditingExtras(
     thumbnailNegativePrompt,
     universalVideoPrompt,
     thumbnailPromptVariants,
+    narrationLines,
   };
+}
+
+function mapNarrationLines(
+  b: ApiProductionBrief,
+  extrasRaw: string,
+): ProductionBrief['narrationLines'] {
+  const fromApi = Array.isArray(b.narrationLines) ? b.narrationLines : [];
+  const apiLines = fromApi
+    .map((row) => ({
+      text: String(row?.text ?? '').trim(),
+      emotion: String(row?.emotion ?? '').trim() || 'default',
+    }))
+    .filter((row) => row.text);
+  if (apiLines.length > 0) return apiLines;
+  if (extrasRaw.trim()) {
+    try {
+      const parsed = JSON.parse(extrasRaw) as unknown;
+      if (Array.isArray(parsed)) {
+        const lines = parsed
+          .map((entry) => {
+            const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+            const text = String(row.text ?? row.line ?? '').trim();
+            const emotion = String(row.emotion ?? '').trim();
+            if (!text || !emotion) return null;
+            return { text, emotion };
+          })
+          .filter((row): row is { text: string; emotion: string } => row != null);
+        if (lines.length > 0) return lines;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const fromTranscript = Array.isArray(b.timedTranscript) ? b.timedTranscript : [];
+  return fromTranscript
+    .map((row) => {
+      const text = String(row?.text ?? '').trim();
+      const emotion = String((row as { emotion?: string })?.emotion ?? '').trim();
+      if (!text || !emotion) return null;
+      return { text, emotion };
+    })
+    .filter((row): row is { text: string; emotion: string } => row != null);
 }
 
 function mapIdea(i: ApiIdea): Idea {
@@ -1350,6 +1400,7 @@ function mapIdea(i: ApiIdea): Idea {
     angle: i.angle,
     hook: i.hook,
     rationale: i.rationale,
+    topicSummary: i.topicSummary ?? '',
     category: (i.category as Idea['category']) ?? null,
     stage: i.status as IdeaStage,
     packageStatus: (i.packageStatus as Idea['packageStatus']) ?? 'NONE',

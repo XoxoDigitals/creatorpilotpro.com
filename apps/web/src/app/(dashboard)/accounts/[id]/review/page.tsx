@@ -168,6 +168,9 @@ export default function AccountReviewPage() {
                     </span>
                   )}
                 </div>
+                {idea.topicSummary?.trim() ? (
+                  <p className="mt-1 line-clamp-2 text-xs text-zinc-500">{idea.topicSummary.trim()}</p>
+                ) : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
                     size="sm"

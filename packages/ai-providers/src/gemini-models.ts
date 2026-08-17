@@ -27,8 +27,18 @@ export const GEMINI_TEXT_MODEL_CHAIN: readonly string[] = [
   'gemini-2.5-flash', // legacy; works for older keys, 404 for many new ones
 ];
 
+/** Default Gemini speech model (specialty — never walk the text chain). */
+export const DEFAULT_GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+
 /** Specialty model families that must not fall through to the text chain. */
 const SPECIALTY_MODEL_RE = /tts|image|embedding|imagen|lyria|veo/i;
+
+/** TTS requests with a text-model id (e.g. edge-neural fallback) stay on the speech model. */
+export function resolveGeminiTtsModel(requested: string): string {
+  const trimmed = requested.trim();
+  if (trimmed && SPECIALTY_MODEL_RE.test(trimmed)) return trimmed;
+  return DEFAULT_GEMINI_TTS_MODEL;
+}
 
 /**
  * Build the try-order for one request: requested model first, then the

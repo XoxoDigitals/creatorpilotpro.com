@@ -15,8 +15,10 @@ import type {
   PackageStage,
   ProductionBrief,
   ProductionScene,
+  SpokenNarrationLine,
   TimedTranscriptSegment,
 } from '@/lib/domain-types';
+import { TTS_EMOTION_LABELS, type TtsEmotion } from '@scp/shared';
 
 const STAGE_ORDER: PackageStage[] = ['SCRIPT', 'VOICE', 'TRANSCRIPT', 'VISUALS', 'READY'];
 
@@ -561,6 +563,55 @@ function transcriptRangeSummary(segments: TimedTranscriptSegment[]): string {
   return `${count} · ${formatMs(start)} – ${formatMs(end)}`;
 }
 
+function emotionLabel(emotion: string): string {
+  const key = emotion.trim().toLowerCase();
+  if (key in TTS_EMOTION_LABELS) return TTS_EMOTION_LABELS[key as TtsEmotion];
+  return emotion.trim() || 'Neutral';
+}
+
+function NarrationLinesSection({
+  lines,
+  ideaId,
+  copiedKey,
+  onCopy,
+}: {
+  lines: SpokenNarrationLine[];
+  ideaId: string;
+  copiedKey: string | null;
+  onCopy: (key: string, value: unknown) => void;
+}) {
+  const spokenOnly = lines.map((l) => l.text).join('\n');
+  return (
+    <section>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Voiceover narration
+        </h4>
+        <CopyButton
+          value={spokenOnly}
+          copyKey={`${ideaId}:narration`}
+          copiedKey={copiedKey}
+          onCopy={onCopy}
+          label="Copy narration"
+        />
+      </div>
+      <ol className="space-y-2">
+        {lines.map((line, index) => (
+          <li
+            key={`${index}:${line.text.slice(0, 24)}`}
+            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm"
+          >
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-indigo-600">
+              {emotionLabel(line.emotion)}
+            </p>
+            <p className="text-zinc-800">{line.text}</p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function TimedTranscriptSection({
   segments,
   ideaId,
@@ -855,7 +906,14 @@ function PackageDetails({
             copiedKey={copiedKey}
             onCopy={onCopy}
           />
-          {pkg.narrationScript && (
+          {pkg.narrationLines && pkg.narrationLines.length > 0 ? (
+            <NarrationLinesSection
+              lines={pkg.narrationLines}
+              ideaId={idea.id}
+              copiedKey={copiedKey}
+              onCopy={onCopy}
+            />
+          ) : pkg.narrationScript ? (
             <PackageSection
               title="Voiceover narration"
               value={pkg.narrationScript}
@@ -864,7 +922,7 @@ function PackageDetails({
               onCopy={onCopy}
               copyLabel="Copy narration"
             />
-          )}
+          ) : null}
           {pkg.englishSummary?.trim() ? (
             <PackageSection
               title="English summary"
@@ -1179,6 +1237,11 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
                   <span className="block truncate text-sm font-semibold text-zinc-900">
                     {pkg?.videoTitle || idea.title}
                   </span>
+                  {idea.topicSummary?.trim() ? (
+                    <span className="mt-0.5 block line-clamp-2 text-xs text-zinc-500">
+                      {idea.topicSummary.trim()}
+                    </span>
+                  ) : null}
                   <span
                     className="mt-0.5 block text-xs text-zinc-500"
                     title={absoluteTime(idea.createdAt)}

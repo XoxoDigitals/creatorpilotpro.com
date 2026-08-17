@@ -387,6 +387,8 @@ export const ideas: Idea[] = [
     angle: 'Workplace micro-recovery',
     hook: '"Do this before your next call."',
     rationale: 'Competitor "DeskBreak" got 2M views on a similar concept',
+    topicSummary:
+      'A 90-second reset people can do before a meeting. It covers who it helps, why a short pause beats scrolling, and the claim that a tiny ritual lowers stress without leaving the desk.',
     category: 'SIMILAR',
     stage: 'SUGGESTED',
     packageStatus: 'NONE',
@@ -418,6 +420,8 @@ export const ideas: Idea[] = [
     angle: 'Common mistake explainer',
     hook: '"You are breathing wrong at night."',
     rationale: 'Sleep content trending in wellness niche',
+    topicSummary:
+      'Why sleep stories fail to land. It names the breathing mistake, who it affects, and the claim that a simple night pattern is what actually helps people fall asleep.',
     category: 'RELEVANT',
     stage: 'SUGGESTED',
     packageStatus: 'NONE',
@@ -449,6 +453,8 @@ export const ideas: Idea[] = [
     angle: 'Routine walkthrough',
     hook: '"3 steps, zero apps."',
     rationale: 'Morning routines consistently outperform in retention',
+    topicSummary:
+      'A cold-start focus ritual with three steps and no apps. It is for people who stall in the morning, and the core claim is that a tiny sequence beats another productivity tool.',
     category: 'UNIQUE',
     stage: 'IN_PRODUCTION',
     packageStatus: 'READY',
@@ -496,6 +502,7 @@ export const ideas: Idea[] = [
       packageStageError: null,
       packageStageLabel: 'Package ready',
       timedTranscript: [],
+      narrationLines: [],
       transcriptReady: false,
       voiceIdUsed: 'edge:en-US-AriaNeural',
       version: 1,
@@ -508,6 +515,8 @@ export const ideas: Idea[] = [
     angle: 'Emergency tool',
     hook: '"Save this for a bad day."',
     rationale: 'High save-rate potential',
+    topicSummary:
+      'A breathing pattern for panic. It explains who to use it for, why it works in the moment, and the claim that a saved pattern is more useful than a long calm-down lecture.',
     category: 'RELEVANT',
     stage: 'IN_PRODUCTION',
     packageStatus: 'DONE',
@@ -539,6 +548,8 @@ export const ideas: Idea[] = [
     angle: 'Nightly routine',
     hook: '"Your phone is keeping you up."',
     rationale: 'Complements sleep content cluster',
+    topicSummary:
+      'An evening wind-down in four moves. It covers why phones delay sleep, who this helps, and the claim that a short sequence can replace late-night scrolling.',
     category: 'SIMILAR',
     stage: 'UPLOADED',
     packageStatus: 'DONE',
@@ -570,6 +581,8 @@ export const ideas: Idea[] = [
     angle: 'Cliffhanger series',
     hook: '"He was the informant all along."',
     rationale: 'Plot twists drive shares',
+    topicSummary:
+      'A double-cross reveal in a heist story. It sets up who the informant is, why the twist lands, and the claim that the betrayal was visible if you knew where to look.',
     category: 'UNIQUE',
     stage: 'IN_PRODUCTION',
     packageStatus: 'DONE',
@@ -601,6 +614,8 @@ export const ideas: Idea[] = [
     angle: 'Character depth',
     hook: '"Before the heist, there was a promise."',
     rationale: 'Backstory episodes increase series loyalty',
+    topicSummary:
+      'An origin flashback before the heist. It covers the promise that started it, who made it, and why that backstory explains the later double-cross.',
     category: 'SIMILAR',
     stage: 'APPROVED',
     packageStatus: 'NONE',

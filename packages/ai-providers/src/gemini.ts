@@ -59,6 +59,19 @@ export class GeminiProvider implements AIProvider {
   constructor(private readonly config: GeminiConfig = {}) {}
 
   async generate(req: AIRequest, key: PooledKey): Promise<AIResult> {
+    // Idea/package VO uses Edge Neural. A leftover router fallback used to call
+    // Gemini with model `edge-neural`, walk Flash text models, and "succeed"
+    // with empty audio. Refuse that path — Gemini TTS only when a speech model
+    // was actually requested (channel provider = gemini).
+    if (req.task === TaskType.TTS && !/tts/i.test(req.model)) {
+      throw Object.assign(
+        new Error(
+          `Gemini refused TTS with text model "${req.model}" — Edge Neural is the voiceover engine.`,
+        ),
+        { status: 400, code: 'GEMINI_NOT_TTS' },
+      );
+    }
+
     const models = resolveGeminiModelChain(req.model);
     let lastUnavailable: unknown;
 
@@ -216,6 +229,7 @@ export class GeminiProvider implements AIProvider {
   classifyError(e: unknown): AIErrorClass {
     const err = e as { status?: number; code?: string; message?: string };
     if (err.code === 'CONTENT_BLOCKED') return 'CONTENT_BLOCKED';
+    if (err.code === 'GEMINI_NOT_TTS') return 'FATAL';
     const status = err.status;
     const msg = err.message ?? '';
     if (status === 400 && /API key|invalid|API_KEY_INVALID/i.test(msg)) return 'INVALID_KEY';

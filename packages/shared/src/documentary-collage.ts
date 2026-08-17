@@ -51,6 +51,7 @@ export const DOCUMENTARY_VOICEOVER_DIRECTION =
 const UNIVERSAL_VIDEO_PROMPT_MARKER = 'Universal video prompt:';
 const THUMBNAIL_VARIANTS_MARKER = 'Thumbnail prompt variants:';
 const THUMBNAIL_NEGATIVE_MARKER = 'Thumbnail negative prompt:';
+const NARRATION_LINES_MARKER = 'Narration lines:';
 
 /** Documentary-like format values from the style questionnaire (and loose matches). */
 export function isDocumentaryLikeFormat(value: string): boolean {
@@ -227,13 +228,18 @@ export function withUniversalVideoPromptInEditing(
   editingInstructions: string,
   universalVideoPrompt: string = DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT,
 ): string {
-  const { editingInstructions: base, thumbnailNegativePrompt, thumbnailPromptVariants } =
-    splitProductionBriefEditingExtras(editingInstructions);
+  const {
+    editingInstructions: base,
+    thumbnailNegativePrompt,
+    thumbnailPromptVariants,
+    narrationLines,
+  } = splitProductionBriefEditingExtras(editingInstructions);
   return joinProductionBriefEditingExtras({
     editingInstructions: base,
     universalVideoPrompt,
     thumbnailPromptVariants,
     thumbnailNegativePrompt,
+    narrationLines,
   });
 }
 
@@ -242,11 +248,13 @@ export function splitProductionBriefEditingExtras(editingInstructions: string): 
   universalVideoPrompt: string;
   thumbnailPromptVariants: string;
   thumbnailNegativePrompt: string;
+  narrationLines: string;
 } {
   let rest = editingInstructions ?? '';
   let thumbnailNegativePrompt = '';
   let thumbnailPromptVariants = '';
   let universalVideoPrompt = '';
+  let narrationLines = '';
 
   const takeMarker = (markerTitle: string): string => {
     const withBreak = `\n\n${markerTitle}\n`;
@@ -265,15 +273,18 @@ export function splitProductionBriefEditingExtras(editingInstructions: string): 
     return '';
   };
 
-  thumbnailNegativePrompt = takeMarker('Thumbnail negative prompt:');
-  thumbnailPromptVariants = takeMarker('Thumbnail prompt variants:');
-  universalVideoPrompt = takeMarker('Universal video prompt:');
+  // Peel from the end so join order stays stable.
+  narrationLines = takeMarker(NARRATION_LINES_MARKER);
+  thumbnailNegativePrompt = takeMarker(THUMBNAIL_NEGATIVE_MARKER);
+  thumbnailPromptVariants = takeMarker(THUMBNAIL_VARIANTS_MARKER);
+  universalVideoPrompt = takeMarker(UNIVERSAL_VIDEO_PROMPT_MARKER);
 
   return {
     editingInstructions: rest,
     universalVideoPrompt,
     thumbnailPromptVariants,
     thumbnailNegativePrompt,
+    narrationLines,
   };
 }
 
@@ -282,6 +293,7 @@ export function joinProductionBriefEditingExtras(parts: {
   universalVideoPrompt?: string;
   thumbnailPromptVariants?: string;
   thumbnailNegativePrompt?: string;
+  narrationLines?: string;
 }): string {
   const chunks: string[] = [];
   const base = (parts.editingInstructions ?? '').trim();
@@ -292,5 +304,7 @@ export function joinProductionBriefEditingExtras(parts: {
   if (variants) chunks.push(`${THUMBNAIL_VARIANTS_MARKER}\n${variants}`);
   const neg = (parts.thumbnailNegativePrompt ?? '').trim();
   if (neg) chunks.push(`${THUMBNAIL_NEGATIVE_MARKER}\n${neg}`);
+  const lines = (parts.narrationLines ?? '').trim();
+  if (lines) chunks.push(`${NARRATION_LINES_MARKER}\n${lines}`);
   return chunks.join('\n\n');
 }

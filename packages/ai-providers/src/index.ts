@@ -27,6 +27,8 @@ export {
   offsetTimings,
   resolveEdgeTtsBinary,
   invalidateEdgeTtsBinaryCache,
+  sanitizeEdgeCliProsody,
+  edgeCliProsodyArgs,
   EDGE_TTS_DEFAULT_VOICE,
   type EdgeVoiceInfo,
   type TimedSegment,

@@ -13,7 +13,15 @@
 import { join, dirname } from 'node:path';
 import { writeFile, mkdir, unlink, copyFile, stat } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
-import { QUEUE, parseVoiceSettings, ttsEmotionFromVoiceSettings, resolveSpokenEmotion, type VoiceSettings } from '@scp/shared';
+import {
+  QUEUE,
+  parseSpokenNarrationLines,
+  parseVoiceSettings,
+  splitProductionBriefEditingExtras,
+  ttsEmotionFromVoiceSettings,
+  resolveSpokenEmotion,
+  type VoiceSettings,
+} from '@scp/shared';
 import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
 import {
   AIRouter,
@@ -28,6 +36,7 @@ import {
   segmentsToSrt,
   segmentsToVtt,
   AllProvidersExhaustedError,
+  resolveEdgeTtsBinary,
   type CacheStore,
   type UsageLogger,
   type ProviderRegistry,
@@ -36,6 +45,7 @@ import {
   type TimedSegment,
 } from '@scp/ai-providers';
 import { Ffmpeg, FfmpegNotAvailableError } from './media/ffmpeg.js';
+import { writeTtsAudioRef } from './media/tts-audio-ref.js';
 import {
   analysisBeats,
   analysisDurationSec,
@@ -282,21 +292,7 @@ async function writeAudioRef(
   output: unknown,
   destPath: string,
 ): Promise<void> {
-  if (audioRef) {
-    const b64Match = audioRef.match(/^data:[^;]*;base64,(.+)$/);
-    if (b64Match) {
-      await writeFile(destPath, Buffer.from(b64Match[1]!, 'base64'));
-      return;
-    }
-    // Provider already wrote a file — copy into place.
-    await copyFile(audioRef, destPath);
-    return;
-  }
-  if (typeof output === 'string' && output.length > 0) {
-    await writeFile(destPath, Buffer.from(output, 'base64'));
-    return;
-  }
-  throw new Error('TTS provider returned no audio');
+  await writeTtsAudioRef(audioRef, output, destPath);
 }
 
 function isMp3Path(path: string): boolean {
@@ -359,24 +355,27 @@ async function synthesizeScript(opts: {
   lines?: TimedNarrationLine[];
 }): Promise<SynthBundle> {
   const { prisma, masterKey, script, voice, voDir, contentItemId, lines } = opts;
+  if (!script.trim()) {
+    throw new Error('Empty narration text — cannot synthesize voiceover.');
+  }
   await mkdir(voDir, { recursive: true });
 
-  const preferred = voice.provider;
+  const preferred = voice.provider ?? 'edge';
   const chain = buildTtsChain(preferred);
   const first = chain[0] ?? 'edge';
 
-  // Fast path: Edge preferred and available — call CLI directly for full
-  // subtitle capture + cleaner chunk handling.
+  // Product default: Edge Neural is the synthesizer. Settings preview already
+  // uses synthesizeWithEdgeTts. Do not swallow Edge failures into Gemini Flash
+  // TTS — that path returns empty audio and hides the real CLI error.
   if (first === 'edge') {
-    try {
-      return await synthesizeViaEdge(script, voice, voDir, lines);
-    } catch (err) {
-      console.warn(
-        `[worker:tts] Edge TTS failed, falling back through router: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+    const binary = await resolveEdgeTtsBinary();
+    if (binary.source === 'missing' || !binary.command) {
+      throw Object.assign(
+        new Error(`Edge Neural TTS is not available on the worker: ${binary.detail}`),
+        { code: 'EDGE_TTS_NOT_CONFIGURED' },
       );
     }
+    return await synthesizeViaEdge(script, voice, voDir, lines);
   }
 
   const keyStore = buildKeyStore(prisma, masterKey);
@@ -1063,7 +1062,12 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
   const voice = await resolveChannelVoice(prisma, idea.accountId);
   const voDir = join(STORAGE_ROOT, 'ideas', ideaId, 'tts');
   const words = script.split(/\s+/).filter(Boolean).length;
-  const storedLines = spokenLinesFromUnknown(idea.brief.timedTranscript);
+  const extras = splitProductionBriefEditingExtras(idea.brief.editingInstructions ?? '');
+  const storedLines = (() => {
+    const fromTranscript = spokenLinesFromUnknown(idea.brief.timedTranscript);
+    if (fromTranscript.length > 0) return fromTranscript;
+    return spokenLinesFromUnknown(parseSpokenNarrationLines(extras.narrationLines));
+  })();
   console.log(
     `[worker:tts] idea ${ideaId} VOICE start: chars=${script.length}, words≈${words}, provider=${voice.provider}, voiceId=${voice.voiceId}`,
   );

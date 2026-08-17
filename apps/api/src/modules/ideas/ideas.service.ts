@@ -261,6 +261,7 @@ export class IdeasService {
         ...(dto.title !== undefined ? { title: dto.title } : {}),
         ...(dto.angle !== undefined ? { angle: dto.angle } : {}),
         ...(dto.hook !== undefined ? { hook: dto.hook } : {}),
+        ...(dto.topicSummary !== undefined ? { topicSummary: dto.topicSummary } : {}),
       },
       include: IDEA_LIST_INCLUDE,
     });

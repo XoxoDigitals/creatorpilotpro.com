@@ -1,6 +1,7 @@
 import type { Idea, ProductionBrief } from '@scp/db';
 import {
   PACKAGE_STAGE_LABELS,
+  parseSpokenNarrationLines,
   parseTtsEmotion,
   splitProductionBriefEditingExtras,
   type PackageStage,
@@ -47,6 +48,7 @@ export interface IdeaView {
   angle: string;
   hook: string;
   rationale: string;
+  topicSummary: string;
   category: Idea['category'];
   viralScore: number | null;
   status: Idea['status'];
@@ -103,6 +105,7 @@ export interface ProductionBriefView {
   packageStageError: string | null;
   packageStageLabel: string;
   timedTranscript: Array<{ startMs: number; endMs: number; text: string }>;
+  narrationLines: Array<{ text: string; emotion: string }>;
   transcriptReady: boolean;
   voiceIdUsed: string | null;
   version: number;
@@ -169,6 +172,7 @@ export function toIdeaView(idea: IdeaWithExtras): IdeaView {
     angle: idea.angle,
     hook: idea.hook,
     rationale: idea.rationale,
+    topicSummary: idea.topicSummary ?? '',
     category: idea.category,
     viralScore: idea.viralScore ?? null,
     status: idea.status,
@@ -201,6 +205,7 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
     thumbnailNegativePrompt,
     universalVideoPrompt,
     thumbnailPromptVariants,
+    narrationLines: narrationLinesRaw,
   } = splitProductionBriefEditingExtras(brief.editingInstructions ?? '');
   const rawScenes = Array.isArray(brief.sceneBreakdown) ? brief.sceneBreakdown : [];
   const sceneBreakdown = rawScenes.map((entry, index) => {
@@ -289,6 +294,11 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
         })
         .filter((s) => s.text)
     : [];
+  const narrationLines = (() => {
+    const fromExtras = parseSpokenNarrationLines(narrationLinesRaw);
+    if (fromExtras.length > 0) return fromExtras;
+    return parseSpokenNarrationLines(brief.timedTranscript);
+  })();
   const stage = brief.packageStage as PackageStage;
   return {
     id: brief.id,
@@ -315,6 +325,7 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
     packageStageError: brief.packageStageError ?? null,
     packageStageLabel: PACKAGE_STAGE_LABELS[stage] ?? stage,
     timedTranscript,
+    narrationLines,
     transcriptReady: timedTranscript.length > 0,
     voiceIdUsed: brief.voiceIdUsed ?? null,
     version: brief.version,

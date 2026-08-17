@@ -68,4 +68,15 @@ Second line
     expect(excited.rate).toBe('+18%');
     expect(excited.pitch).toBe('+14Hz');
   });
+
+  it('passes negative sad/calm offsets as --rate=-12% so argparse does not treat them as flags', async () => {
+    const { edgeCliProsodyArgs, sanitizeEdgeCliProsody } = await import('./edge-tts.js');
+    const sad = mergeEmotionProsody({}, 'sad');
+    expect(edgeCliProsodyArgs(sad)).toEqual(['--rate=-12%', '--pitch=-8Hz']);
+    expect(sanitizeEdgeCliProsody({ rate: '+12', pitch: 'high' })).toEqual({});
+    expect(sanitizeEdgeCliProsody({ rate: '+18%', pitch: '+14hz' })).toEqual({
+      rate: '+18%',
+      pitch: '+14Hz',
+    });
+  });
 });

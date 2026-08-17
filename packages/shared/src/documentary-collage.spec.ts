@@ -106,12 +106,14 @@ describe('documentary collage helpers', () => {
       universalVideoPrompt: DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT,
       thumbnailPromptVariants: 'Variant A\n\nVariant B',
       thumbnailNegativePrompt: 'blurry, watermark',
+      narrationLines: '[{"text":"They lost her.","emotion":"sad"}]',
     });
     const split = splitProductionBriefEditingExtras(joined);
     expect(split.editingInstructions).toBe('Keep cuts dry.');
     expect(split.universalVideoPrompt).toBe(DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT);
     expect(split.thumbnailPromptVariants).toContain('Variant A');
     expect(split.thumbnailNegativePrompt).toBe('blurry, watermark');
+    expect(split.narrationLines).toContain('They lost her.');
   });
 
   it('parses universal video prompt when it is the only editing section', () => {

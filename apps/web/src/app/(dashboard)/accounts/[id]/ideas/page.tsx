@@ -362,6 +362,11 @@ export default function AccountIdeasPage() {
                   </Badge>
                 )}
               </div>
+              {idea.topicSummary?.trim() ? (
+                <p className="mt-2 line-clamp-4 text-xs leading-relaxed text-zinc-500">
+                  {idea.topicSummary.trim()}
+                </p>
+              ) : null}
               <div className="mt-3 flex gap-2">
                 <Button
                   size="sm"

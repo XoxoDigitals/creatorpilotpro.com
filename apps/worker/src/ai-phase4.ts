@@ -49,6 +49,7 @@ import {
   splitProductionBriefEditingExtras,
   needsEnglishVoiceoverSummary,
   parseTtsEmotion,
+  serializeSpokenNarrationLines,
   ttsEmotionFromVoiceSettings,
   TTS_EMOTIONS,
   type AiPerformanceInsights,
@@ -448,6 +449,7 @@ export function ideaGenerationSchema(maxIdeas: number) {
         angle: z.string(),
         hook: z.string(),
         rationale: z.string(),
+        topicSummary: z.string().optional().default(''),
         category: z.enum(['RELEVANT', 'SIMILAR', 'UNIQUE']),
         viralScore: z.number().int().min(0).max(100),
       }),
@@ -470,6 +472,7 @@ export function normalizeGeneratedIdea(raw: unknown): {
   angle: string;
   hook: string;
   rationale: string;
+  topicSummary: string;
   category?: string;
   viralScore?: number;
 } {
@@ -522,6 +525,7 @@ export function normalizeGeneratedIdea(raw: unknown): {
     angle: typeof obj.angle === 'string' ? obj.angle : '',
     hook: typeof obj.hook === 'string' ? obj.hook : '',
     rationale: typeof obj.rationale === 'string' ? obj.rationale : '',
+    topicSummary: typeof obj.topicSummary === 'string' ? obj.topicSummary.trim() : '',
     category: typeof obj.category === 'string' ? obj.category : undefined,
     viralScore,
   };
@@ -628,13 +632,14 @@ export async function runIdeaGeneration(
 - Categories RELEVANT / SIMILAR / UNIQUE are relative to this seed plus OUR channel niche and reference-channel patterns.
 - Honor OUR channel about/niche and performance memory when choosing angles and hooks.`
     : '';
-  const ideaOutputContract = `Return a JSON array of up to ${targetCount} ideas, each with {title, angle, hook, rationale, category, viralScore}.
+  const ideaOutputContract = `Return a JSON array of up to ${targetCount} ideas, each with {title, angle, hook, rationale, topicSummary, category, viralScore}.
 - Every title SHOULD target ${IDEA_TITLE_TARGET_MIN}-${IDEA_TITLE_TARGET_MAX} characters INCLUDING spaces (aim for catchy clickbait length). Stay within ${IDEA_TITLE_ACCEPTED_MIN}-${IDEA_TITLE_ACCEPTED_MAX} characters. Length counts every character including spaces for mixed-script titles too.
 - Make every title compelling, specific, and curiosity-driven/clickable while remaining natural language. Avoid vague, generic, sensational, repetitive, or spammy nonsense.
 - Stay on OUR CHANNEL niche, audience, and brand. Use REFERENCE CHANNELS only for headline FORMAT, pacing, hooks, and proven topic shapes.
 - Match the same headline FORMAT used by the strongest competitor-channel titles: mirror their structure (question, reveal, mystery, list/number, engineering/history breakdown, etc.), pacing, and specificity.
 - Derive FRESH ORIGINAL ideas inspired by patterns — never copy or lightly rephrase reference titles.
 - title MUST be a plain-text string only (never stringify the whole object into title).
+- topicSummary is REQUIRED: 2–4 sentences in English describing what the video is about (who/what, why it matters, the core claim). Enough for later script writing. Not a duplicate of title. Not the same as rationale (rationale = why it might perform; topicSummary = what the episode is about).
 - category MUST be exactly one of: RELEVANT, SIMILAR, UNIQUE.
 - viralScore is REQUIRED and MUST be an integer from 0 through 100.
 - viralScore MUST evaluate the complete idea. Title quality contributes 30/100 points: specificity (10), curiosity/click appeal (10), and channel/reference fit plus natural wording (10). Weak or generic titles cannot receive a high score.
@@ -699,7 +704,7 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
     styleVersion: styleVersionFromProfile(channelStyle),
     // Contract marker busts caches that used the old hard length-refine schema.
     inputContentHash: hashText(
-      `idea-title-contract-v7:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
+      `idea-title-contract-v8:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
     ),
   });
 
@@ -776,6 +781,7 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
           angle: idea.angle,
           hook: idea.hook,
           rationale: idea.rationale,
+          topicSummary: idea.topicSummary,
           category,
           viralScore: idea.viralScore,
           sourceCompetitorVideoIds: sourceVideoIds,
@@ -1309,12 +1315,17 @@ ${formatFernNarrationRules(videoDurationSec)}
     : formatThumbnailPromptInstructions(channelStyle);
 
   const languageRules = formatOutputLanguagePolicy(channelLanguage);
+  const topicSummary = (idea.topicSummary ?? '').trim();
+  const topicSummaryInstruction = topicSummary
+    ? `- This topicSummary is the ground truth of what the video is about. The narration/script must cover this summary; do not drift to a different topic.`
+    : '';
 
   const systemPrompt = withChannelStyle(
     `${prompt?.template ?? 'You are a creative package writer for short-form video. The owner will produce the video externally (no in-app render).'}
 
 ${packageOutputContract}
 ${languageRules}
+${topicSummaryInstruction}
 - videoTitle is publish-facing. ${formatIdeaTitleLanguageRules(channelLanguage)}
 - videoDescription is publish-facing: write it in ${languageDisplayName(channelLanguage)}.
 - storySummary and character appearance/wardrobe/personality stay in English.
@@ -1352,6 +1363,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
 
   const inputText = JSON.stringify({
     title: idea.title,
+    ...(topicSummary ? { topicSummary } : {}),
     angle: idea.angle,
     hook: idea.hook,
     rationale: idea.rationale,
@@ -1427,6 +1439,9 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
         : '',
       thumbnailPromptVariants: documentaryCollage ? normalized.thumbnailPromptVariants : '',
       thumbnailNegativePrompt: normalized.thumbnailNegativePrompt,
+      narrationLines: (normalized.narrationLines ?? []).length
+        ? serializeSpokenNarrationLines(normalized.narrationLines)
+        : '',
     });
 
     let englishSummary = '';
@@ -1903,6 +1918,7 @@ ${
         normalized.thumbnailPromptVariants || priorEditing.thumbnailPromptVariants,
       thumbnailNegativePrompt:
         normalized.thumbnailNegativePrompt || priorEditing.thumbnailNegativePrompt,
+      narrationLines: priorEditing.narrationLines,
     });
 
     await prisma.productionBrief.update({

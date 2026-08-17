@@ -131,6 +131,52 @@ export function resolveSpokenEmotion(
   return fallback;
 }
 
+export interface SpokenNarrationLine {
+  text: string;
+  emotion: TtsEmotion;
+}
+
+/**
+ * Spoken lines with a situation emotion. Used for UI labels and Edge rate/pitch;
+ * never interpolate emotion names into the TTS utterance.
+ */
+export function parseSpokenNarrationLines(raw: unknown): SpokenNarrationLine[] {
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+    try {
+      return parseSpokenNarrationLines(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  const out: SpokenNarrationLine[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const o = entry as Record<string, unknown>;
+    const text =
+      typeof o.text === 'string'
+        ? o.text.trim()
+        : typeof o.line === 'string'
+          ? o.line.trim()
+          : '';
+    if (!text) continue;
+    const tagged = o.emotion ?? o.mood ?? o.tone;
+    if (typeof tagged !== 'string' || !tagged.trim()) continue;
+    out.push({ text, emotion: parseTtsEmotion(tagged) });
+  }
+  return out;
+}
+
+export function serializeSpokenNarrationLines(lines: SpokenNarrationLine[]): string {
+  return JSON.stringify(
+    lines
+      .filter((l) => l.text.trim())
+      .map((l) => ({ text: l.text.trim(), emotion: parseTtsEmotion(l.emotion) })),
+  );
+}
+
 function parseSignedPercent(raw: string | undefined): number {
   if (!raw) return 0;
   const m = raw.trim().match(/^([+-]?\d+(?:\.\d+)?)%$/);

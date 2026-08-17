@@ -21,6 +21,7 @@ export const patchIdeaSchema = z
     title: z.string().min(1).max(500).optional(),
     angle: z.string().min(1).max(2000).optional(),
     hook: z.string().min(1).max(2000).optional(),
+    topicSummary: z.string().max(4000).optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), {
     message: 'Provide at least one field to update.',

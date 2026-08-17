@@ -85,6 +85,7 @@ describe('content languages', () => {
     expect(policy).toContain('imagePrompt');
     expect(policy).toContain('videoTitle');
     expect(policy).toContain('Roman Urdu');
+    expect(policy).toContain('topicSummary');
     expect(policy).not.toContain('Ideas (title, angle, hook, rationale) MUST be written in English');
     expect(policy).toContain('Voiceover / narrationScript: write EVERY spoken narrator word in Urdu');
   });

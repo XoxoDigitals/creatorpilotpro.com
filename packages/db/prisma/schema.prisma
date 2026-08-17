@@ -786,6 +786,8 @@ model Idea {
   angle                    String        @default("")
   hook                     String        @default("")
   rationale                String        @default("")
+  /// English 2–4 sentence brief of what the episode is about (used on cards and in script gen).
+  topicSummary             String        @default("")
   category                 IdeaCategory?
   /// Predicted viral potential 0–100 from idea generation.
   viralScore               Int?

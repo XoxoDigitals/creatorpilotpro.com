@@ -626,7 +626,7 @@ export function composeChannelStyles(
   sections.push(
     [
       '## Operating checklist',
-      '- Idea titles follow the title-language rules; idea angle/hook/rationale and story drafts stay English, on-niche, format-fit, hook-first.',
+      '- Idea titles follow the title-language rules; idea angle/hook/rationale/topicSummary and story drafts stay English, on-niche, format-fit, hook-first.',
       `- Scripts / narration / dialogue: match presentation, pacing, and tone; speak ${lang}.`,
       `- On-screen text, publish descriptions, and tags: ${lang}; publish titles follow the title-language rules; follow templates and caption style when set.`,
       '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language.',

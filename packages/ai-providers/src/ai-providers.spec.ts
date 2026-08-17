@@ -458,6 +458,25 @@ describe('GeminiProvider.generate (structured JSON via mocked fetch)', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('refuses TTS when the requested model is a Flash text id, not a speech model', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('Gemini text models must not be called for TTS');
+    }) as unknown as typeof fetch;
+    const g = new GeminiProvider({ fetchImpl });
+    await expect(
+      g.generate(
+        {
+          task: TaskType.TTS,
+          model: 'edge-neural',
+          system: '{}',
+          input: { kind: 'text', text: 'Hello from the package.' },
+        },
+        { id: 'k1', providerId: 'gemini', secret: 'sk_test' },
+      ),
+    ).rejects.toMatchObject({ code: 'GEMINI_NOT_TTS' });
+    expect(g.classifyError({ code: 'GEMINI_NOT_TTS' })).toBe('FATAL');
+  });
+
   it('falls back to the next model when the primary returns 404 unavailable', async () => {
     const calls: string[] = [];
     const fetchImpl = (async (url: string | URL) => {

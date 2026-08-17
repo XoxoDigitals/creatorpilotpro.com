@@ -3,9 +3,11 @@ import {
   formatNarrationEmotionBlock,
   inferTtsEmotionFromSituation,
   mergeEmotionProsody,
+  parseSpokenNarrationLines,
   parseTtsEmotion,
   parseVoiceSettings,
   resolveSpokenEmotion,
+  serializeSpokenNarrationLines,
   TTS_EMOTIONS,
 } from './voice-settings.js';
 
@@ -70,6 +72,28 @@ describe('formatNarrationEmotionBlock', () => {
     const block = formatNarrationEmotionBlock('empathetic');
     expect(block).toContain('empathetic');
     expect(block).toContain('Voice-tab default');
+  });
+});
+
+describe('parseSpokenNarrationLines', () => {
+  it('keeps text+emotion pairs and ignores TTS timings without emotion', () => {
+    expect(
+      parseSpokenNarrationLines([
+        { text: 'They lost her.', emotion: 'sad' },
+        { startMs: 0, endMs: 1200, text: 'Hello' },
+      ]),
+    ).toEqual([{ text: 'They lost her.', emotion: 'sad' }]);
+  });
+
+  it('round-trips JSON stored in editing extras', () => {
+    const json = serializeSpokenNarrationLines([
+      { text: 'We wait.', emotion: 'calm' },
+      { text: 'How dare you.', emotion: 'angry' },
+    ]);
+    expect(parseSpokenNarrationLines(json)).toEqual([
+      { text: 'We wait.', emotion: 'calm' },
+      { text: 'How dare you.', emotion: 'angry' },
+    ]);
   });
 });
 

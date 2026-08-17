@@ -135,6 +135,7 @@ export interface Idea {
   angle: string;
   hook: string;
   rationale: string;
+  topicSummary: string;
   category: IdeaCategory | null;
   stage: IdeaStage;
   packageStatus: PackageStatus;
@@ -166,6 +167,11 @@ export interface Idea {
   brief: ProductionBrief | null;
 }
 
+export interface SpokenNarrationLine {
+  text: string;
+  emotion: string;
+}
+
 export interface ProductionBrief {
   id: string;
   ideaId: string;
@@ -194,6 +200,7 @@ export interface ProductionBrief {
   packageStageError: string | null;
   packageStageLabel: string;
   timedTranscript: TimedTranscriptSegment[];
+  narrationLines: SpokenNarrationLine[];
   transcriptReady: boolean;
   voiceIdUsed: string | null;
   version: number;

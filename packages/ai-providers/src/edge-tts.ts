@@ -481,6 +481,51 @@ function pad(n: number, width = 2): string {
   return String(n).padStart(width, '0');
 }
 
+const EDGE_RATE_RE = /^[+-]\d+%$/;
+const EDGE_PITCH_RE = /^[+-]\d+Hz$/i;
+const EDGE_VOLUME_RE = /^[+-]\d+%$/;
+
+/** Drop tokens edge-tts argparse will reject. */
+export function sanitizeEdgeCliProsody(opts: {
+  rate?: string;
+  pitch?: string;
+  volume?: string;
+}): { rate?: string; pitch?: string; volume?: string } {
+  const rate = opts.rate?.trim();
+  const pitch = opts.pitch?.trim();
+  const volume = opts.volume?.trim();
+  const pitchNorm = pitch ? pitch.replace(/hz$/i, 'Hz') : undefined;
+  return {
+    ...(rate && EDGE_RATE_RE.test(rate) ? { rate } : {}),
+    ...(pitchNorm && EDGE_PITCH_RE.test(pitchNorm) ? { pitch: pitchNorm } : {}),
+    ...(volume && EDGE_VOLUME_RE.test(volume) ? { volume } : {}),
+  };
+}
+
+/**
+ * `--rate=-12%` (equals form) so negative sad/calm offsets are not parsed as
+ * extra CLI flags. Same for pitch/volume.
+ */
+export function edgeCliProsodyArgs(opts: {
+  rate?: string;
+  pitch?: string;
+  volume?: string;
+}): string[] {
+  const clean = sanitizeEdgeCliProsody(opts);
+  const flags: string[] = [];
+  if (clean.rate) flags.push(`--rate=${clean.rate}`);
+  if (clean.pitch) flags.push(`--pitch=${clean.pitch}`);
+  if (clean.volume) flags.push(`--volume=${clean.volume}`);
+  return flags;
+}
+
+function shouldRetryWithoutProsody(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /unrecognized arguments|invalid (rate|pitch|volume)|No audio was received|produced no media/i.test(
+    msg,
+  );
+}
+
 /**
  * Synthesize speech with edge-tts. Writes media (+ optional subtitles) using
  * argv arrays only — never shell interpolation of narration text.
@@ -489,6 +534,14 @@ export async function synthesizeWithEdgeTts(
   text: string,
   options: EdgeSynthOptions = {},
 ): Promise<EdgeSynthResult> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw Object.assign(new Error('Empty narration text — cannot synthesize voiceover.'), {
+      code: 'EDGE_TTS_EMPTY_TEXT',
+      status: 400,
+    });
+  }
+
   const binary = await resolveEdgeTtsBinary();
   if (binary.source === 'missing' || !binary.command) {
     throw Object.assign(new Error(binary.detail), { code: 'EDGE_TTS_NOT_CONFIGURED', status: 401 });
@@ -496,10 +549,15 @@ export async function synthesizeWithEdgeTts(
 
   const voice = options.voice?.trim() || DEFAULT_VOICE;
   const emotion = parseTtsEmotion(options.emotion);
-  const prosody = mergeEmotionProsody(
+  const merged = mergeEmotionProsody(
     { rate: options.rate, pitch: options.pitch },
     emotion,
   );
+  const prosody = sanitizeEdgeCliProsody({
+    rate: merged.rate,
+    pitch: merged.pitch,
+    volume: options.volume,
+  });
   const ownedTemp = !options.outDir;
   const outDir = options.outDir ?? (await mkdtemp(join(tmpdir(), 'scp-edge-')));
   await mkdir(outDir, { recursive: true });
@@ -508,9 +566,9 @@ export async function synthesizeWithEdgeTts(
   const subtitlePath = join(outDir, `${base}.vtt`);
   const textPath = join(outDir, `${base}.txt`);
 
-  await writeFile(textPath, text, 'utf8');
+  await writeFile(textPath, trimmed, 'utf8');
 
-  const args = [
+  const baseArgs = [
     ...binary.prefixArgs,
     '--voice',
     voice,
@@ -519,14 +577,12 @@ export async function synthesizeWithEdgeTts(
     '--write-media',
     mediaPath,
   ];
-  if (prosody.rate) args.push('--rate', prosody.rate);
-  if (prosody.pitch) args.push('--pitch', prosody.pitch);
-  if (options.volume) args.push('--volume', options.volume);
   if (options.writeSubtitles !== false) {
-    args.push('--write-subtitles', subtitlePath);
+    baseArgs.push('--write-subtitles', subtitlePath);
   }
+  const prosodyArgs = edgeCliProsodyArgs(prosody);
 
-  try {
+  const runOnce = async (args: string[]) => {
     const result = await runCapture(binary.command, args, { timeoutMs: 10 * 60_000 });
     if (result.code !== 0) {
       throw Object.assign(
@@ -555,8 +611,24 @@ export async function synthesizeWithEdgeTts(
       mediaPath,
       ...(usedSubtitle ? { subtitlePath: usedSubtitle } : {}),
       timings,
-      format: 'mp3',
+      format: 'mp3' as const,
     };
+  };
+
+  try {
+    try {
+      return await runOnce([...baseArgs, ...prosodyArgs]);
+    } catch (err) {
+      if (prosodyArgs.length > 0 && shouldRetryWithoutProsody(err)) {
+        console.warn(
+          `[edge-tts] retrying without rate/pitch/volume after: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return await runOnce(baseArgs);
+      }
+      throw err;
+    }
   } catch (err) {
     if (ownedTemp) {
       await rm(outDir, { recursive: true, force: true }).catch(() => {});
@@ -630,7 +702,6 @@ export class EdgeTtsProvider implements AIProvider {
       writeSubtitles: true,
     });
 
-    const buf = await readFile(synth.mediaPath);
     const ttsSeconds =
       synth.timings.length > 0
         ? Math.max(...synth.timings.map((t) => t.endMs)) / 1000
@@ -643,7 +714,7 @@ export class EdgeTtsProvider implements AIProvider {
         mediaPath: synth.mediaPath,
         format: synth.format,
       },
-      audioRef: `data:audio/mpeg;base64,${buf.toString('base64')}`,
+      audioRef: synth.mediaPath,
       model: req.model || 'edge-neural',
       usage: { ...(ttsSeconds != null ? { ttsSeconds } : {}) },
       timings: synth.timings,
