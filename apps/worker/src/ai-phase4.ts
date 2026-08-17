@@ -63,6 +63,8 @@ import {
   DOCUMENTARY_VOICE_EMOTION,
   type AiPerformanceInsights,
   type ChannelStyleFields,
+  type CharacterReferenceInput,
+  type LockedCharacter,
   type TtsEmotion,
 } from '@scp/shared';
 import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
@@ -938,13 +940,7 @@ function normalizeDialogue(value: unknown): Array<{ speaker: string; line: strin
 
 function dialogueBlock(
   lines: Array<{ speaker: string; line: string; emotion?: TtsEmotion | string }>,
-  characters?: Array<{
-    name: string;
-    appearance: string;
-    wardrobe: string;
-    age: string;
-    consistencyDetails: string;
-  }>,
+  characters?: CharacterReferenceInput[],
   expandSpeakers = false,
 ): string {
   return lines
@@ -955,7 +951,7 @@ function dialogueBlock(
         return `Dialogue (${emotion}): ${speaker}: ${line.line}`;
       }
       const match = characters.find(
-        (character) => character.name.toLowerCase() === speaker.toLowerCase(),
+        (character) => (character.name ?? '').toLowerCase() === speaker.toLowerCase(),
       );
       const label = match ? formatCharacterReference(match) : speaker;
       return `Dialogue (${emotion}): ${label}: ${line.line}`;
@@ -982,13 +978,7 @@ export function normalizeProductionBriefOutput(
     narrationVoiceover?: boolean;
     cartoonPackage?: boolean;
     ultraRealistic?: boolean;
-    lockedCharacters?: Array<{
-      name?: string | null;
-      appearance?: string | null;
-      wardrobe?: string | null;
-      age?: string | null;
-      consistencyDetails?: string | null;
-    }>;
+    lockedCharacters?: LockedCharacter[] | null;
   },
 ) {
   const brief = (output && typeof output === 'object' ? output : {}) as Record<string, unknown>;
