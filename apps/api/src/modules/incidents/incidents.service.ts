@@ -81,6 +81,21 @@ export class IncidentsService {
     return this.get(id);
   }
 
+  /** Resolve every OPEN/ACKED incident in this deployment (single-tenant). */
+  async resolveAll(actorId: string): Promise<{ resolved: number; incidentIds: string[] }> {
+    const open = await this.prisma.client.incident.findMany({
+      where: { status: { in: ['OPEN', 'ACKED'] } },
+      select: { id: true },
+    });
+    if (open.length === 0) return { resolved: 0, incidentIds: [] };
+    const incidentIds = open.map((i) => i.id);
+    await this.prisma.client.incident.updateMany({
+      where: { id: { in: incidentIds } },
+      data: { status: 'RESOLVED', resolvedById: actorId, resolvedAt: new Date() },
+    });
+    return { resolved: incidentIds.length, incidentIds };
+  }
+
   private async dispatchRetry(incident: Incident): Promise<void> {
     const detail = asDetail(incident.detail);
     const title = incident.title;

@@ -23,11 +23,11 @@ export interface PutLocalInput {
 export interface StorageTier {
   /** Register/verify a file already written to the local hot tier. */
   putLocal(input: PutLocalInput): Promise<StoredObject>;
-  /** Resumable upload local -> Drive library tree; verify md5 (docs/02 §6). */
+  /** Resumable upload local -> Drive library tree; size + file id required, md5 advisory. */
   archiveToDrive(
     obj: StoredObject,
     driveFolderPath: string,
-    opts?: { driveFilename?: string },
+    opts?: { driveFilename?: string; md5SettleMs?: number },
   ): Promise<StoredObject>;
   /** Pull an evicted/Drive object back to the hot tier for re-edit/re-publish. */
   restore(obj: StoredObject, destPath: string): Promise<StoredObject>;

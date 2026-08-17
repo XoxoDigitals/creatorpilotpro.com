@@ -311,6 +311,10 @@ export async function resolveIncident(id: string): Promise<void> {
   await api.post(`/incidents/${id}/resolve`);
 }
 
+export async function resolveAllIncidents(): Promise<{ resolved: number; incidentIds: string[] }> {
+  return api.post<{ resolved: number; incidentIds: string[] }>('/incidents/resolve-all');
+}
+
 // --- Local media inventory (Workers page) ----------------------------------
 
 export interface LocalMediaAsset {

@@ -1,6 +1,6 @@
 import { createSign } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, unlink } from 'node:fs/promises';
+import { mkdir, stat, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
 import { accountIdFromDriveFolderName } from './drive-archive-path.js';
@@ -655,9 +655,60 @@ export class GoogleDriveClient {
   }
 
   /**
+   * Find a non-trashed child file by exact name under `parentId`.
+   * Used to reconcile a prior upload that succeeded but never persisted
+   * `driveFileId` (e.g. post-upload verification threw).
+   */
+  async findChildFile(
+    parentId: string,
+    filename: string,
+  ): Promise<GDriveUploadResult | null> {
+    const token = await this.getAccessToken();
+    const q = [
+      `name='${filename.replace(/'/g, "\\'")}'`,
+      `mimeType!='application/vnd.google-apps.folder'`,
+      `'${parentId}' in parents`,
+      'trashed=false',
+    ].join(' and ');
+    const listUrl =
+      `${DRIVE_FILES}?q=${encodeURIComponent(q)}` +
+      `&fields=files(id,md5Checksum,size,webViewLink,mimeType,name)` +
+      `&pageSize=5&${driveSupportsAll()}`;
+    const listRes = await this.fetchImpl(listUrl, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!listRes.ok) {
+      const body = await listRes.text().catch(() => '');
+      throw new Error(formatDriveApiError(listRes.status, body, 'Drive file list'));
+    }
+    const listed = (await listRes.json()) as {
+      files?: Array<{
+        id: string;
+        name: string;
+        md5Checksum?: string;
+        size?: string;
+        webViewLink?: string;
+        mimeType?: string;
+      }>;
+    };
+    const exact = listed.files?.find((f) => f.name === filename);
+    if (!exact?.id) return null;
+    return {
+      fileId: exact.id,
+      md5Checksum: exact.md5Checksum?.toLowerCase() ?? null,
+      size: exact.size ? Number(exact.size) : null,
+      webViewLink: exact.webViewLink ?? null,
+      mimeType: exact.mimeType ?? null,
+    };
+  }
+
+  /**
    * Resumable multipart upload of a local file into `folderRelativePath`
    * under the library root. Sets "anyone with link can view" so the app can
    * iframe the Drive preview without requiring a Google login in the browser.
+   * If a same-name file already exists with matching size, reuses it (no
+   * duplicate upload) so a prior run that uploaded but failed verification can
+   * reconcile cleanly.
    */
   async uploadFile(input: {
     localPath: string;
@@ -666,8 +717,23 @@ export class GoogleDriveClient {
     folderRelativePath: string;
     /** Optional content hash for Drive contentHints (hex md5). */
     md5Hex?: string;
+    /** When set, prefer reconciling an existing same-name file of this size. */
+    expectedBytes?: number;
   }): Promise<GDriveUploadResult> {
     const parentId = await this.ensureFolderPath(input.folderRelativePath);
+    const localBytes =
+      input.expectedBytes ??
+      (await stat(input.localPath).then((s) => s.size).catch(() => null));
+
+    const existing = await this.findChildFile(parentId, input.filename);
+    if (
+      existing &&
+      (existing.size == null || localBytes == null || existing.size === localBytes)
+    ) {
+      await this.makeAnyoneWithLinkReader(existing.fileId);
+      return existing;
+    }
+
     const token = await this.getAccessToken();
 
     const metadata: Record<string, unknown> = {
@@ -689,6 +755,9 @@ export class GoogleDriveClient {
           authorization: `Bearer ${token}`,
           'content-type': 'application/json; charset=UTF-8',
           'X-Upload-Content-Type': input.mimeType,
+          ...(localBytes != null
+            ? { 'X-Upload-Content-Length': String(localBytes) }
+            : {}),
         },
         body: JSON.stringify(metadata),
       },
@@ -704,6 +773,7 @@ export class GoogleDriveClient {
       method: 'PUT',
       headers: {
         'content-type': input.mimeType,
+        ...(localBytes != null ? { 'content-length': String(localBytes) } : {}),
       },
       // Node fetch requires duplex when body is a stream.
       body: createReadStream(input.localPath) as unknown as NonNullable<RequestInit['body']>,
@@ -726,7 +796,7 @@ export class GoogleDriveClient {
 
     return {
       fileId: file.id,
-      md5Checksum: file.md5Checksum ?? null,
+      md5Checksum: file.md5Checksum?.toLowerCase() ?? null,
       size: file.size ? Number(file.size) : null,
       webViewLink: file.webViewLink ?? null,
       mimeType: file.mimeType ?? null,

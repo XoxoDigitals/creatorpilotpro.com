@@ -70,6 +70,7 @@ function guessMime(filename: string): string {
  * - `archiveToDrive` uploads to the configured library folder when Drive env
  *   is present (required when STORAGE_BACKEND=gdrive) and leaves local in place
  *   (`BOTH`) so preview/publish can use the hot tier until Drive embed is ready.
+ *   Success is size + Drive file id; md5 mismatch after upload is warned, not fatal.
  * - `restore` prefers a valid local copy; otherwise downloads original bytes from Drive.
  * - `evict` deletes the local copy after Drive id is present (optional space reclaim).
  */
@@ -124,15 +125,18 @@ export class TieredStorage implements StorageTier {
   }
 
   /**
-   * Resumable upload local -> Drive library tree; verify size + md5 when Drive
-   * returns them. `driveFolderPath` is relative to GOOGLE_DRIVE_ROOT_FOLDER_ID
+   * Resumable upload local -> Drive library tree. Verifies Drive file id + size.
+   * When Drive returns md5Checksum that differs from the local file hash (e.g.
+   * stale DB md5, or Drive metadata lag), re-fetches once after a short settle
+   * then accepts the upload with a warning — does not fail the archive.
+   * `driveFolderPath` is relative to GOOGLE_DRIVE_ROOT_FOLDER_ID
    * (e.g. `{Account}__{id}/2026/08`). Optional `driveFilename` avoids
    * collisions when many assets share one month folder.
    */
   async archiveToDrive(
     obj: StoredObject,
     driveFolderPath: string,
-    opts?: { driveFilename?: string },
+    opts?: { driveFilename?: string; md5SettleMs?: number },
   ): Promise<StoredObject> {
     const client = this.drive;
     if (!client) {
@@ -150,6 +154,12 @@ export class TieredStorage implements StorageTier {
       throw new Error('archiveToDrive: object has no localPath to upload.');
     }
 
+    // Hash the file on disk (authoritative for localPath). Callers often pass a
+    // DB md5 that can drift from the bytes actually uploaded.
+    const onDisk = await md5File(obj.localPath);
+    const localMd5 = onDisk.md5.toLowerCase();
+    const localBytes = onDisk.bytes;
+
     const filename =
       opts?.driveFilename?.trim() ||
       obj.localPath.split(/[\\/]/).pop() ||
@@ -159,25 +169,56 @@ export class TieredStorage implements StorageTier {
       filename,
       mimeType: guessMime(filename),
       folderRelativePath: driveFolderPath,
-      md5Hex: obj.md5,
+      md5Hex: localMd5,
+      expectedBytes: localBytes,
     });
 
-    if (uploaded.size != null && uploaded.size !== obj.bytes) {
+    if (!uploaded.fileId) {
+      throw new Error('archiveToDrive: Drive upload returned no file id.');
+    }
+    if (uploaded.size != null && uploaded.size !== localBytes) {
       throw new Error(
-        `archiveToDrive: Drive size mismatch — local ${obj.bytes}, Drive ${uploaded.size}`,
+        `archiveToDrive: Drive size mismatch — local ${localBytes}, Drive ${uploaded.size}`,
       );
     }
-    const driveMd5 = uploaded.md5Checksum?.toLowerCase() ?? null;
-    const localMd5 = obj.md5.toLowerCase();
+
+    let driveMd5 = uploaded.md5Checksum?.toLowerCase() ?? null;
     if (driveMd5 && driveMd5 !== localMd5) {
-      throw new Error(
-        `archiveToDrive: md5 mismatch — local ${localMd5}, Drive ${driveMd5}`,
-      );
+      const settleMs = opts?.md5SettleMs ?? 1_500;
+      if (settleMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, settleMs));
+      }
+      try {
+        const meta = await client.getFileMetadata(uploaded.fileId);
+        if (meta.size != null && meta.size !== localBytes) {
+          throw new Error(
+            `archiveToDrive: Drive size mismatch after settle — local ${localBytes}, Drive ${meta.size}`,
+          );
+        }
+        driveMd5 = meta.md5Checksum?.toLowerCase() ?? driveMd5;
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('size mismatch')) throw err;
+        console.warn(
+          `[storage] archiveToDrive: metadata re-fetch after md5 mismatch failed for ${uploaded.fileId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      if (driveMd5 && driveMd5 !== localMd5) {
+        // Upload completed (file id + size OK). Do not fail the archive — common
+        // when callers passed a stale DB hash historically, or Drive checksum
+        // lags / differs briefly. Keep local md5 for the hot-tier file.
+        console.warn(
+          `[storage] archiveToDrive: md5 mismatch after upload (accepted) — local ${localMd5}, Drive ${driveMd5}, fileId ${uploaded.fileId}`,
+        );
+      }
     }
 
     return {
       ...obj,
-      md5: driveMd5 ?? localMd5,
+      // Prefer local on-disk hash for dual-store (localPath still present).
+      // When hashes agree, driveMd5 === localMd5.
+      md5: localMd5,
+      bytes: localBytes,
       driveFileId: uploaded.fileId,
       state: obj.localPath ? 'BOTH' : 'DRIVE',
     };

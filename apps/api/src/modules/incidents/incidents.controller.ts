@@ -24,6 +24,15 @@ export class IncidentsController {
     return this.incidents.list(normalized);
   }
 
+  @Post('resolve-all')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('incident.resolveAll', 'Incident')
+  resolveAll(
+    @CurrentUser() actor: SessionUser,
+  ): Promise<{ resolved: number; incidentIds: string[] }> {
+    return this.incidents.resolveAll(actor.id);
+  }
+
   @Get(':id')
   get(@Param('id') id: string): Promise<IncidentView> {
     return this.incidents.get(id);

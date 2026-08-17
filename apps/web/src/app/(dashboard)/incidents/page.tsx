@@ -11,7 +11,14 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/components/ui/toast';
 import { cn } from '@/lib/cn';
 import { relativeTime, absoluteTime } from '@/lib/format';
-import { getIncidentsView, retryIncident, resolveIncident } from '@/lib/api-data';
+import {
+  getIncidentsView,
+  retryIncident,
+  resolveIncident,
+  resolveAllIncidents,
+} from '@/lib/api-data';
+import { api } from '@/lib/api';
+import { isSystemAdmin, type SessionUser } from '@/lib/types';
 import type { Incident, IncidentKind } from '@/lib/domain-types';
 
 const KIND: Record<IncidentKind, { tone: BadgeTone; label: string }> = {
@@ -24,6 +31,10 @@ const KIND: Record<IncidentKind, { tone: BadgeTone; label: string }> = {
 
 type Filter = 'ALL' | 'OPEN' | 'RESOLVED';
 
+function isUncleared(status: Incident['status']): boolean {
+  return status === 'OPEN' || status === 'ACKED';
+}
+
 export default function IncidentsPage() {
   const [filter, setFilter] = useState<Filter>('OPEN');
   const [selected, setSelected] = useState<Incident | null>(null);
@@ -32,6 +43,7 @@ export default function IncidentsPage() {
   const [demo, setDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [canClearAll, setCanClearAll] = useState(false);
   const toast = useToast();
 
   const load = useCallback(async () => {
@@ -50,7 +62,15 @@ export default function IncidentsPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    api
+      .get<{ user: SessionUser }>('/auth/me')
+      .then(({ user }) => setCanClearAll(isSystemAdmin(user.role)))
+      .catch(() => setCanClearAll(false));
+  }, []);
+
   const visible = incidents.filter((i) => filter === 'ALL' || i.status === filter);
+  const unclearedCount = incidents.filter((i) => isUncleared(i.status)).length;
   const accountName = (id: string) => accountNames[id] ?? (id || '—');
 
   const onRetry = async (inc: Incident) => {
@@ -94,26 +114,65 @@ export default function IncidentsPage() {
     }
   };
 
+  const onClearAll = async () => {
+    if (unclearedCount === 0) return;
+    if (
+      !confirm(
+        `Resolve all ${unclearedCount} open incident${unclearedCount === 1 ? '' : 's'}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    if (demo) {
+      toast('Cleared all (demo — connect a real account to persist)', 'info');
+      setSelected(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await resolveAllIncidents();
+      toast(
+        result.resolved === 0
+          ? 'No open incidents to clear'
+          : `Cleared ${result.resolved} incident${result.resolved === 1 ? '' : 's'}`,
+        'success',
+      );
+      setSelected(null);
+      await load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not clear incidents', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
         title="Incidents"
         description="Copyright claims, auth failures, rate limits, and publish errors — with one-click retry"
         actions={
-          <div className="flex rounded-md border border-zinc-300 bg-white p-0.5">
-            {(['OPEN', 'RESOLVED', 'ALL'] as Filter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={cn(
-                  'rounded px-3 py-1 text-xs font-medium transition-colors',
-                  filter === f ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-800',
-                )}
-              >
-                {f[0] + f.slice(1).toLowerCase()}
-              </button>
-            ))}
-          </div>
+          <>
+            {canClearAll && unclearedCount > 0 && (
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void onClearAll()}>
+                Clear all
+              </Button>
+            )}
+            <div className="flex rounded-md border border-zinc-300 bg-white p-0.5">
+              {(['OPEN', 'RESOLVED', 'ALL'] as Filter[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={cn(
+                    'rounded px-3 py-1 text-xs font-medium transition-colors',
+                    filter === f ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-800',
+                  )}
+                >
+                  {f[0] + f.slice(1).toLowerCase()}
+                </button>
+              ))}
+            </div>
+          </>
         }
       />
 
