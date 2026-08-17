@@ -50,7 +50,6 @@ import {
   VO_MIX_DIALOGUE_BED_GAIN,
   VO_MIX_SIDECHAIN,
   bedGainForPercent,
-  dialogueOverlayEnableExpr,
 } from './media/ffmpeg.js';
 import { loadSrtCues, writeOverlayAssFile } from './media/overlay-ass.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
@@ -781,8 +780,8 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
 
     // Step 3c: Reaction avatar PiP (corner face) — after trim/captions so it sits on top.
     // Prefer lip-sync talking-head clip when uploaded; else silent image/clip.
-    // showDuring=dialogue (default): PiP only while speaking; reaction source trimmed to
-    // sum(speaking) so unused clip tail is not burned. Fallbacks: SRT cues → VO → lead-in.
+    // Always visible for the full video (including silent / no-VO stretches).
+    // Saved "speaking only" is treated as always so existing accounts keep the PiP on.
     const avatar = effectiveSettings.reactionAvatar;
     const preferredRel =
       avatar.enabled && avatar.lipSyncAssetPath?.trim()
@@ -796,26 +795,15 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
         await access(avatarAbs);
         const width = (await ffmpeg.probeVideoWidth(finalPath)) ?? 1080;
         const sizePx = Math.round((width * (avatar.sizePercent ?? 22)) / 100);
-        const showDuring = avatar.showDuring ?? 'dialogue';
-
-        let subtitleCuesForAvatar: { startMs: number; endMs: number }[] = [];
-        if (showDuring === 'dialogue' && subtitlePath) {
-          try {
-            subtitleCuesForAvatar = await loadSrtCues(subtitlePath);
-          } catch {
-            subtitleCuesForAvatar = [];
-          }
-        }
+        const showDuring = 'always';
         const finalPictureSec = (await ffmpeg.probeDurationSec(finalPath)) ?? pictureSec;
         const speaking = resolveReactionAvatarSpeakingRanges({
           showDuring,
           dialogueRanges,
-          subtitleCues: subtitleCuesForAvatar,
           voEndSec,
           pictureSec: finalPictureSec,
         });
-        const enableExpr =
-          showDuring === 'dialogue' ? dialogueOverlayEnableExpr(speaking.ranges) : null;
+        const enableExpr = null;
 
         const clipDur = await ffmpeg.probeDurationSec(avatarAbs);
         const trimSec = reactionAvatarSourceTrimSec({

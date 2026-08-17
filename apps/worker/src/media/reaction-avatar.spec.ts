@@ -199,6 +199,17 @@ describe('reaction avatar speaking / trim', () => {
     ).toBe(8);
   });
 
+  it('keeps avatar on for the full picture when showDuring=always', () => {
+    const r = resolveReactionAvatarSpeakingRanges({
+      showDuring: 'always',
+      dialogueRanges: [{ startSec: 0, endSec: 1 }],
+      voEndSec: 3,
+      pictureSec: 12,
+    });
+    expect(r.source).toBe('always');
+    expect(r.ranges).toEqual([{ startSec: 0, endSec: 12 }]);
+  });
+
   it('builds enable expr from fallback speaking windows', () => {
     const { ranges } = resolveReactionAvatarSpeakingRanges({
       showDuring: 'dialogue',

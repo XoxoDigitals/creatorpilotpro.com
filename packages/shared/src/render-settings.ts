@@ -182,11 +182,10 @@ export const renderSettingsSchema = z.object({
       /** Width as % of video width (12–40). */
       sizePercent: z.number().int().min(12).max(40).default(22),
       /**
-       * `dialogue` (default): PiP only during speaking windows; reaction source trimmed to
-       * sum(speaking) — unused clip tail is cut. Falls back to VO/subtitle cues, else ~5s lead-in.
-       * `always`: visible for full video; still trims reaction source to main duration.
+       * `always` (default): PiP visible for the full video, including silent gaps.
+       * `dialogue`: PiP only during speaking windows (legacy); unused clip tail is trimmed.
        */
-      showDuring: z.enum(['dialogue', 'always']).default('dialogue'),
+      showDuring: z.enum(['dialogue', 'always']).default('always'),
       /**
        * `auto` = rembg if installed, else chromakey; `rembg` / `chromakey` force one path;
        * `off` = overlay original (no remove-bg).
@@ -211,7 +210,7 @@ export const renderSettingsSchema = z.object({
       shape: 'circle',
       corner: 'br',
       sizePercent: 22,
-      showDuring: 'dialogue',
+      showDuring: 'always',
       removeBg: 'auto',
       chromakeyColor: '#00B140',
       chromakeySimilarity: 0.3,
@@ -232,7 +231,7 @@ export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
     shape: 'circle',
     corner: 'br',
     sizePercent: 22,
-    showDuring: 'dialogue',
+    showDuring: 'always',
     removeBg: 'auto',
     chromakeyColor: '#00B140',
     chromakeySimilarity: 0.3,

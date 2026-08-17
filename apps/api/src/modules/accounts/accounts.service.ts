@@ -285,7 +285,7 @@ export class AccountsService {
             shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
             corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
             sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
-            showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+            showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'always',
             removeBg: typeof prevAvatar.removeBg === 'string' ? prevAvatar.removeBg : 'auto',
             chromakeyColor:
               typeof prevAvatar.chromakeyColor === 'string' ? prevAvatar.chromakeyColor : '#00B140',
@@ -305,7 +305,7 @@ export class AccountsService {
             shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
             corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
             sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
-            showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+            showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'always',
             removeBg: typeof prevAvatar.removeBg === 'string' ? prevAvatar.removeBg : 'auto',
             chromakeyColor:
               typeof prevAvatar.chromakeyColor === 'string' ? prevAvatar.chromakeyColor : '#00B140',
@@ -385,7 +385,7 @@ export class AccountsService {
       shape: typeof prevAvatar.shape === 'string' ? prevAvatar.shape : 'circle',
       corner: typeof prevAvatar.corner === 'string' ? prevAvatar.corner : 'br',
       sizePercent: typeof prevAvatar.sizePercent === 'number' ? prevAvatar.sizePercent : 22,
-      showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'dialogue',
+      showDuring: typeof prevAvatar.showDuring === 'string' ? prevAvatar.showDuring : 'always',
       removeBg: typeof prevAvatar.removeBg === 'string' ? prevAvatar.removeBg : 'auto',
       chromakeyColor:
         typeof prevAvatar.chromakeyColor === 'string' ? prevAvatar.chromakeyColor : '#00B140',

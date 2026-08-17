@@ -281,5 +281,6 @@ describe('parseRenderSettings', () => {
     const s = parseRenderSettings({});
     expect(s.reactionAvatar.removeBg).toBe('auto');
     expect(s.reactionAvatar.chromakeyColor).toBe('#00B140');
+    expect(s.reactionAvatar.showDuring).toBe('always');
   });
 });

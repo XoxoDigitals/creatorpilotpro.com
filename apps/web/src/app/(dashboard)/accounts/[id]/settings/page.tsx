@@ -543,7 +543,7 @@ export default function AccountSettingsPage() {
               shape: renderSettings.reactionAvatar?.shape ?? 'circle',
               corner: renderSettings.reactionAvatar?.corner ?? 'br',
               sizePercent: renderSettings.reactionAvatar?.sizePercent ?? 22,
-              showDuring: renderSettings.reactionAvatar?.showDuring ?? 'dialogue',
+              showDuring: renderSettings.reactionAvatar?.showDuring ?? 'always',
               removeBg: renderSettings.reactionAvatar?.removeBg ?? 'auto',
               chromakeyColor: renderSettings.reactionAvatar?.chromakeyColor ?? '#00B140',
               chromakeySimilarity: renderSettings.reactionAvatar?.chromakeySimilarity ?? 0.3,
@@ -1656,7 +1656,7 @@ export default function AccountSettingsPage() {
                   </Field>
                   <Field label="When to show">
                     <Select
-                      value={renderSettings.reactionAvatar.showDuring ?? 'dialogue'}
+                      value={renderSettings.reactionAvatar.showDuring ?? 'always'}
                       onChange={(e) =>
                         setRenderSettings((s) => ({
                           ...s,
@@ -1667,14 +1667,13 @@ export default function AccountSettingsPage() {
                         }))
                       }
                     >
-                      <option value="dialogue">During speaking only</option>
                       <option value="always">Entire video</option>
+                      <option value="dialogue">During speaking only</option>
                     </Select>
                   </Field>
                   <p className="text-[11px] text-zinc-500">
-                    During speaking only (default): PiP shows on dialogue/VO windows; reaction media
-                    is trimmed to that total — unused clip tail is cut. Entire video still trims the
-                    reaction source to the main video length.
+                    Entire video (default): PiP stays on through silence, VO gaps, and no-narration
+                    clips. During speaking only hides it between dialogue windows.
                   </p>
                 </div>
               </div>
