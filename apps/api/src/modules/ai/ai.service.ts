@@ -818,6 +818,7 @@ The spoken script must be in ${languageDisplayName(lang)}.`,
         rate: dto.rate,
         pitch: dto.pitch,
         volume: dto.volume,
+        emotion: dto.emotion,
         writeSubtitles: true,
       });
       const buf = await readFile(synth.mediaPath);

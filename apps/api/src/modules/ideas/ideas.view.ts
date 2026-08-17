@@ -1,6 +1,7 @@
 import type { Idea, ProductionBrief } from '@scp/db';
 import {
   PACKAGE_STAGE_LABELS,
+  parseTtsEmotion,
   splitProductionBriefEditingExtras,
   type PackageStage,
 } from '@scp/shared';
@@ -211,6 +212,7 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
             return {
               speaker: String(row.speaker ?? row.character ?? '').trim(),
               line: String(row.line ?? row.text ?? '').trim(),
+              emotion: parseTtsEmotion(row.emotion ?? row.mood ?? row.tone),
             };
           })
           .filter((line) => line.line)
@@ -220,8 +222,12 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
             .map((line) => {
               const match = line.match(/^\s*([^:]{1,60}):\s*(.+)$/);
               return match
-                ? { speaker: (match[1] ?? '').trim(), line: (match[2] ?? '').trim() }
-                : { speaker: '', line: line.trim() };
+                ? {
+                    speaker: (match[1] ?? '').trim(),
+                    line: (match[2] ?? '').trim(),
+                    emotion: parseTtsEmotion(undefined),
+                  }
+                : { speaker: '', line: line.trim(), emotion: parseTtsEmotion(undefined) };
             })
             .filter((line) => line.line)
         : [];

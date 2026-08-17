@@ -7,10 +7,10 @@
  * even when the DB PromptVersion row is unchanged / absent.
  */
 import { z } from 'zod';
-import { TaskType, formatOutputLanguagePolicy, languageDisplayName } from '@scp/shared';
+import { TaskType, formatIdeaTitleLanguageRules, formatOutputLanguagePolicy, languageDisplayName, parseTtsEmotion } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 14;
+export const REPURPOSE_PROMPT_REV = 17;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -79,6 +79,10 @@ export const narrationLineSchema = z.object({
   startSec: z.number(),
   endSec: z.number(),
   text: z.string().min(1),
+  emotion: z
+    .string()
+    .nullish()
+    .transform((v) => parseTtsEmotion(v)),
 });
 
 export const narrationVariantSchema = z.object({
@@ -127,7 +131,7 @@ export interface NarrationScriptVariant {
   /** Owner-facing English summary when spoken script is non-English. */
   englishSummary?: string;
   estimatedSpokenSec: number | null;
-  lines: { startSec: number; endSec: number; text: string }[];
+  lines: { startSec: number; endSec: number; text: string; emotion?: string }[];
 }
 
 function variantLabel(id: string, style: string): string {
@@ -157,6 +161,7 @@ function coerceVariant(raw: z.infer<typeof narrationVariantSchema>): NarrationSc
         startSec: l.startSec,
         endSec: l.endSec > l.startSec ? l.endSec : l.startSec,
         text: l.text.trim(),
+        emotion: l.emotion,
       })),
   };
 }
@@ -348,7 +353,7 @@ Return ONLY valid JSON:
       "hook": string,
       "script": string,
       "estimatedSpokenSec": number,
-      "lines": [{ "startSec": number, "endSec": number, "text": string }]
+      "lines": [{ "startSec": number, "endSec": number, "text": string, "emotion": "default|cheerful|excited|calm|empathetic|sad|angry|newscast" }]
     },
     {
       "id": "styleB",
@@ -356,7 +361,7 @@ Return ONLY valid JSON:
       "hook": string,
       "script": string,
       "estimatedSpokenSec": number,
-      "lines": [{ "startSec": number, "endSec": number, "text": string }]
+      "lines": [{ "startSec": number, "endSec": number, "text": string, "emotion": "default|cheerful|excited|calm|empathetic|sad|angry|newscast" }]
     },
     {
       "id": "styleC",
@@ -364,7 +369,7 @@ Return ONLY valid JSON:
       "hook": string,
       "script": string,
       "estimatedSpokenSec": number,
-      "lines": [{ "startSec": number, "endSec": number, "text": string }]
+      "lines": [{ "startSec": number, "endSec": number, "text": string, "emotion": "default|cheerful|excited|calm|empathetic|sad|angry|newscast" }]
     },
     {
       "id": "self",
@@ -372,7 +377,7 @@ Return ONLY valid JSON:
       "hook": string,
       "script": string,
       "estimatedSpokenSec": number,
-      "lines": [{ "startSec": number, "endSec": number, "text": string }]
+      "lines": [{ "startSec": number, "endSec": number, "text": string, "emotion": "default|cheerful|excited|calm|empathetic|sad|angry|newscast" }]
     }
   ]
 }
@@ -414,6 +419,7 @@ Timing:
 - Fill the runtime. Leave only ~0.2–0.5s of breathing room between sentences (TTS concatenates with a short gap). Do not leave long silent stretches unless a reveal needs a brief beat of air.
 - Prefer complete short sentences ending in . ! or ? so TTS can pause between them.
 - Align narration with the relevant visual beat. Early teasing is allowed only when intentional.
+- Each lines[] item MUST include emotion from that beat's situation (whatHappens / mood / speechOrAudio): argument → angry, loss → sad, reveal → excited, warmth → cheerful, comfort → empathetic, quiet wait → calm, facts → newscast, else default. Emotion may change line to line. Write wording TTS can deliver for that emotion (rhythm and punctuation). Do not print the emotion, stage directions, or brackets in text.
 - script must exactly equal all lines[].text concatenated in order as plain prose (spaces, no timestamps).
 - estimatedSpokenSec must reflect actual spoken wording, not video duration.
 - When dialogue exists, still narrate what was said/replied — keep those lines within the beat maxWords (summarize the exchange if needed).
@@ -494,7 +500,8 @@ Optimize title, description, and tags specifically for the target platform above
 The "tags" array must always be present (use [] only when the platform guidance allows zero tags).
 Follow the channel style block when provided.
 ${formatOutputLanguagePolicy(language)}
-Write title, description, tags, and keywords in ${lang}. Keep this instruction prompt in English. No markdown fences.`;
+${formatIdeaTitleLanguageRules(language)}
+Write description, tags, and keywords in ${lang}. Keep this instruction prompt in English. No markdown fences.`;
 }
 
 /** @deprecated Prefer defaultMetadataPrompt(platform) — kept for callers without platform. */

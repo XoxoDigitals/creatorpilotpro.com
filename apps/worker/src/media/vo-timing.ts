@@ -2,6 +2,7 @@
  * Voiceover timing helpers for repurposed narration: duration budget,
  * atempo fit, and scene-aligned line layout from VIDEO_ANALYSIS beats.
  */
+import { resolveSpokenEmotion, type TtsEmotion } from '@scp/shared';
 
 /**
  * Conversational speaking rate (~150 words/min). Used to size scripts to
@@ -138,6 +139,7 @@ export interface AnalysisBeat {
   whatHappens: string;
   visuals: string;
   speechOrAudio: string;
+  mood?: string;
 }
 
 function num(v: unknown): number | null {
@@ -167,6 +169,7 @@ export function analysisBeats(analysis: unknown): AnalysisBeat[] {
       whatHappens,
       visuals: typeof o.visuals === 'string' ? o.visuals.trim() : '',
       speechOrAudio: typeof o.speechOrAudio === 'string' ? o.speechOrAudio.trim() : '',
+      mood: typeof o.mood === 'string' ? o.mood.trim() : '',
     });
   }
   return out.sort((a, b) => a.startSec - b.startSec);
@@ -193,6 +196,7 @@ export interface TimedNarrationLine {
   startSec: number;
   endSec: number;
   text: string;
+  emotion?: string;
 }
 
 function readLine(row: unknown): TimedNarrationLine | null {
@@ -202,12 +206,32 @@ function readLine(row: unknown): TimedNarrationLine | null {
   if (!text) return null;
   const startSec = num(o.startSec) ?? 0;
   const endSec = num(o.endSec) ?? startSec;
-  return { startSec, endSec: endSec > startSec ? endSec : startSec, text };
+  const emotion = typeof o.emotion === 'string' && o.emotion.trim() ? o.emotion.trim() : undefined;
+  return {
+    startSec,
+    endSec: endSec > startSec ? endSec : startSec,
+    text,
+    ...(emotion ? { emotion } : {}),
+  };
 }
 
 function linesFromUnknown(raw: unknown): TimedNarrationLine[] {
   if (!Array.isArray(raw)) return [];
   return raw.map(readLine).filter((l): l is TimedNarrationLine => l != null);
+}
+
+/** Emotion-tagged spoken lines (timed script lines or idea narrationLines). */
+export function spokenLinesFromUnknown(raw: unknown): TimedNarrationLine[] {
+  if (!Array.isArray(raw)) return [];
+  const hasEmotion = raw.some(
+    (row) =>
+      row &&
+      typeof row === 'object' &&
+      typeof (row as Record<string, unknown>).emotion === 'string' &&
+      String((row as Record<string, unknown>).emotion).trim(),
+  );
+  if (!hasEmotion) return [];
+  return linesFromUnknown(raw).filter((l) => l.text.trim());
 }
 
 function variantById(output: unknown, selectedId?: string | null): Record<string, unknown> | null {
@@ -366,6 +390,7 @@ export function beatsForPrompt(beats: AnalysisBeat[]): {
   whatHappens: string;
   visuals: string;
   speechOrAudio: string;
+  mood?: string;
 }[] {
   return beats.map((b) => {
     const durationSec = Math.max(0.2, Number((b.endSec - b.startSec).toFixed(2)));
@@ -379,6 +404,33 @@ export function beatsForPrompt(beats: AnalysisBeat[]): {
       whatHappens: b.whatHappens,
       visuals: b.visuals,
       speechOrAudio: b.speechOrAudio,
+      ...(b.mood ? { mood: b.mood } : {}),
+    };
+  });
+}
+
+/** Prefer model-tagged emotion; otherwise infer from the matching analysis beat. */
+export function applySituationalLineEmotions(
+  lines: TimedNarrationLine[],
+  beats?: AnalysisBeat[],
+  fallback: TtsEmotion = 'default',
+): TimedNarrationLine[] {
+  return lines.map((line) => {
+    const beat = beats?.find(
+      (b) =>
+        Math.abs(b.startSec - line.startSec) < 0.35 &&
+        Math.abs(b.endSec - line.endSec) < 0.35,
+    );
+    return {
+      ...line,
+      emotion: resolveSpokenEmotion(
+        line.emotion,
+        fallback,
+        beat?.mood,
+        beat?.whatHappens,
+        beat?.speechOrAudio,
+        line.text,
+      ),
     };
   });
 }

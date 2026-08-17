@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { mergeEmotionProsody } from '@scp/shared';
 import {
   parseSubtitleTimings,
   segmentsToSrt,
@@ -57,5 +58,14 @@ Second line
 
   it('exports default Aria voice', () => {
     expect(EDGE_TTS_DEFAULT_VOICE).toBe('en-US-AriaNeural');
+  });
+
+  it('applies emotion via rate/pitch offsets, not SSML tags', () => {
+    const sad = mergeEmotionProsody({ rate: '+0%', pitch: '+0Hz' }, 'sad');
+    expect(sad.rate).toBe('-12%');
+    expect(sad.pitch).toBe('-8Hz');
+    const excited = mergeEmotionProsody({}, 'excited');
+    expect(excited.rate).toBe('+18%');
+    expect(excited.pitch).toBe('+14Hz');
   });
 });

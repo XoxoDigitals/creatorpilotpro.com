@@ -1,4 +1,4 @@
-import { TaskType } from '@scp/shared';
+import { mergeEmotionProsody, parseTtsEmotion, TaskType } from '@scp/shared';
 import type { AIProvider, AIRequest, AIResult, AIErrorClass, PooledKey } from './types.js';
 
 /**
@@ -100,9 +100,18 @@ export class KokoroProvider implements AIProvider {
     let voiceId = 'af_heart';
     let speed = 1.0;
     try {
-      const cfg = JSON.parse(req.system) as { voiceId?: string; speed?: number };
+      const cfg = JSON.parse(req.system) as {
+        voiceId?: string;
+        speed?: number;
+        emotion?: string;
+      };
       if (typeof cfg.voiceId === 'string' && cfg.voiceId !== 'default') voiceId = cfg.voiceId;
-      if (typeof cfg.speed === 'number') speed = cfg.speed;
+      const emotion = parseTtsEmotion(cfg.emotion);
+      const merged = mergeEmotionProsody(
+        { speed: typeof cfg.speed === 'number' && cfg.speed > 0 ? cfg.speed : 1.0 },
+        emotion,
+      );
+      speed = merged.speed;
     } catch {
       // Non-JSON system prompt → keep defaults.
     }

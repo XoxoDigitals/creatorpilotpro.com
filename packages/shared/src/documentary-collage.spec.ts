@@ -6,6 +6,7 @@ import {
   documentaryBeatSceneCount,
   documentaryTargetWordCount,
   ensureDocumentaryCollageImagePrompt,
+  formatFernNarrationRules,
   isDocumentaryIdeaGeneration,
   isDocumentaryLikeFormat,
   isDocumentaryVoiceoverPackage,
@@ -73,6 +74,16 @@ describe('documentary collage helpers', () => {
   it('prefers tighter beat counts when clips are long', () => {
     expect(documentaryBeatSceneCount(60, 10)).toBe(24);
     expect(documentaryBeatSceneCount(60, 2)).toBe(30);
+  });
+
+  it('overlays situation emotion on Fern narration DNA', () => {
+    const rules = formatFernNarrationRules(60);
+    expect(rules).toContain('Cold open');
+    expect(rules).toContain('cliffhanger');
+    expect(rules).toContain('narrationLines');
+    expect(rules).toContain('Grief');
+    expect(rules).toContain('excited');
+    expect(rules).toMatch(/Do not name the emotion/i);
   });
 
   it('universal video prompt forbids dialogue and includes scene ASMR audio', () => {

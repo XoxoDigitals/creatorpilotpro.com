@@ -17,6 +17,8 @@ import {
   timedLinesFromNarration,
   timedLinesFromStep,
   timelinePadPlan,
+  applySituationalLineEmotions,
+  spokenLinesFromUnknown,
 } from './vo-timing.js';
 
 describe('narration duration budget', () => {
@@ -165,5 +167,33 @@ describe('timelinePadPlan', () => {
       0,
       2 + INTER_SEGMENT_GAP_SEC,
     ]);
+  });
+});
+
+describe('situation emotion on spoken lines', () => {
+  it('keeps a tagged line emotion and infers from the matching beat', () => {
+    const beats = analysisBeats({
+      segments: [
+        { startSec: 0, endSec: 4, whatHappens: 'They shout during the argument', mood: 'tense' },
+        { startSec: 4, endSec: 8, whatHappens: 'A quiet wait', mood: 'still' },
+      ],
+    });
+    const lines = applySituationalLineEmotions(
+      [
+        { startSec: 0, endSec: 4, text: 'How dare you.' },
+        { startSec: 4, endSec: 8, text: 'We wait.', emotion: 'sad' },
+      ],
+      beats,
+      'newscast',
+    );
+    expect(lines[0]?.emotion).toBe('angry');
+    expect(lines[1]?.emotion).toBe('sad');
+  });
+
+  it('reads stored narrationLines only when emotion is present', () => {
+    expect(
+      spokenLinesFromUnknown([{ text: 'They lost her.', emotion: 'sad' }]),
+    ).toEqual([{ startSec: 0, endSec: 0, text: 'They lost her.', emotion: 'sad' }]);
+    expect(spokenLinesFromUnknown([{ startMs: 0, endMs: 1200, text: 'Hello' }])).toEqual([]);
   });
 });

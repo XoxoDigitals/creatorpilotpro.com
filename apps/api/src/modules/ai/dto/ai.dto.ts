@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TaskTypeSchema } from '@scp/shared';
+import { TaskTypeSchema, TTS_EMOTIONS } from '@scp/shared';
 
 // ── Keys ────────────────────────────────────────────────────────────────────
 
@@ -64,6 +64,7 @@ export const ttsPreviewSchema = z.object({
   rate: z.string().max(32).optional(),
   pitch: z.string().max(32).optional(),
   volume: z.string().max(32).optional(),
+  emotion: z.enum(TTS_EMOTIONS).optional(),
 });
 export type TtsPreviewDto = z.infer<typeof ttsPreviewSchema>;
 

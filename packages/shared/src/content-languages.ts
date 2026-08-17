@@ -1,7 +1,9 @@
 /**
  * First-class channel output language (ChannelProfile.language).
- * Ideas/stories/image+video prompts stay English; spoken/on-screen/publish copy
- * uses the selected language. Locales/voices match Edge Neural defaults.
+ * Idea titles (and publish titles) follow title-language rules; idea angle/hook/
+ * rationale, stories, and image+video prompts stay English. Spoken/on-screen copy
+ * and non-title publish metadata use the selected language. Locales/voices match
+ * Edge Neural defaults.
  */
 export interface ContentLanguage {
   /** ISO 639-1 code stored on ChannelProfile.language. */
@@ -54,7 +56,7 @@ const BY_CODE = new Map(ALL_LANGUAGES.map((lang) => [lang.code, lang]));
 export const DEFAULT_CONTENT_LANGUAGE = 'en';
 
 /** Bump when language-split prompt rules change so AI cache keys move. */
-export const OUTPUT_LANGUAGE_POLICY_REV = 1;
+export const OUTPUT_LANGUAGE_POLICY_REV = 2;
 
 export function parseLanguageCode(raw?: string | null): string {
   return (raw ?? DEFAULT_CONTENT_LANGUAGE).trim().toLowerCase().split(/[-_]/)[0] || DEFAULT_CONTENT_LANGUAGE;
@@ -102,21 +104,43 @@ export function contentLanguageSelectOptions(current?: string | null): ContentLa
 }
 
 /**
- * Mandatory split: prompts/ideas/stories/visual prompts stay English;
- * spoken, on-screen, and publish metadata use the channel language.
+ * Idea/publish title language for ChannelProfile.language.
+ * Angle, hook, and rationale stay English for operator review.
+ */
+export function formatIdeaTitleLanguageRules(language?: string | null): string {
+  const code = parseLanguageCode(language);
+  const lang = languageDisplayName(language);
+  if (code === 'hi') {
+    return 'Titles MUST mix Hindi (Devanagari) and English in roughly equal parts in ONE title, like Indian YouTube: Hindi words + English keywords (Secret, Never, Why, Exposed). Not fully Hindi, not fully English. Angle/hook/rationale stay English.';
+  }
+  if (code === 'ur') {
+    return 'Titles MUST be Roman Urdu (Latin letters only), natural spoken Urdu romanization. No Arabic/Urdu script. Angle/hook/rationale stay English.';
+  }
+  if (!isEnglishContentLanguage(language)) {
+    return `Titles MUST be written in ${lang} (native script OK). Angle/hook/rationale stay English.`;
+  }
+  return 'Titles MUST be written in English. Angle/hook/rationale stay English.';
+}
+
+/**
+ * Mandatory split: idea titles follow title-language rules; idea angle/hook/
+ * rationale, stories, and visual prompts stay English; spoken, on-screen, and
+ * non-title publish metadata use the channel language.
  */
 export function formatOutputLanguagePolicy(language?: string | null): string {
   const lang = languageDisplayName(language);
+  const titleRules = formatIdeaTitleLanguageRules(language);
   if (isEnglishContentLanguage(language)) {
-    return `LANGUAGE POLICY: English for ideas, stories, image/video prompts, voiceover, dialogue, on-screen text, and publish title/description/tags.`;
+    return `LANGUAGE POLICY: English for idea titles, angle/hook/rationale, stories, image/video prompts, voiceover, dialogue, on-screen text, and publish title/description/tags.`;
   }
   return `LANGUAGE POLICY (mandatory; overrides any earlier "write everything in ${lang}" instruction):
 - Keep these instructions and all AI system prompts in English.
-- Ideas (title, angle, hook, rationale) MUST be written in English.
+- Idea title (and publish videoTitle/title): ${titleRules}
+- Idea angle, hook, and rationale MUST stay in English (topicSummary if present stays English).
 - Story drafts / storySummary / bible / episode summaries MUST be written in English.
 - imagePrompt, animationPrompt, thumbnailPrompt, videoPrompt, and negative-prompt bodies MUST stay in English (camera, lighting, composition, motion).
 - Voiceover / narrationScript: write EVERY spoken narrator word in ${lang}.
 - Dialogue: write EVERY spoken character line in ${lang} (dialogue[].line and quoted speech in animationPrompt).
 - On-screen text: captions, overlay lettering, thumbnail type, and any text that will appear in the image/video MUST be in ${lang}. Quote that ${lang} text inside otherwise-English prompts.
-- Publish metadata: videoTitle, videoDescription, title, description, tags, and hashtags MUST be in ${lang}.`.trim();
+- Publish metadata: videoDescription, description, tags, and hashtags MUST be in ${lang}. Publish titles follow the idea-title language rules above, not a fully English or fully ${lang} title unless those rules say so.`.trim();
 }

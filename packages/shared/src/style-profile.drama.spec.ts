@@ -65,7 +65,7 @@ describe('drama/dialogue style helpers', () => {
     expect(languageDisplayName('en')).toBe('English');
   });
 
-  it('keeps ideas in English while sending spoken/publish copy to the channel language', () => {
+  it('keeps idea angle/hook/rationale in English while titles follow the channel language', () => {
     const about = formatOurChannelAboutBlock(
       {
         language: 'hi',
@@ -73,13 +73,15 @@ describe('drama/dialogue style helpers', () => {
       },
       'Our Channel',
     );
-    expect(about).toContain('Idea language: English');
+    expect(about).toContain('mix Hindi (Devanagari) and English');
+    expect(about).not.toContain('Idea language: English');
     expect(about).toContain('Hindi');
+    expect(about).toContain('Angle/hook/rationale stay English');
 
     const block = formatChannelStyleBlock({ language: 'ur' });
     expect(block).toContain('LANGUAGE POLICY');
     expect(block).toContain('Urdu');
-    expect(block).toContain('Ideas');
+    expect(block).toContain('Roman Urdu');
     expect(block).toContain('imagePrompt');
   });
 
@@ -159,5 +161,15 @@ describe('drama/dialogue style helpers', () => {
     expect(drama).toContain('animationNegativePrompt');
     expect(drama).toContain('impact hits');
     expect(drama).not.toContain('sound design / audio layer');
+  });
+
+  it('injects situation-based spoken emotion into the channel style block', () => {
+    const block = formatChannelStyleBlock({ language: 'en', ttsEmotion: 'calm' });
+    expect(block).toContain('Spoken emotion');
+    expect(block).toContain('SITUATION');
+    expect(block).toContain('angry');
+    expect(block).toContain('sad');
+    expect(block).toContain('Voice-tab default');
+    expect(block).toContain('calm');
   });
 });

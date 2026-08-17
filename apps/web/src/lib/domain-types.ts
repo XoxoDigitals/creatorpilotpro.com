@@ -202,6 +202,7 @@ export interface ProductionBrief {
 export interface DialogueLine {
   speaker: string;
   line: string;
+  emotion: string;
 }
 
 export interface ProductionScene {

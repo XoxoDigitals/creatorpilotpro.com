@@ -131,7 +131,7 @@ describe('creative package normalization', () => {
             durationSec: 10,
             imagePrompt: 'Maya faces Theo',
             animationPrompt: 'Handheld push-in as Maya raises the map.',
-            dialogue: [{ speaker: 'Maya', line: 'We leave before midnight.' }],
+            dialogue: [{ speaker: 'Maya', line: 'We leave before midnight.', emotion: 'calm' }],
           },
         ],
         characters: [
@@ -165,8 +165,9 @@ describe('creative package normalization', () => {
     );
     expect(normalized.scenes[0]?.negativePrompt).not.toMatch(/\bno dialogue\b/i);
     expect(normalized.scenes[0]?.animationNegativePrompt).not.toMatch(/\bno dialogue\b/i);
+    expect(normalized.scenes[0]?.animationPrompt).toContain('Dialogue (calm):');
     expect(normalized.scenes[0]?.dialogue).toEqual([
-      { speaker: 'Maya', line: 'We leave before midnight.' },
+      { speaker: 'Maya', line: 'We leave before midnight.', emotion: 'calm' },
     ]);
   });
 });

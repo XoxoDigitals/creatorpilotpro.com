@@ -14,7 +14,11 @@ import {
   DEFAULT_RENDER_SETTINGS,
   renderSettingsFromVoiceSettings,
   clampTrimStartMs,
+  TTS_EMOTIONS,
+  TTS_EMOTION_LABELS,
+  parseTtsEmotion,
   type StyleProfileAnswers,
+  type TtsEmotion,
   type CaptionTemplateId,
   type ColorFilterPreset,
   type HookTextSource,
@@ -136,6 +140,7 @@ export default function AccountSettingsPage() {
   const [voiceRate, setVoiceRate] = useState('+0%');
   const [voicePitch, setVoicePitch] = useState('+0Hz');
   const [voiceVolume, setVoiceVolume] = useState('+0%');
+  const [voiceEmotion, setVoiceEmotion] = useState<TtsEmotion>('default');
   const [backgroundBedPercent, setBackgroundBedPercent] = useState(DEFAULT_BACKGROUND_BED_PERCENT);
   const [voices, setVoices] = useState<EdgeVoice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
@@ -212,9 +217,10 @@ export default function AccountSettingsPage() {
       voiceLocale ? `locale=${voiceLocale}` : '',
       voiceRate !== '+0%' ? `rate=${voiceRate}` : '',
       voicePitch !== '+0Hz' ? `pitch=${voicePitch}` : '',
+      voiceEmotion !== 'default' ? `emotion=${voiceEmotion}` : '',
     ].filter(Boolean);
     return parts.join(', ');
-  }, [ttsProvider, voice, voiceLocale, voiceRate, voicePitch]);
+  }, [ttsProvider, voice, voiceLocale, voiceRate, voicePitch, voiceEmotion]);
 
   const loadVoices = useCallback(async (locale?: string) => {
     setVoicesLoading(true);
@@ -267,6 +273,7 @@ export default function AccountSettingsPage() {
           rate?: string;
           pitch?: string;
           volume?: string;
+          emotion?: string;
           backgroundBedPercent?: number;
         } | null;
         const defaults = defaultVoiceForLanguage(p.language);
@@ -276,6 +283,7 @@ export default function AccountSettingsPage() {
         if (voiceCfg?.rate) setVoiceRate(voiceCfg.rate);
         if (voiceCfg?.pitch) setVoicePitch(voiceCfg.pitch);
         if (voiceCfg?.volume) setVoiceVolume(voiceCfg.volume);
+        setVoiceEmotion(parseTtsEmotion(voiceCfg?.emotion));
         setBackgroundBedPercent(
           clampBackgroundBedPercent(
             voiceCfg?.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
@@ -463,6 +471,7 @@ export default function AccountSettingsPage() {
         rate: voiceRate,
         pitch: voicePitch,
         volume: voiceVolume,
+        emotion: voiceEmotion,
       });
       const audio = new Audio(`data:${res.mimeType};base64,${res.audioBase64}`);
       await audio.play();
@@ -507,6 +516,7 @@ export default function AccountSettingsPage() {
           rate: voiceRate,
           pitch: voicePitch,
           volume: voiceVolume,
+          emotion: voiceEmotion,
           language,
           backgroundBedPercent: clampBackgroundBedPercent(backgroundBedPercent),
           renderSettings: {
@@ -1102,6 +1112,23 @@ export default function AccountSettingsPage() {
                   <Input value={voiceVolume} onChange={(e) => setVoiceVolume(e.target.value)} placeholder="+0%" />
                 </Field>
               </div>
+              <Field label="Fallback emotion">
+                <Select
+                  value={voiceEmotion}
+                  onChange={(e) => setVoiceEmotion(parseTtsEmotion(e.target.value))}
+                >
+                  {TTS_EMOTIONS.map((id) => (
+                    <option key={id} value={id}>
+                      {TTS_EMOTION_LABELS[id]}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  Used when a spoken line has no situation tag. Scripts pick emotion per beat
+                  (sad on loss, excited on a reveal, angry on conflict). Preview uses this
+                  fallback.
+                </p>
+              </Field>
             </>
           )}
         </div>

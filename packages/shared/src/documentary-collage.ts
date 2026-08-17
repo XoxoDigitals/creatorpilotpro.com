@@ -134,6 +134,7 @@ export function formatFernNarrationRules(durationSec: number): string {
 - No sponsor copy, no subscribe prompts, no sign-offs.
 - Mandatory cliffhanger ending: final line 12 words or fewer, ending on a noun, a name, a date, or a short declarative.
 - Never use em dashes (—) anywhere. Use commas, colons, parentheses, or plain hyphens instead.
+- Overlay per-sentence speaking emotion from the situation onto this Fern DNA (keep facts, cold open, and cliffhanger). Grief/loss → sad; reveal/shock → excited; report/facts → newscast; argument → angry; warmth → cheerful; comfort → empathetic; waiting/quiet → calm; otherwise default. Energy of the wording must match that beat. Do not name the emotion, and do not put stage directions, in the spoken words. Also return narrationLines: [{ "text", "emotion" }] one spoken sentence per item; narrationScript stays the concatenated prose.
 - Voice direction note for TTS: ${DOCUMENTARY_VOICEOVER_DIRECTION}.`.trim();
 }
 

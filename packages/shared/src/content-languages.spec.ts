@@ -3,6 +3,7 @@ import {
   CONTENT_LANGUAGES,
   contentLanguageOptionLabel,
   contentLanguageSelectOptions,
+  formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
   isEnglishContentLanguage,
   languageDisplayName,
@@ -77,11 +78,27 @@ describe('content languages', () => {
   it('splits English creative work from selected-language spoken/publish copy', () => {
     expect(isEnglishContentLanguage('en-US')).toBe(true);
     const policy = formatOutputLanguagePolicy('ur');
-    expect(policy).toContain('Ideas');
+    expect(policy).toContain('Idea title');
     expect(policy).toContain('English');
     expect(policy).toContain('Urdu');
     expect(policy).toContain('narrationScript');
     expect(policy).toContain('imagePrompt');
     expect(policy).toContain('videoTitle');
+    expect(policy).toContain('Roman Urdu');
+    expect(policy).not.toContain('Ideas (title, angle, hook, rationale) MUST be written in English');
+    expect(policy).toContain('Voiceover / narrationScript: write EVERY spoken narrator word in Urdu');
+  });
+
+  it('formats idea title language rules per channel language', () => {
+    expect(formatIdeaTitleLanguageRules('en')).toContain('Titles MUST be written in English');
+    expect(formatIdeaTitleLanguageRules('hi')).toContain('mix Hindi (Devanagari) and English');
+    expect(formatIdeaTitleLanguageRules('hi')).toContain('Not fully Hindi, not fully English');
+    expect(formatIdeaTitleLanguageRules('ur')).toContain('Roman Urdu');
+    expect(formatIdeaTitleLanguageRules('ur')).toContain('No Arabic/Urdu script');
+    expect(formatIdeaTitleLanguageRules('es')).toContain('Titles MUST be written in Spanish');
+    expect(formatIdeaTitleLanguageRules('ja')).toContain('native script OK');
+    expect(formatIdeaTitleLanguageRules('hi')).toContain('Angle/hook/rationale stay English');
+    expect(formatIdeaTitleLanguageRules('ur')).toContain('Angle/hook/rationale stay English');
+    expect(formatIdeaTitleLanguageRules('es')).toContain('Angle/hook/rationale stay English');
   });
 });

@@ -1,9 +1,16 @@
 import { z } from 'zod';
 import {
+  formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
   languageDisplayName,
   OUTPUT_LANGUAGE_POLICY_REV,
 } from './content-languages.js';
+import {
+  formatNarrationEmotionBlock,
+  SPEECH_EMOTION_RULES_REV,
+  TTS_EMOTIONS,
+  type TtsEmotion,
+} from './voice-settings.js';
 
 /**
  * Channel brand / style questionnaire (account settings → Master prompt & styles).
@@ -401,6 +408,8 @@ export function formatDramaDialoguePackageRules(options: {
 - Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions stay in English; only the spoken words must match ${lang}.
 - imagePrompt and animationPrompt bodies stay in English. Quote any on-screen overlay text and spoken lines in ${lang} inside those English prompts.
 - Clip density: each scene is ~${clip}s. Fill that duration with enough dialogue exchanges and physical action beats — never one short line plus silence. Target roughly ${minWords}-${maxWords} spoken words of dialogue per ${clip}s scene (conversational pace), with clear action/blocking timed across the full clip in animationPrompt.
+- Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Different speakers can feel different things in the same scene. Do not print the emotion inside the spoken line.
+- animationPrompt must label each spoken line with its emotion: "Dialogue (angry): Name: line".
 - Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for dialogue speaker labels inside animationPrompt where practical.
 - Quality keyword: include the exact phrase "ultra realistic" in every imagePrompt and animationPrompt (and thumbnailPrompt when writing one).
 ${
@@ -554,7 +563,7 @@ export function composeChannelStyles(
   }
   if (existingWriting) voice.push(`Writing style notes: ${existingWriting}`);
   voice.push(
-    `Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. Keep publish titles, descriptions, tags, and on-screen captions in ${lang}.`,
+    `Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. Keep publish descriptions, tags, and on-screen captions in ${lang}. Publish titles follow the LANGUAGE POLICY title-language rules.`,
   );
   if (titleTemplate) {
     voice.push(`Default title template pattern: ${titleTemplate}`);
@@ -617,9 +626,9 @@ export function composeChannelStyles(
   sections.push(
     [
       '## Operating checklist',
-      '- Ideas and story drafts: English, on-niche, format-fit, hook-first.',
+      '- Idea titles follow the title-language rules; idea angle/hook/rationale and story drafts stay English, on-niche, format-fit, hook-first.',
       `- Scripts / narration / dialogue: match presentation, pacing, and tone; speak ${lang}.`,
-      `- On-screen text, publish titles, descriptions, and tags: ${lang}; follow templates and caption style when set.`,
+      `- On-screen text, publish descriptions, and tags: ${lang}; publish titles follow the title-language rules; follow templates and caption style when set.`,
       '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language.',
       '- Tags: discoverable, niche-relevant, no spam stuffing.',
       '- Thumbnails & animationPrompts: obey visual + animation guideline sections.',
@@ -685,6 +694,8 @@ export interface ChannelStyleFields {
   thumbnailReferencePrompt?: string | null;
   /** Owner animation / video-generation guidelines for scene animationPrompts. */
   animationReferencePrompt?: string | null;
+  /** Channel Voice-tab fallback emotion when a spoken line has no situation tag. */
+  ttsEmotion?: TtsEmotion | null;
 }
 
 /**
@@ -825,8 +836,9 @@ export function formatOurChannelAboutBlock(
   }
   if (profile?.language?.trim()) {
     const lang = languageDisplayName(profile.language);
+    lines.push(formatIdeaTitleLanguageRules(profile.language));
     lines.push(
-      `Idea language: English. Audience language for later voiceover, dialogue, on-screen text, and publish metadata: ${lang}.`,
+      `Audience language for later voiceover, dialogue, on-screen text, and publish metadata: ${lang}.`,
     );
   }
   if (answers.avoid.trim()) {
@@ -870,6 +882,7 @@ export function formatChannelStyleBlock(profile: ChannelStyleFields | null | und
   if (profile.narrationStyle?.trim()) {
     parts.push(`Narration / voiceover style: ${profile.narrationStyle.trim()}`);
   }
+  parts.push(formatNarrationEmotionBlock(profile.ttsEmotion));
   if (profile.thumbnailReferencePrompt?.trim()) {
     parts.push(
       `Thumbnail reference style (match when writing thumbnail prompts):\n${profile.thumbnailReferencePrompt.trim()}`,
@@ -891,19 +904,24 @@ export function withChannelStyle(
   profile: ChannelStyleFields | null | undefined,
 ): string {
   const block = formatChannelStyleBlock(profile);
-  if (!block) return systemPrompt;
-  return `${systemPrompt.trim()}\n\n${block}`;
+  if (block) return `${systemPrompt.trim()}\n\n${block}`;
+  return `${systemPrompt.trim()}\n\n---\n${formatNarrationEmotionBlock()}`;
 }
 
 /** Stable-ish integer for AI cache styleVersion from style-related fields. */
 export function styleVersionFromProfile(profile: ChannelStyleFields | null | undefined): number {
-  if (!profile) return 1;
+  const emotionRev = `speechEmotion:${SPEECH_EMOTION_RULES_REV}`;
+  if (!profile) {
+    return (Math.abs(SPEECH_EMOTION_RULES_REV) % 2_000_000_000) + 2;
+  }
   const raw = [
     profile.masterPrompt ?? '',
     profile.writingStyle ?? '',
     profile.narrationStyle ?? '',
     profile.language ?? '',
+    profile.ttsEmotion ?? '',
     `langPolicy:${OUTPUT_LANGUAGE_POLICY_REV}`,
+    emotionRev,
     formatOutputLanguagePolicy(profile.language),
     profile.thumbnailReferencePrompt ?? '',
     profile.animationReferencePrompt ?? '',

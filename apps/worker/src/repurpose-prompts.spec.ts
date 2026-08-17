@@ -68,11 +68,19 @@ describe('repurposePromptVersion', () => {
 });
 
 describe('metadata prompt language', () => {
-  it('asks for publish copy in the selected language', () => {
+  it('asks for Hindi Hinglish titles and Hindi description/tags', () => {
     const prompt = defaultMetadataPrompt('YOUTUBE', 'hi');
     expect(prompt).toContain('Hindi');
-    expect(prompt).toContain('title, description, tags');
+    expect(prompt).toContain('mix Hindi (Devanagari) and English');
+    expect(prompt).toContain('Write description, tags, and keywords in Hindi');
     expect(prompt).toContain('LANGUAGE POLICY');
+  });
+
+  it('asks for Roman Urdu titles and Urdu description/tags', () => {
+    const prompt = defaultMetadataPrompt('YOUTUBE', 'ur');
+    expect(prompt).toContain('Roman Urdu');
+    expect(prompt).toContain('No Arabic/Urdu script');
+    expect(prompt).toContain('Write description, tags, and keywords in Urdu');
   });
 
   it('requires a YouTube tags array separate from description hashtags', () => {
@@ -264,5 +272,32 @@ describe('repurpose schemas', () => {
       ],
     });
     expect(parsed.variants).toHaveLength(4);
+  });
+
+  it('accepts per-line situation emotion on narration lines', () => {
+    const parsed = narrationRewriteOutputSchema.parse({
+      variants: [
+        {
+          id: 'explainer',
+          script: 'They lost everything that night.',
+          lines: [
+            {
+              startSec: 0,
+              endSec: 4,
+              text: 'They lost everything that night.',
+              emotion: 'sad',
+            },
+          ],
+        },
+      ],
+    });
+    expect(parsed.variants?.[0]?.lines?.[0]?.emotion).toBe('sad');
+  });
+
+  it('asks the narration prompt to tag each line emotion from the situation', () => {
+    const prompt = defaultNarrationRewritePrompt('en');
+    expect(prompt).toContain('"emotion"');
+    expect(prompt).toContain('beat\'s situation');
+    expect(prompt).toContain('Do not print the emotion');
   });
 });

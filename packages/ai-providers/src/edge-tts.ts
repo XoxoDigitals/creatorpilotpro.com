@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
-import { TaskType } from '@scp/shared';
+import { mergeEmotionProsody, parseTtsEmotion, TaskType } from '@scp/shared';
 import { isResolvedBinaryPath, resolveCliBinary } from '@scp/shared/bin';
 import type { AIProvider, AIRequest, AIResult, AIErrorClass, PooledKey } from './types.js';
 
@@ -39,6 +39,8 @@ export interface EdgeSynthOptions {
   rate?: string;
   pitch?: string;
   volume?: string;
+  /** Per-utterance speaking emotion (merged into rate/pitch). */
+  emotion?: string;
   /** When set, also write VTT/SRT beside the media and return parsed timings. */
   writeSubtitles?: boolean;
   /** Output directory; defaults to a temp dir cleaned by the caller. */
@@ -493,6 +495,11 @@ export async function synthesizeWithEdgeTts(
   }
 
   const voice = options.voice?.trim() || DEFAULT_VOICE;
+  const emotion = parseTtsEmotion(options.emotion);
+  const prosody = mergeEmotionProsody(
+    { rate: options.rate, pitch: options.pitch },
+    emotion,
+  );
   const ownedTemp = !options.outDir;
   const outDir = options.outDir ?? (await mkdtemp(join(tmpdir(), 'scp-edge-')));
   await mkdir(outDir, { recursive: true });
@@ -512,8 +519,8 @@ export async function synthesizeWithEdgeTts(
     '--write-media',
     mediaPath,
   ];
-  if (options.rate) args.push('--rate', options.rate);
-  if (options.pitch) args.push('--pitch', options.pitch);
+  if (prosody.rate) args.push('--rate', prosody.rate);
+  if (prosody.pitch) args.push('--pitch', prosody.pitch);
   if (options.volume) args.push('--volume', options.volume);
   if (options.writeSubtitles !== false) {
     args.push('--write-subtitles', subtitlePath);
@@ -585,6 +592,7 @@ export class EdgeTtsProvider implements AIProvider {
     let rate: string | undefined;
     let pitch: string | undefined;
     let volume: string | undefined;
+    let emotion: string | undefined;
     let outDir: string | undefined;
     let basename = 'chunk';
     try {
@@ -593,6 +601,7 @@ export class EdgeTtsProvider implements AIProvider {
         rate?: string;
         pitch?: string;
         volume?: string;
+        emotion?: string;
         outDir?: string;
         basename?: string;
       };
@@ -602,6 +611,7 @@ export class EdgeTtsProvider implements AIProvider {
       if (typeof cfg.rate === 'string' && cfg.rate) rate = cfg.rate;
       if (typeof cfg.pitch === 'string' && cfg.pitch) pitch = cfg.pitch;
       if (typeof cfg.volume === 'string' && cfg.volume) volume = cfg.volume;
+      if (typeof cfg.emotion === 'string' && cfg.emotion) emotion = cfg.emotion;
       if (typeof cfg.outDir === 'string' && cfg.outDir) outDir = cfg.outDir;
       if (typeof cfg.basename === 'string' && cfg.basename) basename = cfg.basename;
     } catch {
@@ -614,6 +624,7 @@ export class EdgeTtsProvider implements AIProvider {
       rate,
       pitch,
       volume,
+      emotion,
       outDir: workDir,
       basename,
       writeSubtitles: true,

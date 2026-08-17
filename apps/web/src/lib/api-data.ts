@@ -1201,6 +1201,7 @@ function mapBrief(b: ApiProductionBrief): ProductionBrief {
             return {
               speaker: String(item.speaker ?? item.character ?? '').trim(),
               line: String(item.line ?? item.text ?? '').trim(),
+              emotion: String(item.emotion ?? item.mood ?? '').trim() || 'default',
             };
           })
           .filter((line) => line.line)
@@ -1210,8 +1211,12 @@ function mapBrief(b: ApiProductionBrief): ProductionBrief {
             .map((line) => {
               const match = line.match(/^\s*([^:]{1,60}):\s*(.+)$/);
               return match
-                ? { speaker: (match[1] ?? '').trim(), line: (match[2] ?? '').trim() }
-                : { speaker: '', line: line.trim() };
+                ? {
+                    speaker: (match[1] ?? '').trim(),
+                    line: (match[2] ?? '').trim(),
+                    emotion: 'default',
+                  }
+                : { speaker: '', line: line.trim(), emotion: 'default' };
             })
             .filter((line) => line.line)
         : [];

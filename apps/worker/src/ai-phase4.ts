@@ -30,6 +30,7 @@ import {
   isDocumentaryVoiceoverPackage,
   isNarrationVoiceoverPackage,
   languageDisplayName,
+  formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
   DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT,
@@ -47,8 +48,12 @@ import {
   joinProductionBriefEditingExtras,
   splitProductionBriefEditingExtras,
   needsEnglishVoiceoverSummary,
+  parseTtsEmotion,
+  ttsEmotionFromVoiceSettings,
+  TTS_EMOTIONS,
   type AiPerformanceInsights,
   type ChannelStyleFields,
+  type TtsEmotion,
 } from '@scp/shared';
 import { decryptSecret, loadMasterKey } from '@scp/shared/crypto';
 import {
@@ -280,6 +285,7 @@ async function loadChannelStyle(
     styleProfile: profile.styleProfile,
     thumbnailReferencePrompt: profile.thumbnailReferencePrompt,
     animationReferencePrompt: profile.animationReferencePrompt,
+    ttsEmotion: ttsEmotionFromVoiceSettings(profile.voiceSettings),
   };
 }
 
@@ -623,7 +629,7 @@ export async function runIdeaGeneration(
 - Honor OUR channel about/niche and performance memory when choosing angles and hooks.`
     : '';
   const ideaOutputContract = `Return a JSON array of up to ${targetCount} ideas, each with {title, angle, hook, rationale, category, viralScore}.
-- Every title SHOULD target ${IDEA_TITLE_TARGET_MIN}-${IDEA_TITLE_TARGET_MAX} characters INCLUDING spaces (aim for catchy clickbait length). Stay within ${IDEA_TITLE_ACCEPTED_MIN}-${IDEA_TITLE_ACCEPTED_MAX} characters.
+- Every title SHOULD target ${IDEA_TITLE_TARGET_MIN}-${IDEA_TITLE_TARGET_MAX} characters INCLUDING spaces (aim for catchy clickbait length). Stay within ${IDEA_TITLE_ACCEPTED_MIN}-${IDEA_TITLE_ACCEPTED_MAX} characters. Length counts every character including spaces for mixed-script titles too.
 - Make every title compelling, specific, and curiosity-driven/clickable while remaining natural language. Avoid vague, generic, sensational, repetitive, or spammy nonsense.
 - Stay on OUR CHANNEL niche, audience, and brand. Use REFERENCE CHANNELS only for headline FORMAT, pacing, hooks, and proven topic shapes.
 - Match the same headline FORMAT used by the strongest competitor-channel titles: mirror their structure (question, reveal, mystery, list/number, engineering/history breakdown, etc.), pacing, and specificity.
@@ -634,7 +640,7 @@ export async function runIdeaGeneration(
 - viralScore MUST evaluate the complete idea. Title quality contributes 30/100 points: specificity (10), curiosity/click appeal (10), and channel/reference fit plus natural wording (10). Weak or generic titles cannot receive a high score.
 - Return JSON only. Do not use markdown code fences.
 - Never use em dashes (—) in titles or any other field. Use commas, colons, parentheses, or plain hyphens instead.
-- Write every idea title, angle, hook, and rationale in English. Do not translate ideas into the channel audience language.`;
+- ${formatIdeaTitleLanguageRules(channelStyle?.language)}`;
   const documentaryIdeaRules = documentaryIdeas ? `\n${formatDocumentaryIdeaRules()}` : '';
   const refChannelNames = refChannels.map((ch) => ch.name).filter(Boolean);
   const referenceBlock = [
@@ -693,7 +699,7 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
     styleVersion: styleVersionFromProfile(channelStyle),
     // Contract marker busts caches that used the old hard length-refine schema.
     inputContentHash: hashText(
-      `idea-title-contract-v6:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
+      `idea-title-contract-v7:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
     ),
   });
 
@@ -817,6 +823,14 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
 const dialogueLineSchema = z.object({
   speaker: z.string(),
   line: z.string(),
+  emotion: z.string().optional(),
+});
+
+const narrationLineEmotionSchema = z.object({
+  text: z.string(),
+  emotion: z.string().optional(),
+  startSec: z.number().optional(),
+  endSec: z.number().optional(),
 });
 
 const characterPromptSchema = z.object({
@@ -836,6 +850,7 @@ export const productionBriefOutputSchema = z.object({
   thumbnailNegativePrompt: z.string().optional(),
   thumbnailPromptVariants: z.array(z.string()).optional(),
   narrationScript: z.string(),
+  narrationLines: z.array(narrationLineEmotionSchema).optional(),
   sceneBreakdown: z.array(
     z.object({
       sceneIndex: z.number().int().positive(),
@@ -863,7 +878,19 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
 }
 
-function normalizeDialogue(value: unknown): Array<{ speaker: string; line: string }> {
+function normalizeNarrationLines(value: unknown): Array<{ text: string; emotion: TtsEmotion }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+      const spoken = text(row.text ?? row.line ?? row.narration);
+      if (!spoken) return null;
+      return { text: spoken, emotion: parseTtsEmotion(row.emotion ?? row.mood ?? row.tone) };
+    })
+    .filter((row): row is { text: string; emotion: TtsEmotion } => row != null);
+}
+
+function normalizeDialogue(value: unknown): Array<{ speaker: string; line: string; emotion: TtsEmotion }> {
   if (Array.isArray(value)) {
     return value
       .map((entry) => {
@@ -871,6 +898,7 @@ function normalizeDialogue(value: unknown): Array<{ speaker: string; line: strin
         return {
           speaker: text(row.speaker ?? row.character ?? row.name),
           line: text(row.line ?? row.text),
+          emotion: parseTtsEmotion(row.emotion ?? row.mood ?? row.tone),
         };
       })
       .filter((line) => line.line);
@@ -882,14 +910,18 @@ function normalizeDialogue(value: unknown): Array<{ speaker: string; line: strin
     .map((line) => {
       const match = line.match(/^\s*([^:]{1,60}):\s*(.+)$/);
       return match
-        ? { speaker: (match[1] ?? '').trim(), line: (match[2] ?? '').trim() }
-        : { speaker: '', line };
+        ? {
+            speaker: (match[1] ?? '').trim(),
+            line: (match[2] ?? '').trim(),
+            emotion: 'default' as TtsEmotion,
+          }
+        : { speaker: '', line, emotion: 'default' as TtsEmotion };
     })
     .filter((line) => line.line);
 }
 
 function dialogueBlock(
-  lines: Array<{ speaker: string; line: string }>,
+  lines: Array<{ speaker: string; line: string; emotion?: TtsEmotion | string }>,
   characters?: Array<{
     name: string;
     appearance: string;
@@ -901,13 +933,16 @@ function dialogueBlock(
 ): string {
   return lines
     .map((line) => {
+      const emotion = parseTtsEmotion(line.emotion);
       const speaker = line.speaker || 'Speaker';
-      if (!expandSpeakers || !characters?.length) return `${speaker}: ${line.line}`;
+      if (!expandSpeakers || !characters?.length) {
+        return `Dialogue (${emotion}): ${speaker}: ${line.line}`;
+      }
       const match = characters.find(
         (character) => character.name.toLowerCase() === speaker.toLowerCase(),
       );
       const label = match ? formatCharacterReference(match) : speaker;
-      return `${label}: ${line.line}`;
+      return `Dialogue (${emotion}): ${label}: ${line.line}`;
     })
     .join('\n');
 }
@@ -1055,6 +1090,9 @@ export function normalizeProductionBriefOutput(
   if (documentary && narrationScript) {
     narrationScript = narrationScript.replace(/\u2014/g, '-');
   }
+  const narrationLines = normalizeNarrationLines(
+    brief.narrationLines ?? brief.lines ?? brief.spokenLines,
+  );
 
   let thumbnailPrompt = text(brief.thumbnailPrompt);
   if (drama && thumbnailPrompt) {
@@ -1087,6 +1125,7 @@ export function normalizeProductionBriefOutput(
     thumbnailPromptVariants: documentary ? thumbnailPromptVariants : text(rawVariants),
     universalVideoPrompt: documentary ? DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT : '',
     narrationScript,
+    narrationLines,
     scenes,
     characters,
     editingInstructions: text(brief.editingInstructions),
@@ -1166,6 +1205,7 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
   "thumbnailNegativePrompt": string,
   "thumbnailPromptVariants": [string],
   "narrationScript": string,
+  "narrationLines": [{ "text": string, "emotion": "${TTS_EMOTIONS.join('|')}" }],
   "characters": [{
     "name": string,
     "appearance": string,
@@ -1195,7 +1235,7 @@ Do NOT include sceneBreakdown, imagePrompt, or animationPrompt yet — visuals a
       "animationPrompt": string,
       "negativePrompt": string,
       "animationNegativePrompt": string,
-      "dialogue": [{"speaker": string, "line": string}]
+      "dialogue": [{"speaker": string, "line": string, "emotion": "${TTS_EMOTIONS.join('|')}"}]
     }
   ],
   "characters": [{
@@ -1220,12 +1260,13 @@ ${formatFernNarrationRules(videoDurationSec)}
         : `Presentation mode is VOICEOVER NARRATION (audio-first pipeline).
 - narrationScript must be one complete, cohesive narration covering the full ${videoDurationSec} seconds (roughly ${Math.round(videoDurationSec * 2.3)}-${Math.round(videoDurationSec * 2.8)} spoken words).
 - Open with a HOOKY first sentence. If the idea/hook/angle is about a person (or characters[] will include a notable person), write like a compelling host: "this person from [place] is famous for…" / "you've seen this face — here's why they matter…" — specific to the idea, never a generic template, never invent biography.
+- Also return narrationLines: one spoken sentence per item as { text, emotion }. emotion is chosen from THAT sentence's situation (${TTS_EMOTIONS.join(', ')}), not one mood for the whole video. Write wording TTS can deliver (rhythm/punctuation). Do not name the emotion or put stage directions in spoken text. narrationScript must equal narrationLines[].text concatenated in order.
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
 - Do not invent scene image/video prompts yet.`
       : presentation === 'dialogue'
         ? `Presentation mode is STORYTELLING / DIALOGUE.
 - narrationScript must be an empty string.
-- Every spoken line must be in its scene's dialogue array with the exact stable character name and must ALSO appear, clearly labeled "Dialogue: Speaker: line", inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
+- Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. emotion is chosen from THAT line's situation (${TTS_EMOTIONS.join(', ')}). The line must ALSO appear, labeled "Dialogue (emotion): Speaker: line", inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
 - animationPrompt must combine camera, motion, action, timing, and exact dialogue so it can be pasted directly into a video-generation tool.
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s).
 - Dialogue language: ALL spoken lines MUST be in ${languageDisplayName(channelLanguage)}.`
@@ -1240,6 +1281,7 @@ ${formatFernNarrationRules(videoDurationSec)}
             : `Presentation mode is MIXED VOICEOVER + DIALOGUE (audio-first for narrator).
 - narrationScript contains only the narrator portions, cohesive across the full ${videoDurationSec} seconds (in ${languageDisplayName(channelLanguage)}).
 - Open narrator portions with a hooky person/subject line when the idea is about a notable person (same "this person from [place] is famous for…" energy), then continue the story.
+- Also return narrationLines: one narrator sentence per item as { text, emotion } from THAT sentence's situation (${TTS_EMOTIONS.join(', ')}). Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
 - Note any character dialogue ideas inside storySummary or editingInstructions for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`
@@ -1273,7 +1315,8 @@ ${formatFernNarrationRules(videoDurationSec)}
 
 ${packageOutputContract}
 ${languageRules}
-- videoTitle and videoDescription are publish-facing: write them in ${languageDisplayName(channelLanguage)}.
+- videoTitle is publish-facing. ${formatIdeaTitleLanguageRules(channelLanguage)}
+- videoDescription is publish-facing: write it in ${languageDisplayName(channelLanguage)}.
 - storySummary and character appearance/wardrobe/personality stay in English.
 - narrationScript (voiceover) and dialogue[].line are spoken output: write them in ${languageDisplayName(channelLanguage)}.
 - imagePrompt, animationPrompt, and thumbnailPrompt stay in English except quoted on-screen text and spoken lines, which must be in ${languageDisplayName(channelLanguage)}.
@@ -1351,6 +1394,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
             thumbnailNegativePrompt: z.string().optional(),
             thumbnailPromptVariants: z.array(z.string()).optional(),
             narrationScript: z.string(),
+            narrationLines: z.array(narrationLineEmotionSchema).optional(),
             characters: z.array(characterPromptSchema),
             editingInstructions: z.string(),
             targetDurationSec: z.number().positive(),
@@ -1416,7 +1460,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
         voiceoverLocalPath: null,
         packageStage: 'SCRIPT',
         packageStageError: null,
-        timedTranscript: [],
+        timedTranscript: (normalized.narrationLines ?? []) as any,
         transcriptLocalPath: null,
         voiceIdUsed: null,
       },
@@ -1708,7 +1752,7 @@ Return JSON only:
     "animationPrompt": string,
     "negativePrompt": string,
     "animationNegativePrompt": string,
-    "dialogue": [{"speaker": string, "line": string}]
+    "dialogue": [{"speaker": string, "line": string, "emotion": "${TTS_EMOTIONS.join('|')}"}]
   }],
   "editingInstructions": string
 }
@@ -1725,7 +1769,7 @@ ${languageRules}
 - imagePrompt and animationPrompt must match that narration segment only — no unrelated dialogue for pure voiceover.
 ${
   presentation === 'mixed'
-    ? `- Mixed mode: narrator text stays in narrationSegment; put any character dialogue in dialogue[] AND embed it in animationPrompt labeled by speaker (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}.`
+    ? `- Mixed mode: narrator text stays in narrationSegment; put any character dialogue in dialogue[] as {speaker, line, emotion} (emotion from that line's situation: ${TTS_EMOTIONS.join(', ')}) AND embed it in animationPrompt labeled "Dialogue (emotion): Speaker: line" (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}.`
     : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.'
 }
 ${
@@ -2082,6 +2126,7 @@ export async function runDramaEpisode(episodeId: string, _boss: PgBoss): Promise
 ${formatOutputLanguagePolicy(channelStyle?.language)}
 - summary, recap, and productionNotes stay in English.
 - script and narration are spoken output: write them in ${lang}.
+- In script, tag every spoken line with a situation-based emotion from ${TTS_EMOTIONS.join(', ')}, e.g. "HINA (angry): Get out." Pick emotion from that moment only — not one mood for the episode. Do not put the emotion word inside the spoken words.
 - scenePrompts description/imagePrompt/videoPrompt stay in English; quote spoken dialogue and on-screen text in ${lang}.`,
     channelStyle,
   );
