@@ -5,6 +5,7 @@ import {
   contentLanguageSelectOptions,
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
+  formatSpokenLanguageRules,
   isEnglishContentLanguage,
   languageDisplayName,
   resolveContentLanguage,
@@ -87,7 +88,13 @@ describe('content languages', () => {
     expect(policy).toContain('Roman Urdu');
     expect(policy).toContain('topicSummary');
     expect(policy).not.toContain('Ideas (title, angle, hook, rationale) MUST be written in English');
-    expect(policy).toContain('Voiceover / narrationScript: write EVERY spoken narrator word in Urdu');
+    expect(policy).toContain('Voiceover / narrationScript / narrationLines');
+    expect(policy).toContain('Urdu (Nastaliq/Arabic)');
+    expect(policy).toContain('not Roman Urdu');
+    expect(formatSpokenLanguageRules('hi')).toContain('Devanagari');
+    expect(formatSpokenLanguageRules('hi')).toContain('not Roman/Latin Hindi');
+    expect(formatSpokenLanguageRules('de')).toContain('German');
+    expect(formatSpokenLanguageRules('de')).toContain('umlauts');
   });
 
   it('formats idea title language rules per channel language', () => {

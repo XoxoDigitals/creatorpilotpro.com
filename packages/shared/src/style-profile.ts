@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
+  formatSpokenLanguageRules,
   languageDisplayName,
   OUTPUT_LANGUAGE_POLICY_REV,
 } from './content-languages.js';
@@ -25,6 +26,8 @@ export type QuestionType = 'single' | 'multi' | 'text';
 export interface StyleQuestionOption {
   value: string;
   label: string;
+  /** Short definition shown under the chip label. */
+  hint?: string;
 }
 
 export interface StyleQuestion {
@@ -54,14 +57,40 @@ export const styleProfileAnswersSchema = z.object({
   captionStyle: z.string().default(''),
   avoid: z.string().default(''),
   extraNotes: z.string().default(''),
+  /** Owner-written or AI-analyzed visual/editing DNA. */
+  customVisualStyle: z.string().default(''),
 });
 export type StyleProfileAnswers = z.infer<typeof styleProfileAnswersSchema>;
+
+export const LOCKED_CHARACTER_LOOKS = ['cartoon_2d', 'cartoon_3d', 'ultra_realistic'] as const;
+export type LockedCharacterLook = (typeof LOCKED_CHARACTER_LOOKS)[number];
+
+export const LOCKED_CHARACTER_LOOK_LABELS: Record<LockedCharacterLook, string> = {
+  cartoon_2d: '2D cartoon',
+  cartoon_3d: '3D cartoon',
+  ultra_realistic: 'Ultra realistic',
+};
+
+export const lockedCharacterSchema = z.object({
+  name: z.string().default(''),
+  appearance: z.string().default(''),
+  wardrobe: z.string().default(''),
+  age: z.string().default(''),
+  personality: z.string().default(''),
+  consistencyDetails: z.string().default(''),
+  look: z.enum(LOCKED_CHARACTER_LOOKS).default('ultra_realistic'),
+});
+export type LockedCharacter = z.infer<typeof lockedCharacterSchema>;
+
+export const emptyLockedCharacter = (): LockedCharacter => lockedCharacterSchema.parse({});
 
 export const styleProfileSchema = z.object({
   version: z.literal(STYLE_PROFILE_VERSION).default(STYLE_PROFILE_VERSION),
   answers: styleProfileAnswersSchema.default({}),
   /** When true, freeform masterPrompt (and style fields) are owner-authored. */
   masterPromptOverridden: z.boolean().default(false),
+  /** Recurring cast reused in every video (cartoon or ultra-realistic). */
+  lockedCharacters: z.array(lockedCharacterSchema).default([]),
 });
 export type StyleProfile = z.infer<typeof styleProfileSchema>;
 
@@ -136,6 +165,7 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
   {
     id: 'formats',
     label: 'What content formats do you make?',
+    help: 'Documentary is the story/VO format. It does not lock the 10s paper-collage assembly animation — pick AI paper collage under Visuals for that.',
     type: 'multi',
     required: true,
     options: [
@@ -153,38 +183,99 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
   },
   {
     id: 'visualStyles',
-    label: 'Visual / editing style',
+    label: 'AI scene look',
+    help: 'How each generated still should look. Everything is AI — no stock, screen recordings, or live B-roll. Pick one or two that match the channel.',
     type: 'multi',
     required: true,
     options: [
-      { value: 'fast_motion_graphics', label: 'Fast-paced motion graphics (recommended)' },
-      { value: '2d_cartoon', label: '2D cartoon / illustrated' },
-      { value: '3d_cartoon', label: '3D cartoon / CGI characters' },
-      { value: 'fast_cuts', label: 'Fast cuts' },
-      { value: 'cinematic', label: 'Cinematic / slow' },
-      { value: 'motion_graphics', label: 'Motion graphics' },
-      { value: 'paper_collage', label: 'Documentary paper collage' },
-      { value: 'stock_collage', label: 'Stock footage collage' },
-      { value: 'broll_doc', label: 'Documentary B-roll' },
-      { value: 'ai_visuals', label: 'AI-generated visuals' },
-      { value: 'screen_recording', label: 'Screen recording' },
-      { value: 'minimal_stills', label: 'Minimal / static images' },
-      { value: 'green_screen', label: 'Green screen' },
+      {
+        value: 'fast_motion_graphics',
+        label: 'Fast AI graphics (recommended)',
+        hint: 'Icons, maps, charts, and infographic hits generated as AI scenes — rapid, punchy, not live footage.',
+      },
+      {
+        value: '2d_cartoon',
+        label: '2D cartoon scenes',
+        hint: 'Illustrated / cel characters and worlds. Flat or painterly, consistent cast, not photoreal.',
+      },
+      {
+        value: '3d_cartoon',
+        label: '3D cartoon scenes',
+        hint: 'Stylized CGI characters and sets. Toy-like or Pixar-ish, not live-action skin.',
+      },
+      {
+        value: 'ultra_realistic',
+        label: 'Ultra realistic',
+        hint: 'Photoreal people and places: skin texture, real-world lighting, camera grain — still 100% AI, not stock.',
+      },
+      {
+        value: 'cinematic',
+        label: 'Photoreal cinematic AI',
+        hint: 'Generated live-action look: film lighting, depth, camera language — still 100% AI frames.',
+      },
+      {
+        value: 'paper_collage',
+        label: 'AI paper collage',
+        hint: 'Locks every clip to the 10s assemble-on-table stop-motion prompt (paper slides in, then holds). Do not pick this if you want 3D camera, fast cuts, or cartoon motion.',
+      },
+      {
+        value: 'motion_graphics',
+        label: 'Clean AI explainer graphics',
+        hint: 'Smoother infographic scenes — diagrams and lower-thirds, less frantic than fast graphics.',
+      },
+      {
+        value: 'fast_cuts',
+        label: 'Rapid AI shot changes',
+        hint: 'New generated shot every 1–2 seconds. Energy comes from cutting, not from stock montage.',
+      },
     ],
   },
   {
     id: 'animationStyle',
-    label: 'Animation style (if any)',
+    label: 'AI animation / motion',
+    help: 'How the video model should move each generated still. One house motion language for every clip.',
     type: 'single',
     options: [
-      { value: '2d_cartoon', label: '2D cartoon animation' },
-      { value: '3d_cartoon', label: '3D cartoon / CGI animation' },
-      { value: 'none', label: 'None / live footage' },
-      { value: '2d_motion', label: '2D motion graphics' },
-      { value: 'kinetic_type', label: 'Kinetic typography' },
-      { value: 'whiteboard', label: 'Whiteboard / sketch' },
-      { value: '3d', label: '3D / CGI look' },
-      { value: 'stop_motion', label: 'Stop-motion feel' },
+      {
+        value: 'ai_scene',
+        label: 'AI scene motion (recommended)',
+        hint: 'Camera + subject motion on generated frames: punch-ins, motivated pans, environment life.',
+      },
+      {
+        value: '2d_cartoon',
+        label: '2D cartoon animation',
+        hint: 'Pose-to-pose illustrated motion, smear frames, snappy holds. Same 2D cast every scene.',
+      },
+      {
+        value: '3d_cartoon',
+        label: '3D cartoon animation',
+        hint: 'Rigged CGI character motion, squash/stretch on impacts, kinetic camera. Not photoreal.',
+      },
+      {
+        value: '2d_motion',
+        label: '2D motion graphics',
+        hint: 'Shapes, maps, and icons fly in, stamp, and whoosh. Graphic, not character-acted.',
+      },
+      {
+        value: 'kinetic_type',
+        label: 'Kinetic type',
+        hint: 'Words slam on, track the beat, and punch with the VO. Typography is the motion.',
+      },
+      {
+        value: '3d',
+        label: 'Photoreal 3D camera',
+        hint: 'Dolly / orbit / push through a generated 3D space. Cinematic camera, AI environment.',
+      },
+      {
+        value: 'whiteboard',
+        label: 'AI whiteboard',
+        hint: 'Sketch lines draw themselves; diagrams assemble on a board. Generated, not a real classroom.',
+      },
+      {
+        value: 'stop_motion',
+        label: 'Stop-motion AI',
+        hint: 'Stepped holds and handmade cadence on whatever scene look you picked. Does not by itself lock the 10s paper-collage assembly — that needs AI paper collage.',
+      },
     ],
   },
   {
@@ -295,7 +386,7 @@ export const STYLE_QUESTION_SECTIONS: StyleQuestionSection[] = [
   {
     id: 'visuals',
     title: 'Visuals & animation',
-    help: 'Look and motion language. Fast-paced graphics is recommended; 2D/3D cartoon are first-class styles.',
+    help: 'AI stills + AI motion only. Pick chips, write your own style, or analyze a reference video. No stock, screen recordings, or live B-roll.',
     questionIds: ['visualStyles', 'animationStyle'],
   },
   {
@@ -319,9 +410,27 @@ function answersUseCartoon(answers: StyleProfileAnswers): boolean {
   return answers.visualStyles.some((value) => CARTOONISH_VALUES.has(value));
 }
 
+function lockedCastUsesCartoon(characters: LockedCharacter[]): boolean {
+  return characters.some(
+    (character) =>
+      character.name.trim() && (character.look === 'cartoon_2d' || character.look === 'cartoon_3d'),
+  );
+}
+
 /** True when the brand package is 2D/3D cartoon (or cartoon-ish 2D motion). */
 export function isCartoonPackage(styleProfile: unknown): boolean {
-  return answersUseCartoon(parseStyleProfile(styleProfile).answers);
+  const parsed = parseStyleProfile(styleProfile);
+  return answersUseCartoon(parsed.answers) || lockedCastUsesCartoon(parsed.lockedCharacters);
+}
+
+/** Photoreal "ultra realistic" look when the channel is not a cartoon package. */
+export function isUltraRealisticPackage(styleProfile: unknown): boolean {
+  if (isCartoonPackage(styleProfile)) return false;
+  const parsed = parseStyleProfile(styleProfile);
+  if (parsed.answers.visualStyles.includes('ultra_realistic')) return true;
+  return parsed.lockedCharacters.some(
+    (character) => character.look === 'ultra_realistic' && character.name.trim(),
+  );
 }
 
 /** Drop bare cartoon/anime tokens from a comma-separated negative list. */
@@ -409,6 +518,67 @@ export function formatCharacterReference(character: CharacterReferenceInput): st
   // Avoid `Name (Name (...))` when the sheet already stored an expanded string.
   if (descriptor.startsWith(`${name} (`)) return descriptor;
   return `${name} (${descriptor})`;
+}
+
+export function lockedCharacterLookLabel(look: LockedCharacterLook): string {
+  return LOCKED_CHARACTER_LOOK_LABELS[look] ?? look;
+}
+
+export function namedLockedCharacters(
+  characters?: LockedCharacter[] | null,
+): LockedCharacter[] {
+  return (characters ?? []).filter((character) => character.name.trim());
+}
+
+/** Prompt block forcing the same cast in every video. */
+export function formatLockedCharactersPrompt(
+  characters?: LockedCharacter[] | null,
+): string {
+  const named = namedLockedCharacters(characters);
+  if (!named.length) return '';
+  const lines = named.map((character, index) => {
+    const ref = formatCharacterReference(character);
+    const look = lockedCharacterLookLabel(character.look);
+    const personality = character.personality.trim();
+    const extra = character.consistencyDetails.trim();
+    return `${index + 1}. ${ref} — LOOK: ${look}${personality ? `. Personality: ${personality}` : ''}${extra ? `. Lock: ${extra}` : ''}.`;
+  });
+  return [
+    'CHARACTER LOCK (mandatory — same cast in EVERY video on this channel):',
+    ...lines,
+    'Reuse these exact people/mascots in characters[] and in every imagePrompt/animationPrompt.',
+    'Do not rename, recast, age-up, or change face, body, wardrobe, or look unless Brand settings are updated.',
+    'You may add one-off extras only when the story needs a new person; never replace a locked character.',
+  ].join('\n');
+}
+
+export function mergeLockedCharactersIntoCast(
+  generated: CharacterReferenceInput[],
+  locked?: LockedCharacter[] | null,
+): CharacterReferenceInput[] {
+  const named = namedLockedCharacters(locked);
+  if (!named.length) return generated;
+  const byName = new Map(
+    generated.map((character) => [(character.name ?? '').trim().toLowerCase(), character]),
+  );
+  const merged = named.map((lock) => {
+    const existing = byName.get(lock.name.trim().toLowerCase());
+    const lookNote = `${lockedCharacterLookLabel(lock.look)} look — identical face, body, and wardrobe in every video`;
+    return {
+      name: lock.name.trim(),
+      appearance: lock.appearance.trim() || existing?.appearance || '',
+      wardrobe: lock.wardrobe.trim() || existing?.wardrobe || '',
+      age: lock.age.trim() || existing?.age || '',
+      consistencyDetails: [lookNote, lock.consistencyDetails.trim(), existing?.consistencyDetails]
+        .filter(Boolean)
+        .join('. '),
+    };
+  });
+  const lockedNames = new Set(named.map((character) => character.name.trim().toLowerCase()));
+  const extras = generated.filter(
+    (character) => !lockedNames.has((character.name ?? '').trim().toLowerCase()),
+  );
+  return [...merged, ...extras];
 }
 
 /** Still-image artifacts for drama/dialogue (spoken dialogue allowed). */
@@ -579,6 +749,8 @@ export interface ComposeChannelStylesOptions {
   contentType?: string | null;
   /** Voice / TTS notes (provider, voice id, locale) when relevant to narration. */
   voiceNotes?: string | null;
+  /** Recurring cast reused in every video. */
+  lockedCharacters?: LockedCharacter[] | null;
 }
 
 function slugTag(raw: string): string {
@@ -672,11 +844,17 @@ function retentionCadenceLines(retentionStyle: string): string[] {
 
 function styleBlockForAnswers(answers: StyleProfileAnswers): string {
   const bits: string[] = [];
+  if (answers.customVisualStyle.trim()) {
+    bits.unshift(answers.customVisualStyle.trim().slice(0, 400));
+  }
   if (answers.visualStyles.includes('2d_cartoon') || answers.animationStyle === '2d_cartoon') {
     bits.push('2D cartoon / illustrated characters and worlds (NOT photoreal)');
   }
   if (answers.visualStyles.includes('3d_cartoon') || answers.animationStyle === '3d_cartoon') {
     bits.push('3D cartoon / CGI characters, stylized (NOT photoreal live-action)');
+  }
+  if (answers.visualStyles.includes('ultra_realistic')) {
+    bits.push('ultra realistic photoreal people and materials, real-world lighting, camera grain');
   }
   if (
     answers.visualStyles.includes('fast_motion_graphics') ||
@@ -693,8 +871,8 @@ function styleBlockForAnswers(answers: StyleProfileAnswers): string {
   const labeled = labelsFor('visualStyles', answers.visualStyles);
   const anim = labelFor('animationStyle', answers.animationStyle);
   if (labeled.length) bits.push(joinList(labeled));
-  if (anim && anim !== 'None / live footage') bits.push(anim);
-  return bits.filter(Boolean).join('; ') || 'fast-paced motion graphics (house default)';
+  if (anim && answers.animationStyle !== 'none') bits.push(anim);
+  return bits.filter(Boolean).join('; ') || 'fast-paced AI motion graphics (house default)';
 }
 
 function audioInPromptRule(presentation: string): string {
@@ -725,15 +903,18 @@ export function formatVisualPromptDna(answers: StyleProfileAnswers): string {
     a.animationStyle === '2d_motion';
   const closer = cartoon
     ? 'Keep cartoon/CGI look consistent. Do NOT add cartoon or anime to negatives.'
-    : 'Avoid blurry, watermark, burned-in subtitles, extra limbs, deformed face.';
+    : a.visualStyles.includes('ultra_realistic')
+      ? 'Include the exact phrase "ultra realistic". Avoid cartoon, anime, plastic skin, stock-photo look.'
+      : 'Avoid blurry, watermark, burned-in subtitles, extra limbs, deformed face.';
   return [
     'SCENE: one hero subject (~70% visual weight) + 2–3 supporting elements. One visual idea only — never a collage of unrelated beats.',
-    `STYLE: ${styleBlockForAnswers(a)}`,
+    `STYLE: ${a.customVisualStyle.trim() || styleBlockForAnswers(a)}`,
     'FRAMING: shot type, camera angle, lens feel.',
     'LIGHTING / MOOD: time of day, contrast, color grade.',
     'MOTION (animationPrompt): timed beats 0-2 / 2-4 / 4-6 / 6-8 for ~8s clips (scale if clip length differs). Universal motion language in the animation guidelines below.',
     `AUDIO-IN-PROMPT: ${audioInPromptRule(a.presentation)}`,
     `CLOSER / NEGATIVES: ${closer}`,
+    'SOURCE: every still and clip is AI-generated. Never call for stock footage, screen recordings, live B-roll, phone-camera plates, or green-screen composites.',
     fast
       ? 'Pace: snappy cuts, graphic punches, kinetic type, impact every 1–2s, no sleepy holds.'
       : a.pacing === 'calm'
@@ -753,21 +934,32 @@ export function composeDefaultAnimationDna(answers: StyleProfileAnswers): string
     '4-6s: complication, twist cue, or supporting element lands.',
     '6-8s: payoff, sting, or bridge into the next scene.',
   ];
+  if (a.customVisualStyle.trim()) {
+    lines.push(
+      'Owner/analyzed visual style is authoritative for look AND motion. Keep camera, cut rhythm, graphics, and easing consistent with that style.',
+    );
+  }
   if (a.visualStyles.includes('2d_cartoon') || a.animationStyle === '2d_cartoon') {
     lines.push(
-      '2D cartoon animation: pose-to-pose, clear silhouettes, smear frames on fast action, snappy holds. Not photoreal live-action.',
+      '2D cartoon animation: pose-to-pose, clear silhouettes, smear frames on fast action, snappy holds. Illustrated AI scenes, not photoreal live-action.',
     );
   } else if (a.visualStyles.includes('3d_cartoon') || a.animationStyle === '3d_cartoon') {
     lines.push(
       '3D cartoon / CGI: stylized characters, squash/stretch on impacts, kinetic camera, not photoreal skin.',
     );
-  } else if (a.visualStyles.includes('paper_collage')) {
+  } else if (a.visualStyles.includes('paper_collage') || a.animationStyle === 'stop_motion') {
     lines.push(
-      'Paper-collage motion: elements land as cutouts with paper-drag and stamp settles; no smooth CGI morphs.',
+      'Paper-collage / stop-motion AI: elements land as cutouts with paper-drag and stamp settles; no smooth CGI morphs.',
+    );
+  } else if (a.animationStyle === 'ai_scene' || a.visualStyles.includes('cinematic') || a.visualStyles.includes('ultra_realistic')) {
+    lines.push(
+      a.visualStyles.includes('ultra_realistic')
+        ? 'Ultra realistic AI scene motion: photoreal skin, real-world lighting, motivated camera. Never stock or live plates. Include "ultra realistic" in every prompt.'
+        : 'AI scene motion: generated environment + subject; punch-ins, motivated pans, light environmental life. Never stock or live plates.',
     );
   } else {
     lines.push(
-      'Fast-paced motion graphics (house default): snappy cuts, kinetic type, graphic punches, whooshes and impact hits. No sleepy locked holds.',
+      'Fast-paced AI motion graphics (house default): snappy cuts, kinetic type, graphic punches, whooshes and impact hits. No sleepy locked holds. No stock footage.',
     );
   }
   lines.push(
@@ -778,14 +970,16 @@ export function composeDefaultAnimationDna(answers: StyleProfileAnswers): string
 
 function audioModeSection(
   answers: StyleProfileAnswers,
-  lang: string,
+  language: string,
   extras: { existingNarration: string; voiceNotes: string; pacing: string; captions: string },
 ): string {
+  const lang = languageDisplayName(language);
   const mode = answers.presentation;
   const label = labelFor('presentation', mode) || 'unspecified';
   const lines = [
     '## 1. Audio mode',
     `Presentation: ${label}`,
+    formatSpokenLanguageRules(language),
   ];
   if (mode === 'dialogue') {
     lines.push(
@@ -865,7 +1059,8 @@ export function composeChannelStyles(
   const voiceNotes = options?.voiceNotes?.trim() ?? '';
   const existingWriting = options?.writingStyle?.trim() ?? '';
   const existingNarration = options?.narrationStyle?.trim() ?? '';
-  const cartoon = answersUseCartoon(a);
+  const locked = namedLockedCharacters(options?.lockedCharacters);
+  const cartoon = answersUseCartoon(a) || lockedCastUsesCartoon(locked);
   const documentaryFormat = a.formats.some((value) => {
     const v = value.toLowerCase().trim();
     return v === 'documentary' || v.includes('documentary');
@@ -898,7 +1093,7 @@ export function composeChannelStyles(
   sections.push(identity.join('\n'));
 
   sections.push(
-    audioModeSection(a, lang, {
+    audioModeSection(a, language, {
       existingNarration,
       voiceNotes,
       pacing,
@@ -917,9 +1112,18 @@ export function composeChannelStyles(
     '## 3. Visual prompt DNA',
     'Edit this block — it is the template the model must fill per scene. One idea per beat. Hero ~70% + 2–3 supports. Self-contained image prompt.',
   ];
-  if (visuals.length) dna.push(`Visual / editing style: ${joinList(visuals)}`);
-  if (animation && animation !== 'None / live footage') {
-    dna.push(`Animation style preference: ${animation}`);
+  if (visuals.length) dna.push(`AI scene look: ${joinList(visuals)}`);
+  if (animation && a.animationStyle !== 'none') {
+    dna.push(`AI animation / motion: ${animation}`);
+  }
+  dna.push(
+    'Pipeline: AI stills + AI animation only. Never stock footage, screen recordings, live B-roll, or green screen.',
+  );
+  if (a.customVisualStyle.trim()) {
+    dna.push(
+      'OWNER / ANALYZED VISUAL STYLE (authoritative — match this look, graphics, editing, and motion in every imagePrompt and animationPrompt; chip labels are secondary when they conflict):',
+    );
+    dna.push(a.customVisualStyle.trim());
   }
   dna.push(formatVisualPromptDna(a));
   if (cartoon) {
@@ -936,16 +1140,31 @@ export function composeChannelStyles(
   );
   sections.push(dna.join('\n'));
 
-  sections.push(
-    [
-      '## 4. Character consistency',
-      'When people or mascots appear, lock name, face, body, age, wardrobe, and signature props across every scene.',
-      'Never use a bare character name alone in imagePrompt or animationPrompt — expand to "Name (appearance + wardrobe / consistency)" from the character sheets.',
-      cartoon
-        ? '2D/3D cartoon: keep model sheet proportions, palette, and outfit identical shot to shot.'
-        : 'Wardrobe and appearance stay invariant unless the story explicitly changes them.',
-    ].join('\n'),
+  const characterSec = ['## 4. Character lock'];
+  if (locked.length) {
+    characterSec.push(formatLockedCharactersPrompt(locked));
+  } else {
+    characterSec.push(
+      'No locked cast yet. When people or mascots appear, lock name, face, body, age, wardrobe, and signature props across every scene of THIS video.',
+    );
+  }
+  characterSec.push(
+    'Never use a bare character name alone in imagePrompt or animationPrompt — expand to "Name (appearance + wardrobe / consistency)" from the character sheets.',
   );
+  if (cartoon) {
+    characterSec.push(
+      '2D/3D cartoon: keep model sheet proportions, palette, and outfit identical shot to shot and video to video.',
+    );
+  } else if (a.visualStyles.includes('ultra_realistic')) {
+    characterSec.push(
+      'Ultra realistic: same face geometry, skin, age, and wardrobe every video. Include the phrase "ultra realistic".',
+    );
+  } else {
+    characterSec.push(
+      'Wardrobe and appearance stay invariant unless the story explicitly changes them.',
+    );
+  }
+  sections.push(characterSec.join('\n'));
 
   if (a.presentation === 'mixed') {
     sections.push(mixedVoTimelineSection());
@@ -984,6 +1203,9 @@ export function composeChannelStyles(
   if (a.avoid.trim()) rules.push(`Do NOT: ${a.avoid.trim()}`);
   rules.push('Stay strictly on-niche and on-audience.');
   rules.push('Do not invent conflicting brand rules or unrelated topics.');
+  rules.push(
+    'Every still and clip is AI-generated. Never request stock footage, screen recordings, live B-roll, phone-camera plates, or green screen.',
+  );
   rules.push('Prefer reusable patterns that match tone, pacing, hooks, audio mode, and visual DNA above.');
   if (documentaryFormat) {
     rules.push(
@@ -1053,7 +1275,8 @@ export function styleProfileHasAnswers(answers: StyleProfileAnswers): boolean {
       a.visualStyles.length ||
       a.tones.length ||
       a.pacing ||
-      a.extraNotes.trim(),
+      a.extraNotes.trim() ||
+      a.customVisualStyle.trim(),
   );
 }
 
@@ -1272,8 +1495,9 @@ export function formatOurChannelAboutBlock(
   }
   if (profile?.language?.trim()) {
     const lang = languageDisplayName(profile.language);
-    lines.push(formatIdeaTitleLanguageRules(profile.language));
     lines.push(
+      formatIdeaTitleLanguageRules(profile.language),
+      formatSpokenLanguageRules(profile.language),
       `Audience language for later voiceover, dialogue, on-screen text, and publish metadata: ${lang}.`,
     );
   }
@@ -1308,6 +1532,7 @@ export function formatChannelStyleBlock(profile: ChannelStyleFields | null | und
     if (styleProfileHasAnswers(parsed.answers)) {
       const composed = composeChannelStyles(parsed.answers, profile.language ?? 'en', {
         animationReferencePrompt: profile.animationReferencePrompt,
+        lockedCharacters: parsed.lockedCharacters,
       });
       if (composed.masterPrompt.trim()) parts.push(composed.masterPrompt.trim());
     }

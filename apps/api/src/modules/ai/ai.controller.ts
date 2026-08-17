@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, BadRequestException } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AiService, type AiKeyView, type AiProviderView, type PromptVersionView } from './ai.service';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -134,6 +134,40 @@ export class AiController {
   @Audit('ai.compose_master_prompt', 'AiComposeMasterPrompt')
   composeMasterPrompt(@Body(new ZodBody(composeMasterPromptSchema)) body: ComposeMasterPromptDto) {
     return this.ai.composeMasterPrompt(body);
+  }
+
+  @Post('analyze-visual-style')
+  @Audit('ai.analyze_visual_style', 'AiVisualStyle')
+  async analyzeVisualStyle(@Req() req: import('fastify').FastifyRequest): Promise<{ visualStyle: string }> {
+    if (!req.isMultipart()) {
+      throw new BadRequestException('Expected a multipart/form-data video upload.');
+    }
+    const data = await req.file();
+    if (!data) throw new BadRequestException('No video file found in the upload.');
+    const mime = (data.mimetype || '').toLowerCase();
+    if (!mime.startsWith('video/')) {
+      throw new BadRequestException('Upload a video file (mp4, webm, mov).');
+    }
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { createWriteStream } = await import('node:fs');
+    const { pipeline } = await import('node:stream/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'scp-style-'));
+    const dest = join(dir, data.filename?.replace(/[^\w.\-]+/g, '_') || 'reference.mp4');
+    try {
+      await pipeline(data.file, createWriteStream(dest));
+      if (data.file.truncated) {
+        throw new BadRequestException('Upload was truncated. Use a smaller clip (under 80 MB).');
+      }
+      return await this.ai.analyzeVisualStyle({
+        filePath: dest,
+        mimeType: data.mimetype || 'video/mp4',
+        filename: data.filename || 'reference.mp4',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   // ── Usage stats ───────────────────────────────────────────────────────

@@ -56,7 +56,7 @@ const BY_CODE = new Map(ALL_LANGUAGES.map((lang) => [lang.code, lang]));
 export const DEFAULT_CONTENT_LANGUAGE = 'en';
 
 /** Bump when language-split prompt rules change so AI cache keys move. */
-export const OUTPUT_LANGUAGE_POLICY_REV = 2;
+export const OUTPUT_LANGUAGE_POLICY_REV = 3;
 
 export function parseLanguageCode(raw?: string | null): string {
   return (raw ?? DEFAULT_CONTENT_LANGUAGE).trim().toLowerCase().split(/[-_]/)[0] || DEFAULT_CONTENT_LANGUAGE;
@@ -104,6 +104,33 @@ export function contentLanguageSelectOptions(current?: string | null): ContentLa
 }
 
 /**
+ * Spoken VO / dialogue must be pure native-script language.
+ * Independent of title rules (Hindi titles may mix English; Urdu titles stay Roman Urdu).
+ */
+export function formatSpokenLanguageRules(language?: string | null): string {
+  const code = parseLanguageCode(language);
+  const lang = languageDisplayName(language);
+  const native = resolveContentLanguage(language).nativeName;
+  if (isEnglishContentLanguage(language)) {
+    return `Spoken voiceover and dialogue: write in natural English. Native English spelling — not a mix of other languages.`;
+  }
+  const scriptRule =
+    code === 'hi'
+      ? `Write EVERY spoken word in Hindi using Devanagari script (${native}). Pure Hindi — not Roman/Latin Hindi, not Hinglish transliteration, not English sentences. Proper nouns may stay Latin only when they have no standard Hindi spelling.`
+      : code === 'ur'
+        ? `Write EVERY spoken word in Urdu using Urdu (Nastaliq/Arabic) script (${native}). Pure Urdu — not Roman Urdu, not Hindi, not Latin transliteration of the whole script. Proper nouns may stay Latin only when they have no standard Urdu spelling.`
+        : code === 'ar'
+          ? `Write EVERY spoken word in Arabic script (${native}). Pure Arabic — not Latin transliteration.`
+          : code === 'de'
+            ? `Write EVERY spoken word in German (${native}) with correct umlauts and ß. Pure German — not English mixed sentences.`
+            : `Write EVERY spoken word in ${lang} using its native script (${native}). Pure ${lang} — never Latin/English transliteration of the whole voiceover.`;
+  return `Spoken language (mandatory for narrationScript, narrationLines[].text, and dialogue[].line):
+- ${scriptRule}
+- Title rules do NOT apply here. Voiceover is not a title: it must be pure native-script ${lang} so TTS reads the same language the audience hears.
+- Do not write the voiceover in English and do not romanize it.`;
+}
+
+/**
  * Idea/publish title language for ChannelProfile.language.
  * Angle, hook, rationale, and topicSummary stay English for operator review.
  */
@@ -139,8 +166,8 @@ export function formatOutputLanguagePolicy(language?: string | null): string {
 - Idea angle, hook, rationale, and topicSummary MUST stay in English.
 - Story drafts / storySummary / bible / episode summaries MUST be written in English.
 - imagePrompt, animationPrompt, thumbnailPrompt, videoPrompt, and negative-prompt bodies MUST stay in English (camera, lighting, composition, motion).
-- Voiceover / narrationScript: write EVERY spoken narrator word in ${lang}.
-- Dialogue: write EVERY spoken character line in ${lang} (dialogue[].line and quoted speech in animationPrompt).
+- Voiceover / narrationScript / narrationLines: ${formatSpokenLanguageRules(language)}
+- Dialogue: same spoken-language rules as voiceover (dialogue[].line and quoted speech in animationPrompt).
 - On-screen text: captions, overlay lettering, thumbnail type, and any text that will appear in the image/video MUST be in ${lang}. Quote that ${lang} text inside otherwise-English prompts.
 - Publish metadata: videoDescription, description, tags, and hashtags MUST be in ${lang}. Publish titles follow the idea-title language rules above, not a fully English or fully ${lang} title unless those rules say so.`.trim();
 }

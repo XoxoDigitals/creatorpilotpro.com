@@ -135,7 +135,9 @@ export class AccountsService {
       styleProfileJson = parsed.data as unknown as Prisma.InputJsonValue;
       const language = dto.language ?? existing?.language ?? 'en';
       if (!parsed.data.masterPromptOverridden) {
-        const composed = composeChannelStyles(parsed.data.answers, language);
+        const composed = composeChannelStyles(parsed.data.answers, language, {
+          lockedCharacters: parsed.data.lockedCharacters,
+        });
         masterPrompt = composed.masterPrompt;
         writingStyle = composed.writingStyle;
         narrationStyle = composed.narrationStyle;
@@ -145,7 +147,9 @@ export class AccountsService {
       // unless the owner overrode the freeform master prompt.
       const parsed = parseStyleProfile(existing.styleProfile);
       if (!parsed.masterPromptOverridden) {
-        const composed = composeChannelStyles(parsed.answers, dto.language);
+        const composed = composeChannelStyles(parsed.answers, dto.language, {
+          lockedCharacters: parsed.lockedCharacters,
+        });
         masterPrompt = composed.masterPrompt;
         writingStyle = composed.writingStyle;
         narrationStyle = composed.narrationStyle;

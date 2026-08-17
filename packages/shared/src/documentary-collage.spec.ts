@@ -9,6 +9,7 @@ import {
   formatFernNarrationRules,
   isDocumentaryIdeaGeneration,
   isDocumentaryLikeFormat,
+  isDocumentaryCollagePackage,
   isDocumentaryVoiceoverPackage,
   joinProductionBriefEditingExtras,
   splitProductionBriefEditingExtras,
@@ -52,6 +53,30 @@ describe('documentary collage detection', () => {
         answers: { formats: ['explainer'], presentation: 'voiceover' },
       }),
     ).toBe(false);
+  });
+
+  it('locks the 10s paper-collage assembly only when AI paper collage is selected', () => {
+    expect(
+      isDocumentaryCollagePackage({
+        version: 1,
+        answers: {
+          formats: ['documentary'],
+          presentation: 'voiceover',
+          visualStyles: ['fast_cuts'],
+          animationStyle: '3d',
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isDocumentaryCollagePackage({
+        version: 1,
+        answers: {
+          formats: ['documentary'],
+          presentation: 'voiceover',
+          visualStyles: ['paper_collage'],
+        },
+      }),
+    ).toBe(true);
   });
 
   it('activates idea rules when formats include documentary', () => {

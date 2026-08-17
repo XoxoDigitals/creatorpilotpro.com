@@ -3,6 +3,7 @@
  * formats include documentary (or similar) and presentation is voiceover / mixed.
  * Mapped into the AI-owner package pipeline (ideas → script → visuals), not a chat UI.
  */
+import { formatSpokenLanguageRules } from './content-languages.js';
 import {
   DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT,
   NEGATIVE_PROMPT_INLINE_PREFIX,
@@ -67,6 +68,7 @@ export function isDocumentaryLikeFormat(value: string): boolean {
 /**
  * Activate the paper-collage engine when formats include documentary (or similar)
  * and presentation is voiceover or mixed. Drama / pure dialogue stays on its own path.
+ * Visual collage (10s assemble-on-table prompt) is a separate flag: paper_collage style.
  */
 export function isDocumentaryVoiceoverPackage(styleProfile: unknown): boolean {
   const answers = parseStyleProfile(styleProfile).answers;
@@ -83,6 +85,15 @@ export function isDocumentaryVoiceoverPackage(styleProfile: unknown): boolean {
   if (dramaFormat) return false;
 
   return true;
+}
+
+/**
+ * Locked 10s paper-collage assembly animation. Only when the owner picks
+ * AI paper collage — Documentary format alone does not force this prompt.
+ */
+export function isDocumentaryCollagePackage(styleProfile: unknown): boolean {
+  if (!isDocumentaryVoiceoverPackage(styleProfile)) return false;
+  return parseStyleProfile(styleProfile).answers.visualStyles.includes('paper_collage');
 }
 
 /** True when idea generation should use documentary title-shape rules. */
@@ -121,14 +132,16 @@ export function formatDocumentaryIdeaRules(): string {
 - Real-tragedy restraint: no gore, no victim mockery.`.trim();
 }
 
-export function formatFernNarrationRules(durationSec: number): string {
+export function formatFernNarrationRules(durationSec: number, language?: string | null): string {
   const target = documentaryTargetWordCount(durationSec);
   const min = Math.max(1, Math.round(target * 0.95));
   const max = Math.max(min + 1, Math.round(target * 1.05));
+  const spoken = formatSpokenLanguageRules(language);
   return `DOCUMENTARY voiceover narration (Fern DNA, mandatory):
 - Continuous narration only: one flowing prose block. No chapter labels, no headers, no camera directions, no visual cues.
 - Word count: target about ${target} spoken words for ${Math.round(durationSec)}s at ~2.5 words/sec (acceptable range ${min}-${max}, within ~5%).
-- Cold open: first 3-4 sentences (about 30-40 words) open on a precise date, a location, and one small concrete action. Example shape: "November 24, 1971. Portland International Airport. A man in a dark suit buys a one-way ticket under the name Dan Cooper."
+- ${spoken}
+- Cold open: first 3-4 sentences (about 30-40 words) open on a precise date, a location, and one small concrete action. Example SHAPE (rewrite in the channel spoken language/script — do not copy the English words): "November 24, 1971. Portland International Airport. A man in a dark suit buys a one-way ticket under the name Dan Cooper."
 - Crisp, precise documentary tone. Short declaratives mixed with one longer explanatory sentence per stretch. Temporal and causal connectives carry the story: then, by morning, three days later, because of this, which meant.
 - Every sentence ends cleanly on a full stop. Every sentence is one self-contained idea (sentences become visual beats later).
 - Facts stay accurate. If a detail is uncertain, write around it. Never invent names, dates, or numbers.

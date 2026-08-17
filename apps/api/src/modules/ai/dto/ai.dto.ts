@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TaskTypeSchema, TTS_EMOTIONS } from '@scp/shared';
+import { TaskTypeSchema, TTS_EMOTIONS, lockedCharacterSchema } from '@scp/shared';
 
 // ── Keys ────────────────────────────────────────────────────────────────────
 
@@ -82,6 +82,7 @@ export const composeMasterPromptSchema = z.object({
   contentType: z.string().max(32).optional(),
   /** Freeform voice / TTS notes (provider, voice id, locale, rate). */
   voiceNotes: z.string().max(2000).optional(),
+  lockedCharacters: z.array(lockedCharacterSchema).optional(),
   /** When true, skip the LLM polish and return the deterministic system-style compose. */
   localOnly: z.boolean().optional(),
 });

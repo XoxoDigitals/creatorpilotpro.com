@@ -1,9 +1,11 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { AiKey, AiKeyStatus, AiProvider, Prisma } from '@scp/db';
-import type { TaskType } from '@scp/shared';
+import { TaskType } from '@scp/shared';
+import { z } from 'zod';
 import {
   AIRouter,
   KeyPool,
+  NoKeyAvailableError,
   GeminiProvider,
   OpenAIProvider,
   KokoroProvider,
@@ -13,6 +15,8 @@ import {
   synthesizeWithEdgeTts,
   cacheKeyFor,
   hashText,
+  uploadGeminiFile,
+  deleteGeminiFile,
   type AIResult,
   type CacheStore,
   type UsageLogger,
@@ -442,6 +446,7 @@ export class AiService {
       narrationStyle: dto.narrationStyle,
       contentType: dto.contentType,
       voiceNotes: dto.voiceNotes,
+      lockedCharacters: dto.lockedCharacters,
     });
 
     if (dto.localOnly) {
@@ -502,6 +507,7 @@ tags: 8–15 lowercase discovery tags without #, niche-relevant, no spam.`,
               writingStyle: dto.writingStyle?.trim() || null,
               narrationStyle: dto.narrationStyle?.trim() || null,
               voiceNotes: dto.voiceNotes?.trim() || null,
+              lockedCharacters: dto.lockedCharacters ?? [],
               systemStyleDraft: {
                 masterPrompt: local.masterPrompt,
                 writingStyle: local.writingStyle,
@@ -715,6 +721,117 @@ The spoken script must be in ${languageDisplayName(lang)}.`,
       totalTokensOut: agg._sum.tokensOut ?? 0,
       estimatedCostUsd: Number(agg._sum.estimatedCostUsd ?? 0),
     };
+  }
+
+  // ── Visual style analysis from a reference video ────────────────────────
+
+  /**
+   * Watch an uploaded reference clip and return production visual/editing DNA
+   * the owner can paste into Brand → Visuals.
+   */
+  async analyzeVisualStyle(opts: {
+    filePath: string;
+    mimeType: string;
+    filename: string;
+  }): Promise<{ visualStyle: string }> {
+    const task = TaskType.VIDEO_ANALYSIS;
+    await this.assertNotKilled(task);
+
+    const { stat, readFile } = await import('node:fs/promises');
+    const size = (await stat(opts.filePath)).size;
+    const maxBytes = 80 * 1024 * 1024;
+    if (size <= 0) throw new BadRequestException('Empty video file.');
+    if (size > maxBytes) {
+      throw new BadRequestException(
+        'Reference video is too large (max 80 MB). Upload a 20–90 second clip of the look you want.',
+      );
+    }
+
+    const keyStore = new PrismaKeyStore(this.prisma.client, this.crypto);
+    const pool = new KeyPool(keyStore);
+    let key;
+    try {
+      key = await pool.checkout('gemini');
+    } catch (err) {
+      if (err instanceof NoKeyAvailableError) {
+        throw new BadRequestException(
+          err.reason === 'no keys configured'
+            ? 'Gemini key pool is empty. The same Settings → AI Gemini keys used for Generate prompt are required here.'
+            : `Gemini keys are all throttled or exhausted (${err.reason}). Retry shortly.`,
+        );
+      }
+      throw err;
+    }
+
+    const mime = opts.mimeType || 'video/mp4';
+    const inlineCap = 13 * 1024 * 1024;
+    let parts: Array<{ text?: string; uri?: string; data?: string; mimeType?: string }> = [];
+    let uploadedName: string | null = null;
+
+    if (size <= inlineCap) {
+      const buf = await readFile(opts.filePath);
+      parts = [{ data: buf.toString('base64'), mimeType: mime }];
+    } else {
+      const uploaded = await uploadGeminiFile({
+        apiKey: key.secret,
+        filePath: opts.filePath,
+        mimeType: mime,
+        displayName: `style-ref-${opts.filename.slice(0, 40)}`,
+      });
+      uploadedName = uploaded.name;
+      parts = [{ uri: uploaded.uri, mimeType: uploaded.mimeType || mime }];
+    }
+
+    const schema = z.object({ visualStyle: z.string().min(40) });
+    const gemini = new GeminiProvider();
+    try {
+      const result = await gemini.generate(
+        {
+          task,
+          model: '',
+          system: `You are an elite editorial art director and motion-graphics supervisor.
+Watch the reference video. Reverse-engineer its LOOK so another AI can recreate the same visual language on NEW topics (not a copy of this story).
+Return JSON only: { "visualStyle": string }.
+visualStyle must be a production-ready English brief (400–1200 words) with these headings:
+LOOK / MEDIUM (2D cartoon, 3D CGI, photoreal, collage, motion graphics, etc.)
+COLOR / LIGHTING
+CAMERA LANGUAGE
+EDITING PACE (cut rhythm, impact hits, holds)
+GRAPHICS / TYPE / UI overlays
+MOTION / ANIMATION (how stills should move; timed beats if relevant)
+CHARACTER / SUBJECT treatment
+SOUND DESIGN in prompts (SFX/music only — VO is external)
+NEGATIVES / what this style never does
+PROMPT DNA: one reusable SCENE / STYLE / FRAMING / LIGHTING / MOTION / CLOSER template
+Write as imperative rules. Do not retell the video's plot. Do not mention stock footage or live camera plates unless the look is explicitly photoreal AI.`,
+          input: {
+            kind: 'multimodal',
+            parts: [
+              ...parts,
+              {
+                text: 'Analyze this reference video and fill visualStyle as specified.',
+              },
+            ],
+          },
+          schema,
+        },
+        { id: key.id, providerId: 'gemini', secret: key.secret, label: key.label },
+      );
+      await pool.recordSuccess(
+        key,
+        (result.usage.tokensIn ?? 0) + (result.usage.tokensOut ?? 0),
+      );
+      const parsed = schema.safeParse(result.output);
+      if (parsed.success) return { visualStyle: parsed.data.visualStyle.trim() };
+      if (typeof result.output === 'string' && result.output.trim().length >= 40) {
+        return { visualStyle: result.output.trim() };
+      }
+      throw new BadRequestException('AI did not return a usable visual style. Try a clearer clip.');
+    } finally {
+      if (uploadedName) {
+        await deleteGeminiFile({ apiKey: key.secret, name: uploadedName }).catch(() => undefined);
+      }
+    }
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

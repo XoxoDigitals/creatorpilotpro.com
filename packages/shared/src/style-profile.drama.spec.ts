@@ -15,7 +15,9 @@ import {
   formatSceneVisualPromptRules,
   formatChannelStyleBlock,
   formatOurChannelAboutBlock,
+  formatLockedCharactersPrompt,
   isCartoonPackage,
+  isUltraRealisticPackage,
   isDramaOrDialoguePackage,
   isNarrationVoiceoverPackage,
   presentationNeedsVoiceover,
@@ -226,7 +228,24 @@ describe('brand questionnaire & master prompt', () => {
     expect(composed.masterPrompt).toContain('## 2. Hook & retention engine');
     expect(composed.masterPrompt).toContain('## 3. Visual prompt DNA');
     expect(composed.masterPrompt).toContain('re-hook about every ~8 seconds');
+    expect(composed.masterPrompt).toContain('AI stills + AI animation only');
     expect(composed.masterPrompt).not.toContain('VO LAYUP TIMELINE');
+  });
+
+  it('visual and animation options are AI-only (no stock or screen recording)', () => {
+    const visual = STYLE_QUESTIONS.find((q) => q.id === 'visualStyles');
+    const anim = STYLE_QUESTIONS.find((q) => q.id === 'animationStyle');
+    const visualValues = (visual?.options ?? []).map((o) => o.value);
+    const animValues = (anim?.options ?? []).map((o) => o.value);
+    for (const banned of ['screen_recording', 'stock_collage', 'broll_doc', 'green_screen', 'minimal_stills']) {
+      expect(visualValues).not.toContain(banned);
+    }
+    expect(animValues).not.toContain('none');
+    expect(visual?.options?.every((o) => o.hint && o.hint.length > 20)).toBe(true);
+    expect(anim?.options?.every((o) => o.hint && o.hint.length > 20)).toBe(true);
+    expect(visualValues).toContain('fast_motion_graphics');
+    expect(visualValues).toContain('ultra_realistic');
+    expect(animValues).toContain('ai_scene');
   });
 
   it('mixed compose includes VO LAYUP TIMELINE guidance', () => {
@@ -286,5 +305,63 @@ describe('brand questionnaire & master prompt', () => {
     });
     expect(sceneRules).toContain('Do NOT add cartoon or anime');
     expect(sceneRules).not.toContain('include the quality phrase "ultra realistic"');
+  });
+
+  it('locks the same characters across videos in the composed prompt', () => {
+    const composed = composeChannelStyles(
+      { presentation: 'dialogue', visualStyles: ['2d_cartoon'], niche: 'moral stories' },
+      'hi',
+      {
+        lockedCharacters: [
+          {
+            name: 'Hina',
+            appearance: 'round face, short black hair',
+            wardrobe: 'knit sweater',
+            age: '24',
+            personality: 'kind',
+            consistencyDetails: 'mole on left cheek',
+            look: 'cartoon_2d',
+          },
+        ],
+      },
+    );
+    expect(composed.masterPrompt).toContain('CHARACTER LOCK');
+    expect(composed.masterPrompt).toContain('Hina');
+    expect(composed.masterPrompt).toContain('2D cartoon');
+    expect(composed.masterPrompt).toContain('Devanagari');
+  });
+
+  it('puts owner custom visual style into Visual prompt DNA', () => {
+    const composed = composeChannelStyles(
+      {
+        presentation: 'voiceover',
+        customVisualStyle: 'LOOK: grainy 2D newsprint maps, red string, punch-in every 2s.',
+      },
+      'en',
+    );
+    expect(composed.masterPrompt).toContain('OWNER / ANALYZED VISUAL STYLE');
+    expect(composed.masterPrompt).toContain('grainy 2D newsprint maps');
+  });
+
+  it('treats ultra realistic visual style as photoreal, not cartoon', () => {
+    const profile = {
+      version: 1 as const,
+      answers: { visualStyles: ['ultra_realistic'] },
+    };
+    expect(isCartoonPackage(profile)).toBe(false);
+    expect(isUltraRealisticPackage(profile)).toBe(true);
+    const lock = formatLockedCharactersPrompt([
+      {
+        name: 'Ayaan',
+        appearance: 'sharp jaw, stubble',
+        wardrobe: 'black shirt',
+        age: '30',
+        personality: '',
+        consistencyDetails: '',
+        look: 'ultra_realistic',
+      },
+    ]);
+    expect(lock).toContain('Ayaan');
+    expect(lock).toContain('Ultra realistic');
   });
 });

@@ -28,12 +28,17 @@ import {
   isDramaOrDialoguePackage,
   isDocumentaryIdeaGeneration,
   isDocumentaryVoiceoverPackage,
+  isDocumentaryCollagePackage,
   isNarrationVoiceoverPackage,
   isCartoonPackage,
+  isUltraRealisticPackage,
   stripCartoonAnimeNegatives,
   languageDisplayName,
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
+  formatSpokenLanguageRules,
+  formatLockedCharactersPrompt,
+  mergeLockedCharactersIntoCast,
   formatYoutubeAiDescriptionRules,
   DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT,
@@ -976,12 +981,21 @@ export function normalizeProductionBriefOutput(
     documentaryCollage?: boolean;
     narrationVoiceover?: boolean;
     cartoonPackage?: boolean;
+    ultraRealistic?: boolean;
+    lockedCharacters?: Array<{
+      name?: string | null;
+      appearance?: string | null;
+      wardrobe?: string | null;
+      age?: string | null;
+      consistencyDetails?: string | null;
+    }>;
   },
 ) {
   const brief = (output && typeof output === 'object' ? output : {}) as Record<string, unknown>;
   const drama = options.dramaOrDialogue === true;
   const documentary = options.documentaryCollage === true;
   const cartoon = options.cartoonPackage === true;
+  const ultraRealistic = options.ultraRealistic === true && !cartoon;
   const mixed = options.presentation === 'mixed';
   const narrationVoiceover =
     options.narrationVoiceover === true ||
@@ -1000,7 +1014,7 @@ export function normalizeProductionBriefOutput(
     : Array.isArray(brief.characterPrompts)
       ? brief.characterPrompts
       : [];
-  const characters = rawCharacters
+  const mappedCharacters = rawCharacters
     .map((entry, index) => {
       if (typeof entry === 'string') {
         return {
@@ -1025,8 +1039,15 @@ export function normalizeProductionBriefOutput(
       };
     })
     .filter((character) =>
-      Boolean(character.appearance || character.consistencyDetails || character.wardrobe),
+      Boolean(
+        character.name.trim() &&
+          (character.appearance || character.consistencyDetails || character.wardrobe),
+      ),
     );
+  const characters = mergeLockedCharactersIntoCast(
+    mappedCharacters,
+    options.lockedCharacters,
+  ).filter((character) => Boolean(character.name?.trim()));
 
   const rawScenes = Array.isArray(brief.sceneBreakdown)
     ? brief.sceneBreakdown
@@ -1047,13 +1068,13 @@ export function normalizeProductionBriefOutput(
     ) {
       animationPrompt = `${animationPrompt}${animationPrompt ? '\n\n' : ''}Dialogue:\n${renderedDialogue}`;
     }
-    if (drama && characters.length) {
+    if (characters.length) {
       imagePrompt = expandCharacterReferencesInText(imagePrompt, characters);
       animationPrompt = expandCharacterReferencesInText(animationPrompt, characters);
-      if (!cartoon) {
-        imagePrompt = ensureUltraRealistic(imagePrompt);
-        animationPrompt = ensureUltraRealistic(animationPrompt);
-      }
+    }
+    if ((drama && !cartoon) || ultraRealistic) {
+      imagePrompt = ensureUltraRealistic(imagePrompt);
+      animationPrompt = ensureUltraRealistic(animationPrompt);
     }
     if (documentary) {
       if (imagePrompt) imagePrompt = ensureDocumentaryCollageImagePrompt(imagePrompt);
@@ -1132,13 +1153,11 @@ export function normalizeProductionBriefOutput(
   );
 
   let thumbnailPrompt = text(brief.thumbnailPrompt);
-  if (drama && thumbnailPrompt) {
-    if (characters.length) {
-      thumbnailPrompt = expandCharacterReferencesInText(thumbnailPrompt, characters);
-    }
-    if (!cartoon) {
-      thumbnailPrompt = ensureUltraRealistic(thumbnailPrompt);
-    }
+  if (thumbnailPrompt && characters.length) {
+    thumbnailPrompt = expandCharacterReferencesInText(thumbnailPrompt, characters);
+  }
+  if (thumbnailPrompt && ((drama && !cartoon) || ultraRealistic)) {
+    thumbnailPrompt = ensureUltraRealistic(thumbnailPrompt);
   }
   if (documentary && thumbnailPrompt) {
     thumbnailPrompt = ensureDocumentaryThumbnailPrompt(thumbnailPrompt);
@@ -1226,9 +1245,10 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
   const styleAnswers = parseStyleProfile(channelStyle?.styleProfile).answers;
   const presentation = normalizedPresentation(styleAnswers.presentation);
   const dramaOrDialogue = isDramaOrDialoguePackage(channelStyle?.styleProfile);
-  const documentaryCollage = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
+  const documentaryVo = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
+  const documentaryCollage = isDocumentaryCollagePackage(channelStyle?.styleProfile);
   const narrationVoiceover =
-    documentaryCollage || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
+    documentaryVo || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
   const channelLanguage = channelStyle?.language ?? 'en';
   const documentaryIdeas = isDocumentaryIdeaGeneration(channelStyle?.styleProfile);
   const youtubeDescriptionRules = youtubeAi
@@ -1303,6 +1323,9 @@ Do NOT include sceneBreakdown, imagePrompt, or animationPrompt yet — visuals a
 }`;
 
   const cartoonPackage = isCartoonPackage(channelStyle?.styleProfile);
+  const ultraRealistic = isUltraRealisticPackage(channelStyle?.styleProfile);
+  const lockedCharacters = parseStyleProfile(channelStyle?.styleProfile).lockedCharacters;
+  const lockedCastPrompt = formatLockedCharactersPrompt(lockedCharacters);
   const hookRetentionReminder = `HOOK & RETENTION (mandatory): cold-open hook in the first 1–3 seconds; re-hooks / curiosity gaps throughout (not only the opening); at least one mid-video twist ("but then" / false conclusion / new question); cliffhanger or payoff on the last line. Never a flat lecture. Visual prompts must follow the channel Visual prompt DNA (SCENE / STYLE / FRAMING / LIGHTING / MOTION 0-2/2-4/4-6/6-8 / AUDIO-IN-PROMPT / CLOSER).`;
   const mixedVoLayupRules = `VO LAYUP TIMELINE (mandatory in editingInstructions): list every scene with cumulative timestamps covering the full ${videoDurationSec}s:
 Scene N  mm:ss–mm:ss  NARRATION (lay generated VO here)
@@ -1311,9 +1334,9 @@ Scenes may alternate. Opening scene should usually be NARRATION hook unless the 
 
   const presentationInstructions =
     presentation === 'voiceover'
-      ? documentaryCollage
+      ? documentaryVo
         ? `Presentation mode is DOCUMENTARY VOICEOVER NARRATION (audio-first pipeline).
-${formatFernNarrationRules(videoDurationSec)}
+${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
 - Do not invent scene image/video prompts yet. Visuals must NOT invent spoken speech (existing narration negatives apply later).`
@@ -1333,9 +1356,9 @@ ${formatFernNarrationRules(videoDurationSec)}
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".
 - Dialogue language: ALL spoken lines MUST be in ${languageDisplayName(channelLanguage)}.`
         : presentation === 'mixed'
-          ? documentaryCollage
+          ? documentaryVo
             ? `Presentation mode is MIXED with DOCUMENTARY NARRATOR portions (audio-first for narrator).
-${formatFernNarrationRules(videoDurationSec)}
+${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 - ${mixedVoLayupRules}
 - narrationScript contains only the narrator portions (Fern continuous prose) for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not dialogue-only clips.
@@ -1391,8 +1414,9 @@ ${topicSummaryInstruction}
 - videoTitle is publish-facing. ${formatIdeaTitleLanguageRules(channelLanguage)}
 ${youtubeDescriptionRules}
 - storySummary and character appearance/wardrobe/personality stay in English.
-- narrationScript (voiceover) and dialogue[].line are spoken output: write them in ${languageDisplayName(channelLanguage)}.
-- imagePrompt, animationPrompt, and thumbnailPrompt stay in English except quoted on-screen text and spoken lines, which must be in ${languageDisplayName(channelLanguage)}.
+- narrationScript (voiceover) and dialogue[].line are spoken output. ${formatSpokenLanguageRules(channelLanguage)}
+- imagePrompt, animationPrompt, and thumbnailPrompt stay in English except quoted on-screen text and spoken lines, which must follow the spoken-language rules above.
+${lockedCastPrompt ? `${lockedCastPrompt}\n` : ''}Define every recurring person once in characters with a stable name, appearance, wardrobe, age, personality, and invariant consistency details. If CHARACTER LOCK is set, those people are required in characters[].
 ${presentationInstructions}
 ${dramaRules}
 ${documentaryVisualRules}
@@ -1420,7 +1444,6 @@ ${
     ? 'Never use em dashes (—) in any field. Prefer empty characters[] unless a real historical figure must appear as a labeled collage cutout.'
     : ''
 }
-Define every recurring person once in characters with a stable name, appearance, wardrobe, age, personality, and invariant consistency details.
 Match the channel brand & style for tone, presentation, visuals, and captions.`,
     channelStyle,
   );
@@ -1451,7 +1474,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     promptVersion,
     styleVersion: styleVersionFromProfile(channelStyle),
     inputContentHash: hashText(
-      `creative-package-v11:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : 'live'}:${youtubeAi ? 'yt' : 'other'}:${channelLanguage}:${inputText}`,
+      `creative-package-v13:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : documentaryVo ? 'doc-vo' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : ultraRealistic ? 'ultra' : 'live'}:${youtubeAi ? 'yt' : 'other'}:${channelLanguage}:${inputText}`,
     ),
   });
 
@@ -1497,6 +1520,8 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
       documentaryCollage,
       narrationVoiceover,
       cartoonPackage,
+      ultraRealistic,
+      lockedCharacters,
     });
     const scriptText = normalized.narrationScript;
     const editingInstructions = joinProductionBriefEditingExtras({
@@ -1790,9 +1815,12 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
   );
   const dramaOrDialogue = isDramaOrDialoguePackage(channelStyle?.styleProfile);
   const cartoonPackage = isCartoonPackage(channelStyle?.styleProfile);
-  const documentaryCollage = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
+  const ultraRealistic = isUltraRealisticPackage(channelStyle?.styleProfile);
+  const lockedCharacters = parseStyleProfile(channelStyle?.styleProfile).lockedCharacters;
+  const documentaryVo = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
+  const documentaryCollage = isDocumentaryCollagePackage(channelStyle?.styleProfile);
   const narrationVoiceover =
-    documentaryCollage || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
+    documentaryVo || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
   const sceneCount = documentaryCollage
     ? documentaryBeatSceneCount(videoDurationSec, clipDurationSec)
     : Math.max(1, Math.round(videoDurationSec / clipDurationSec));
@@ -1856,7 +1884,8 @@ Return JSON only:
 }
 Rules:
 ${languageRules}
-- imagePrompt and animationPrompt bodies stay in English; quote any on-screen overlay text and spoken dialogue in ${languageDisplayName(channelLanguage)}.
+${formatLockedCharactersPrompt(lockedCharacters)}
+- imagePrompt and animationPrompt bodies stay in English; quote any on-screen overlay text and spoken dialogue using the spoken-language rules above (pure native script, not romanized).
 - Return about ${sceneCount} scenes covering the full ${
       presentation === 'mixed' ? 'video' : 'narration'
     } timeline (~${videoDurationSec}s total${
@@ -1934,7 +1963,7 @@ ${
         promptVersion: 1,
         styleVersion: styleVersionFromProfile(channelStyle),
         inputContentHash: hashText(
-          `visual-prompts-v6:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : 'live'}:${channelLanguage}:${ideaId}:${hashText(inputText)}`,
+          `visual-prompts-v8:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : documentaryVo ? 'doc-vo' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : ultraRealistic ? 'ultra' : 'live'}:${channelLanguage}:${ideaId}:${hashText(inputText)}`,
         ),
       }),
     });
@@ -1960,6 +1989,8 @@ ${
         documentaryCollage,
         narrationVoiceover,
         cartoonPackage,
+        ultraRealistic,
+        lockedCharacters,
       },
     );
 

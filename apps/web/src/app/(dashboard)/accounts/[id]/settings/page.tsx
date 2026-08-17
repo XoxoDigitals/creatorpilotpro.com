@@ -18,6 +18,7 @@ import {
   TTS_EMOTION_LABELS,
   parseTtsEmotion,
   type StyleProfileAnswers,
+  type LockedCharacter,
   type TtsEmotion,
   type CaptionTemplateId,
   type ColorFilterPreset,
@@ -130,6 +131,7 @@ export default function AccountSettingsPage() {
   const [writingStyle, setWritingStyle] = useState('');
   const [narrationStyle, setNarrationStyle] = useState('');
   const [styleAnswers, setStyleAnswers] = useState<StyleProfileAnswers>(emptyStyleProfileAnswers());
+  const [lockedCharacters, setLockedCharacters] = useState<LockedCharacter[]>([]);
   const [masterPromptOverridden, setMasterPromptOverridden] = useState(false);
   const [showAdvancedStyles, setShowAdvancedStyles] = useState(false);
   const [animationReferencePrompt, setAnimationReferencePrompt] = useState('');
@@ -255,6 +257,7 @@ export default function AccountSettingsPage() {
       if (p) {
         const fromProfile = answersFromProfile(p.styleProfile);
         setStyleAnswers(fromProfile.answers);
+        setLockedCharacters(fromProfile.lockedCharacters);
         setMasterPromptOverridden(fromProfile.masterPromptOverridden);
         setMasterPrompt(p.masterPrompt);
         setWritingStyle(p.writingStyle);
@@ -400,6 +403,7 @@ export default function AccountSettingsPage() {
     return {
       language,
       answers: styleAnswers,
+      lockedCharacters,
       animationReferencePrompt,
       thumbnailReferencePrompt,
       titleTemplate,
@@ -501,7 +505,7 @@ export default function AccountSettingsPage() {
     setSaving(true);
     try {
       const existingSched = (real.profile?.schedulingPrefs ?? {}) as Record<string, unknown>;
-      const styleProfile = styleProfileFromState(styleAnswers, masterPromptOverridden);
+      const styleProfile = styleProfileFromState(styleAnswers, masterPromptOverridden, lockedCharacters);
       await api.patch(`/accounts/${id}`, { contentType, dramasEnabled, timezone });
       await api.patch(`/accounts/${id}/profile`, {
         masterPrompt,
@@ -707,6 +711,7 @@ export default function AccountSettingsPage() {
         <div className="space-y-4 p-4">
           <StyleQuestionnaire
             answers={styleAnswers}
+            lockedCharacters={lockedCharacters}
             animationReferencePrompt={animationReferencePrompt}
             masterPrompt={masterPrompt}
             writingStyle={writingStyle}
@@ -714,6 +719,7 @@ export default function AccountSettingsPage() {
             showAdvanced={showAdvancedStyles}
             generating={generatingPrompt}
             onAnswersChange={setStyleAnswers}
+            onLockedCharactersChange={setLockedCharacters}
             onAnimationReferenceChange={setAnimationReferencePrompt}
             onMasterPromptChange={setMasterPrompt}
             onWritingStyleChange={setWritingStyle}
