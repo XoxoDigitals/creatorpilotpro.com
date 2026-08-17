@@ -290,16 +290,18 @@ export function reactionAvatarOverlayXy(
   corner: 'br' | 'bl' | 'tr' | 'tl',
   margin = 36,
 ): { x: string; y: string } {
+  // Keep bottom corners above burned captions (~2 lines).
+  const bottomPad = margin + 160;
   switch (corner) {
     case 'bl':
-      return { x: String(margin), y: `H-h-${margin}` };
+      return { x: String(margin), y: `H-h-${bottomPad}` };
     case 'tr':
       return { x: `W-w-${margin}`, y: String(margin) };
     case 'tl':
       return { x: String(margin), y: String(margin) };
     case 'br':
     default:
-      return { x: `W-w-${margin}`, y: `H-h-${margin}` };
+      return { x: `W-w-${margin}`, y: `H-h-${bottomPad}` };
   }
 }
 
@@ -994,7 +996,7 @@ export class Ffmpeg {
         `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
         `crop=${sizePx}:${sizePx},format=rgba,` +
         `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':` +
-        `a='if(lte(hypot(X-W/2\\,Y-H/2)\\,${r})\\,alpha(X\\,Y)\\,0)'[pip]`;
+        `a='if(lte(hypot(X-W/2\\,Y-H/2)\\,${r})\\,255\\,0)'[pip]`;
     } else if (opts.shape === 'rounded') {
       const r = Math.max(8, Math.floor(sizePx * 0.12));
       const half = Math.floor(sizePx / 2);
@@ -1004,7 +1006,7 @@ export class Ffmpeg {
         `crop=${sizePx}:${sizePx},format=rgba,` +
         `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':` +
         `a='if(gt(abs(X-W/2)\\,${inner})*gt(abs(Y-H/2)\\,${inner})*` +
-        `gt(hypot(abs(X-W/2)-${inner}\\,abs(Y-H/2)-${inner})\\,${r})\\,0\\,alpha(X\\,Y))'[pip]`;
+        `gt(hypot(abs(X-W/2)-${inner}\\,abs(Y-H/2)-${inner})\\,${r})\\,0\\,255)'[pip]`;
     } else {
       pipChain =
         `[1:v]scale=${sizePx}:${sizePx}:force_original_aspect_ratio=increase,` +
@@ -1015,13 +1017,21 @@ export class Ffmpeg {
     const filterComplex =
       `${pipChain};[0:v][pip]overlay=${xy.x}:${xy.y}${enable}:eof_action=pass:shortest=1[vout]`;
 
+    const mainDur = await this.probeDurationSec(srcPath);
+    const loopDur =
+      mainDur != null && Number.isFinite(mainDur) && mainDur > 0.05
+        ? Number(mainDur.toFixed(3))
+        : null;
+
     const args = [
       '-hide_banner',
       '-loglevel',
       'error',
       '-i',
       srcPath,
-      ...(opts.isVideo ? ['-stream_loop', '-1'] : ['-loop', '1']),
+      ...(opts.isVideo
+        ? ['-stream_loop', '-1', ...(loopDur != null ? ['-t', String(loopDur)] : [])]
+        : ['-loop', '1', ...(loopDur != null ? ['-t', String(loopDur)] : [])]),
       '-i',
       avatarInput,
       '-filter_complex',

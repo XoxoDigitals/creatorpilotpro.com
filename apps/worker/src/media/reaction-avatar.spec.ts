@@ -3,6 +3,7 @@ import { dialogueOverlayEnableExpr, reactionAvatarOverlayXy } from './ffmpeg.js'
 import { ffmpegKeyColor, reactionAvatarNobgCachePath } from './rembg-avatar.js';
 import {
   bridgeSpeakingGaps,
+  pickReactionAvatarSource,
   reactionAvatarSourceTrimSec,
   resolveReactionAvatarSpeakingRanges,
   speakingRangesFromSubtitleCues,
@@ -10,6 +11,32 @@ import {
   REACTION_AVATAR_FALLBACK_LEAD_IN_SEC,
   REACTION_AVATAR_HOLD_GAP_SEC,
 } from './reaction-avatar-timing.js';
+
+describe('pickReactionAvatarSource', () => {
+  it('prefers the silent still over lip-sync so the face stays on in silence', () => {
+    expect(
+      pickReactionAvatarSource({
+        enabled: true,
+        assetPath: 'accounts/a/silent.png',
+        lipSyncAssetPath: 'accounts/a/talk.mp4',
+      }),
+    ).toEqual({ rel: 'accounts/a/silent.png', kind: 'silent' });
+  });
+
+  it('falls back to lip-sync when no silent asset exists', () => {
+    expect(
+      pickReactionAvatarSource({
+        enabled: true,
+        lipSyncAssetPath: 'accounts/a/talk.mp4',
+      }),
+    ).toEqual({ rel: 'accounts/a/talk.mp4', kind: 'lip-sync' });
+  });
+
+  it('returns null when disabled or empty', () => {
+    expect(pickReactionAvatarSource({ enabled: false, assetPath: 'x.png' })).toBeNull();
+    expect(pickReactionAvatarSource({ enabled: true })).toBeNull();
+  });
+});
 
 describe('dialogueOverlayEnableExpr', () => {
   it('builds OR of between() windows', () => {
@@ -30,7 +57,7 @@ describe('dialogueOverlayEnableExpr', () => {
 
 describe('reactionAvatarOverlayXy', () => {
   it('maps corners to overlay expressions', () => {
-    expect(reactionAvatarOverlayXy('br')).toEqual({ x: 'W-w-36', y: 'H-h-36' });
+    expect(reactionAvatarOverlayXy('br')).toEqual({ x: 'W-w-36', y: 'H-h-196' });
     expect(reactionAvatarOverlayXy('tl', 20)).toEqual({ x: '20', y: '20' });
   });
 });

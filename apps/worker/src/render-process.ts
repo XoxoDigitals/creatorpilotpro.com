@@ -55,6 +55,7 @@ import { loadSrtCues, writeOverlayAssFile } from './media/overlay-ass.js';
 import { analysisDialogueRanges, analysisIndicatesDialogue } from './media/dialogue-audio.js';
 import { prepareReactionAvatarNobg, REACTION_AVATAR_REMBG_MAX_SEC } from './media/rembg-avatar.js';
 import {
+  pickReactionAvatarSource,
   reactionAvatarSourceTrimSec,
   resolveReactionAvatarSpeakingRanges,
 } from './media/reaction-avatar-timing.js';
@@ -783,14 +784,9 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
     // Always visible for the full video (including silent / no-VO stretches).
     // Saved "speaking only" is treated as always so existing accounts keep the PiP on.
     const avatar = effectiveSettings.reactionAvatar;
-    const preferredRel =
-      avatar.enabled && avatar.lipSyncAssetPath?.trim()
-        ? avatar.lipSyncAssetPath.trim()
-        : avatar.enabled && avatar.assetPath?.trim()
-          ? avatar.assetPath.trim()
-          : null;
-    if (preferredRel && STORAGE_ROOT) {
-      const avatarAbs = join(STORAGE_ROOT, preferredRel.replace(/^[/\\]+/, ''));
+    const picked = pickReactionAvatarSource(avatar);
+    if (picked && STORAGE_ROOT) {
+      const avatarAbs = join(STORAGE_ROOT, picked.rel.replace(/^[/\\]+/, ''));
       try {
         await access(avatarAbs);
         const width = (await ffmpeg.probeVideoWidth(finalPath)) ?? 1080;
@@ -814,55 +810,66 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
               ? finalPictureSec ?? REACTION_AVATAR_REMBG_MAX_SEC
               : undefined,
         });
-        const nobgMaxSec = Math.min(REACTION_AVATAR_REMBG_MAX_SEC, trimSec);
 
-        const nobg = await prepareReactionAvatarNobg(avatarAbs, {
-          ffmpeg,
-          mode: avatar.removeBg ?? 'auto',
-          chromakeyColor: avatar.chromakeyColor,
-          chromakeySimilarity: avatar.chromakeySimilarity,
-          chromakeyBlend: avatar.chromakeyBlend,
-          maxSec: nobgMaxSec,
-          workDir: renderDir,
-        });
-        if (!nobg.removedBg && nobg.reason) {
-          console.warn(
-            `[worker:render] reaction avatar remove-bg skipped for ${contentItemId}: ${nobg.reason}`,
+        const applyOverlay = async (overlayAbs: string, removedNote: string) => {
+          const isVideo = /\.(mp4|webm|mov|m4v)$/i.test(overlayAbs);
+          const pipOut = join(renderDir, 'final-with-avatar.mp4');
+          await unlink(pipOut).catch(() => {});
+          await ffmpeg.applyReactionAvatarOverlay(finalPath, overlayAbs, pipOut, {
+            shape: avatar.shape ?? 'circle',
+            corner: avatar.corner ?? 'br',
+            sizePx,
+            enableExpr,
+            isVideo,
+            trimSec: isVideo ? trimSec : null,
+            workDir: renderDir,
+          });
+          await unlink(finalPath).catch(() => {});
+          await rename(pipOut, finalPath);
+          console.log(
+            `[worker:render] reaction avatar applied for ${contentItemId}` +
+              ` [${picked.kind}/${avatar.shape}/${avatar.corner}/${sizePx}px, always` +
+              removedNote +
+              ']',
           );
+        };
+
+        try {
+          const nobgMaxSec = Math.min(REACTION_AVATAR_REMBG_MAX_SEC, trimSec);
+          const nobg = await prepareReactionAvatarNobg(avatarAbs, {
+            ffmpeg,
+            mode: picked.kind === 'silent' ? 'off' : (avatar.removeBg ?? 'auto'),
+            chromakeyColor: avatar.chromakeyColor,
+            chromakeySimilarity: avatar.chromakeySimilarity,
+            chromakeyBlend: avatar.chromakeyBlend,
+            maxSec: nobgMaxSec,
+            workDir: renderDir,
+          });
+          if (!nobg.removedBg && nobg.reason) {
+            console.warn(
+              `[worker:render] reaction avatar remove-bg skipped for ${contentItemId}: ${nobg.reason}`,
+            );
+          }
+          await applyOverlay(
+            nobg.path,
+            nobg.removedBg ? `, nobg=${nobg.method ?? 'yes'}` : '',
+          );
+        } catch (overlayErr) {
+          console.warn(
+            `[worker:render] reaction avatar overlay retry without cutout for ${contentItemId}:`,
+            overlayErr instanceof Error ? overlayErr.message : overlayErr,
+          );
+          await applyOverlay(avatarAbs, ', fallback-original');
         }
-        const overlayAbs = nobg.path;
-        const isVideo = /\.(mp4|webm|mov|m4v)$/i.test(overlayAbs);
-        const pipOut = join(renderDir, 'final-with-avatar.mp4');
-        await unlink(pipOut).catch(() => {});
-        await ffmpeg.applyReactionAvatarOverlay(finalPath, overlayAbs, pipOut, {
-          shape: avatar.shape ?? 'circle',
-          corner: avatar.corner ?? 'br',
-          sizePx,
-          enableExpr,
-          isVideo,
-          trimSec: isVideo ? trimSec : null,
-          workDir: renderDir,
-        });
-        await unlink(finalPath).catch(() => {});
-        await rename(pipOut, finalPath);
-        console.log(
-          `[worker:render] reaction avatar applied for ${contentItemId}` +
-            ` [${avatar.lipSyncAssetPath?.trim() ? 'lip-sync' : 'silent'}/${avatar.shape}/${avatar.corner}/${sizePx}px` +
-            (enableExpr
-              ? `, dialogue-only(${speaking.source}, ${speaking.ranges.length} win, trim=${trimSec}s)`
-              : `, always(trim=${trimSec}s)`) +
-            (nobg.removedBg ? `, nobg=${nobg.method ?? 'yes'}` : '') +
-            ']',
-        );
       } catch (err) {
         console.warn(
           `[worker:render] reaction avatar skipped for ${contentItemId}:`,
           err instanceof Error ? err.message : err,
         );
       }
-    } else if (avatar.enabled && !avatar.assetPath?.trim()) {
+    } else if (avatar.enabled && !picked) {
       console.warn(
-        `[worker:render] reaction avatar enabled but no asset uploaded for ${contentItemId}`,
+        `[worker:render] reaction avatar enabled but no silent or lip-sync asset for ${contentItemId}`,
       );
     }
 

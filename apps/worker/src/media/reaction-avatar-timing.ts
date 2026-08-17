@@ -16,6 +16,25 @@ export const REACTION_AVATAR_FALLBACK_LEAD_IN_MAX_SEC = 8;
  */
 export const REACTION_AVATAR_HOLD_GAP_SEC = 0.75;
 
+export type ReactionAvatarPick = { rel: string; kind: 'silent' | 'lip-sync' };
+
+/**
+ * Silent still/clip is the always-on PiP. Lip-sync is only used when no silent
+ * asset was uploaded (otherwise the talking-head hid the silent face).
+ */
+export function pickReactionAvatarSource(avatar: {
+  enabled?: boolean;
+  assetPath?: string | null;
+  lipSyncAssetPath?: string | null;
+}): ReactionAvatarPick | null {
+  if (!avatar.enabled) return null;
+  const silent = avatar.assetPath?.trim();
+  if (silent) return { rel: silent, kind: 'silent' };
+  const lip = avatar.lipSyncAssetPath?.trim();
+  if (lip) return { rel: lip, kind: 'lip-sync' };
+  return null;
+}
+
 export type ReactionAvatarSpeakingSource =
   | 'dialogue'
   | 'subtitle'
