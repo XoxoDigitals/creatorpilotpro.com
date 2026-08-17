@@ -11,6 +11,7 @@ import {
   clipStartsFromPadPlan,
   fitSpeed,
   narrationBudgetSec,
+  narrationMinWordBudget,
   narrationWordBudget,
   splitNarrationSegments,
   timedLinesFromNarration,
@@ -19,9 +20,10 @@ import {
 } from './vo-timing.js';
 
 describe('narration duration budget', () => {
-  it('caps spoken time under video length with a small margin', () => {
-    expect(narrationBudgetSec(20)).toBeCloseTo(18.75, 2);
-    expect(narrationWordBudget(20)).toBe(Math.round(18.75 * 2.2));
+  it('sizes spoken words to ~150 WPM across nearly the full video', () => {
+    expect(narrationBudgetSec(20)).toBeCloseTo(19.4, 2);
+    expect(narrationWordBudget(20)).toBe(Math.round(19.4 * 2.5));
+    expect(narrationMinWordBudget(20)).toBe(Math.round(Math.round(19.4 * 2.5) * 0.85));
     expect(narrationBudgetSec(null)).toBeNull();
     expect(narrationBudgetSec(0)).toBeNull();
   });
@@ -43,8 +45,8 @@ describe('fitSpeed / atempoFilter', () => {
 });
 
 describe('beat word budgets / clamp', () => {
-  it('budgets ~2.2 words per second of beat', () => {
-    expect(beatWordBudget(3)).toBe(Math.floor(3 * 2.2));
+  it('budgets ~2.5 words per second of beat', () => {
+    expect(beatWordBudget(3)).toBe(Math.floor(3 * 2.5));
     expect(beatWordBudget(0.1)).toBe(2);
   });
 
@@ -74,6 +76,7 @@ describe('analysisBeats / duration', () => {
       endSec: 4,
       durationSec: 4,
       maxWords: beatWordBudget(4),
+      minWords: Math.max(1, Math.round(beatWordBudget(4) * 0.85)),
       whatHappens: 'Opens the box',
     });
   });

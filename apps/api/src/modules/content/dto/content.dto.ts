@@ -31,7 +31,7 @@ export type RerenderContentDto = z.infer<typeof rerenderContentSchema>;
 export const updateScriptSchema = z
   .object({
     script: z.string().min(1).max(50000).optional(),
-    /** Switch the active variant (explainer / styleB / styleC) without rewriting copy. */
+    /** Switch the active variant (explainer / styleB / styleC / self) without rewriting copy. */
     selectedScriptId: z.string().min(1).max(40).optional(),
     /** Switch the on-screen hook phrase at script approval (`none` = skip hook). */
     selectedHookTextId: z.string().min(1).max(40).optional(),

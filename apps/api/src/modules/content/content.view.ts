@@ -94,7 +94,7 @@ export interface AiPipelineItemView {
   updatedAt: string;
   analysis: string | null;
   script: string | null;
-  /** Three narration options (explainer / hooky / documentary); empty if legacy single script. */
+  /** Four narration options (explainer / hooky / documentary / self); empty if legacy single script. */
   scriptVariants: ScriptVariantView[];
   selectedScriptId: string | null;
   /** Short on-screen hook phrases for the approval picker (short + longer / 2-line). */
@@ -152,6 +152,7 @@ function parseScriptVariants(step: Record<string, unknown>): {
     explainer: 'Explainer',
     styleB: 'Hooky / hype',
     styleC: 'Documentary',
+    self: 'Self narration',
   };
   const raw = step.scriptVariants;
   const variants: ScriptVariantView[] = [];

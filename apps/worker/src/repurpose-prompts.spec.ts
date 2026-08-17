@@ -145,12 +145,15 @@ describe('finalizeMetadataOutput', () => {
 });
 
 describe('narration prompt', () => {
-  it('asks for three timed variants in the channel language', () => {
+  it('asks for four timed variants including self narration in the channel language', () => {
     const prompt = defaultNarrationRewritePrompt('hi');
-    expect(prompt).toContain('THREE distinct voiceover scripts');
+    expect(prompt).toContain('FOUR distinct voiceover scripts');
     expect(prompt).toContain('explainer');
     expect(prompt).toContain('styleB');
     expect(prompt).toContain('styleC');
+    expect(prompt).toContain('"id": "self"');
+    expect(prompt).toContain('150 WPM');
+    expect(prompt).toContain('minWords');
     expect(prompt).toContain('maxSpokenSec');
     expect(prompt).toContain('Hindi');
   });
@@ -161,10 +164,10 @@ describe('narration prompt', () => {
     expect(prompt).toContain('Narrate the story, not the obvious pixels');
     expect(prompt).toContain('You won\'t believe this');
     expect(prompt).toContain('third person');
+    expect(prompt).toContain('FIRST PERSON');
     expect(prompt).toContain('hasDialogue');
-    expect(prompt).toContain('natural TTS');
+    expect(prompt).toContain('2.5 words/sec');
     expect(prompt).toContain('maxWords');
-    expect(prompt).toContain('breathing room');
     expect(prompt).toContain('0.2–0.5s');
   });
 });
@@ -247,7 +250,7 @@ describe('repurpose schemas', () => {
     expect(parsed.script).toContain('let’s do this');
   });
 
-  it('accepts three narration variants with scene lines', () => {
+  it('accepts four narration variants with scene lines', () => {
     const parsed = narrationRewriteOutputSchema.parse({
       variants: [
         {
@@ -257,8 +260,9 @@ describe('repurpose schemas', () => {
         },
         { id: 'styleB', script: 'Wait until you see this box.' },
         { id: 'styleC', script: 'A sealed box sits on the table.' },
+        { id: 'self', script: 'I open the box. I know that sound. But he pretends not to hear.' },
       ],
     });
-    expect(parsed.variants).toHaveLength(3);
+    expect(parsed.variants).toHaveLength(4);
   });
 });

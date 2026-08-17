@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { TaskType, formatOutputLanguagePolicy, languageDisplayName } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 13;
+export const REPURPOSE_PROMPT_REV = 14;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -65,13 +65,14 @@ export const videoAnalysisOutputSchema = z.object({
 
 export type VideoAnalysisOutput = z.infer<typeof videoAnalysisOutputSchema>;
 
-export const NARRATION_VARIANT_IDS = ['explainer', 'styleB', 'styleC'] as const;
+export const NARRATION_VARIANT_IDS = ['explainer', 'styleB', 'styleC', 'self'] as const;
 export type NarrationVariantId = (typeof NARRATION_VARIANT_IDS)[number];
 
 export const NARRATION_VARIANT_LABELS: Record<NarrationVariantId, string> = {
   explainer: 'Explainer',
   styleB: 'Hooky / hype',
   styleC: 'Documentary',
+  self: 'Self narration',
 };
 
 export const narrationLineSchema = z.object({
@@ -328,7 +329,7 @@ export function defaultNarrationRewritePrompt(language?: string | null): string 
   const lang = languageDisplayName(language);
   return `You are an elite short-form storytelling narrator.
 
-Given a beat-by-beat video analysis, duration budget, optional channel style, and language ${lang}, write THREE distinct voiceover scripts.
+Given a beat-by-beat video analysis, duration budget, optional channel style, and language ${lang}, write FOUR distinct voiceover scripts.
 
 Return ONLY valid JSON:
 {
@@ -364,6 +365,14 @@ Return ONLY valid JSON:
       "script": string,
       "estimatedSpokenSec": number,
       "lines": [{ "startSec": number, "endSec": number, "text": string }]
+    },
+    {
+      "id": "self",
+      "style": "self",
+      "hook": string,
+      "script": string,
+      "estimatedSpokenSec": number,
+      "lines": [{ "startSec": number, "endSec": number, "text": string }]
     }
   ]
 }
@@ -393,21 +402,21 @@ Variant requirements:
 - explainer: clearest and most complete version. Conversational and engaging. If hasDialogue is true or any beat contains spoken conversation, summarize the important question/reply/explanation in third person.
 - styleB (hooky): fastest, punchiest, curiosity-driven version — short rhythmic sentences, stronger open loops, denser stakes language; opening line must feel more viral than explainer.
 - styleC: calm, cinematic, documentary-style storytelling with controlled suspense and smooth progression.
-- The three variants must be genuinely different, not paraphrases.
+- self (self narration): FIRST PERSON as if the speaker is in the footage. Use I / me / my for the narrator's actions and thoughts; he / she / they for everyone else. Fragmented lived beats are OK: "I go there. I know that. But he pretends." Stay grounded in the analysis — do not invent inner thoughts that contradict what is shown. If hasDialogue is true, recast what was said as what I heard / what he told me.
+- The four variants must be genuinely different, not paraphrases.
 
 Timing:
-- The user JSON includes durationSec, maxSpokenSec, maxWords, and beats[] (startSec/endSec/durationSec/maxWords/whatHappens).
-- Assume natural TTS speed of about 2.2–2.5 words/sec. TTS will NOT speed up.
-- Every line must realistically fit inside endSec - startSec (prefer each beat's maxWords ≈ 2.2 words/sec).
+- The user JSON includes durationSec, maxSpokenSec, minWords, maxWords, and beats[] (startSec/endSec/durationSec/minWords/maxWords/whatHappens).
+- A normal speaking voice is about 140–160 words per minute (~2.5 words/sec). Size the FULL script to the video length: aim for minWords–maxWords total (about 150 WPM × duration). Do not return a short sparse VO that ends halfway.
+- Every line must realistically fit inside endSec - startSec (each beat's minWords–maxWords at ~2.5 words/sec).
 - Lines must be chronological, non-overlapping, and within video duration.
 - Prefer one line per beat covering the FULL video timeline (merge tiny beats if needed). Do not stop narrating halfway.
-- Narration does NOT need to fill every second; allow important visuals, reactions, natural sound, or reveals to breathe.
-- Prefer short spoken beats with a natural pause between lines (do not pack sentences back-to-back). Leave ~0.2–0.5s of breathing room between dialogue segments so TTS gaps and original SFX/ambience can punch through.
+- Fill the runtime. Leave only ~0.2–0.5s of breathing room between sentences (TTS concatenates with a short gap). Do not leave long silent stretches unless a reveal needs a brief beat of air.
 - Prefer complete short sentences ending in . ! or ? so TTS can pause between them.
 - Align narration with the relevant visual beat. Early teasing is allowed only when intentional.
 - script must exactly equal all lines[].text concatenated in order as plain prose (spaces, no timestamps).
 - estimatedSpokenSec must reflect actual spoken wording, not video duration.
-- When dialogue exists, still narrate what was said/replied — but keep those lines within the beat maxWords (summarize the exchange if needed).
+- When dialogue exists, still narrate what was said/replied — keep those lines within the beat maxWords (summarize the exchange if needed).
 
 Accuracy:
 - Use only information supported by the analysis.

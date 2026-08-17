@@ -1128,7 +1128,7 @@ function NarrationScriptPanel({
         </div>
       )}
 
-      {/* Script directly under Explainer / Hooky / Documentary tabs */}
+      {/* Script directly under Explainer / Hooky / Documentary / Self tabs */}
       {scriptBlock}
 
       {(hookOptions.length >= 1 || canEdit) && (

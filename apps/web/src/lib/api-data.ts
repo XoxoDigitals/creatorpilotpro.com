@@ -668,7 +668,7 @@ export async function updateNarrationScript(
   });
 }
 
-/** Switch which of the three narration options is active (does not rewrite copy). */
+/** Switch which narration option is active (does not rewrite copy). */
 export async function selectNarrationScript(
   id: string,
   selectedScriptId: string,

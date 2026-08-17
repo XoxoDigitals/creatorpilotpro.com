@@ -3,11 +3,16 @@
  * atempo fit, and scene-aligned line layout from VIDEO_ANALYSIS beats.
  */
 
-/** Conservative speaking rate for budgets (prefer short lines over rush). */
-export const NARRATION_WORDS_PER_SEC = 2.2;
-/** Leave a small tail so TTS never runs past picture. */
-export const NARRATION_DURATION_RATIO = 0.95;
-export const NARRATION_DURATION_MARGIN_SEC = 0.25;
+/**
+ * Conversational speaking rate (~150 words/min). Used to size scripts to
+ * video length so VO covers the picture instead of ending early.
+ */
+export const NARRATION_WORDS_PER_SEC = 2.5;
+/** Fill almost the full picture; small tail + inter-sentence gaps remain. */
+export const NARRATION_DURATION_RATIO = 0.98;
+export const NARRATION_DURATION_MARGIN_SEC = 0.2;
+/** Floor so the model does not return a sparse half-length script. */
+export const NARRATION_MIN_WORD_RATIO = 0.85;
 /** Max atempo before we trim instead of chipmunking (~15% speedup). */
 export const MAX_VO_FIT_SPEED = 1.15;
 /** Ignore tiny overruns — no need to speed 2% of slack. */
@@ -66,6 +71,15 @@ export function narrationWordBudget(
   const budget = narrationBudgetSec(videoDurationSec);
   if (budget == null) return null;
   return Math.max(8, Math.round(budget * NARRATION_WORDS_PER_SEC));
+}
+
+/** Target a full-length script — scripts shorter than this feel sparse. */
+export function narrationMinWordBudget(
+  videoDurationSec: number | null | undefined,
+): number | null {
+  const max = narrationWordBudget(videoDurationSec);
+  if (max == null) return null;
+  return Math.max(6, Math.round(max * NARRATION_MIN_WORD_RATIO));
 }
 
 /** Max spoken words that fit a single beat without rushing past ~1.15× atempo. */
@@ -348,17 +362,20 @@ export function beatsForPrompt(beats: AnalysisBeat[]): {
   endSec: number;
   durationSec: number;
   maxWords: number;
+  minWords: number;
   whatHappens: string;
   visuals: string;
   speechOrAudio: string;
 }[] {
   return beats.map((b) => {
     const durationSec = Math.max(0.2, Number((b.endSec - b.startSec).toFixed(2)));
+    const maxWords = beatWordBudget(durationSec);
     return {
       startSec: b.startSec,
       endSec: b.endSec,
       durationSec,
-      maxWords: beatWordBudget(durationSec),
+      maxWords,
+      minWords: Math.max(1, Math.round(maxWords * NARRATION_MIN_WORD_RATIO)),
       whatHappens: b.whatHappens,
       visuals: b.visuals,
       speechOrAudio: b.speechOrAudio,

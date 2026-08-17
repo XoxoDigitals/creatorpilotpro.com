@@ -58,6 +58,7 @@ import {
   beatsForPrompt,
   clampTimedLinesToBeats,
   narrationBudgetSec,
+  narrationMinWordBudget,
   narrationWordBudget,
 } from './media/vo-timing.js';
 import {
@@ -491,7 +492,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
             .join('; ')}). Open with a compelling narrator hook about them (e.g. "this person from China is very famous for…") using only facts supported by the analysis.`
         : 'If the analysis identifies a person as the subject, open with a compelling hook about them; otherwise use a curiosity/stakes hook.';
     const dialogueHook = hasDialogue
-      ? 'DIALOGUE PRESENT: For the explainer variant, narrate what characters said and replied in third person (She asks… / He replies… / The vendor explains…) using speechOrAudio / analysis — do not ignore spoken conversation.'
+      ? 'DIALOGUE PRESENT: For explainer, narrate what characters said and replied in third person (She asks… / He replies…). For self narration, recast as what I heard / what he told me. Use speechOrAudio / analysis — do not ignore spoken conversation.'
       : '';
     const durationSec = analysisDurationSec(
       currentStep.analysis,
@@ -500,18 +501,21 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
     const beats = analysisBeats(currentStep.analysis);
     const maxSpokenSec = narrationBudgetSec(durationSec);
     const maxWords = narrationWordBudget(durationSec);
+    const minWords = narrationMinWordBudget(durationSec);
     inputText = JSON.stringify({
       title: item.title,
       durationSec,
       maxSpokenSec,
       maxWords,
+      minWords,
+      speakingRateWpm: 150,
       beats: beatsForPrompt(beats),
       analysis: currentStep.analysis ?? item.title,
       people,
       hasDialogue,
       // Present when the owner clicks Regenerate script — busts the AI cache.
       ...(currentStep.scriptNonce != null ? { regenerateNonce: currentStep.scriptNonce } : {}),
-      instruction: `Write THREE distinct narration variants (explainer, hooky/hype, documentary) timed to beats[] and the duration budget (maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, maxWords=${maxWords ?? 'unknown'}). Each line MUST respect that beat's maxWords — shorten rather than rush. Prefer short sentences with natural pauses between lines so TTS gaps and original SFX/ambience can breathe. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 6 on-screen attention phrases — mix punchy short (2–3 words) and longer viral (4–8 words or two short lines separated by | ). Prefer curiosity, stakes, contrast, taboo, money, identity, or reveal angles — never generic ("you won't believe", "watch this"). The hooky/hype variant (styleB) must open with a sharper scroll-stop line and keep sentences shorter/more rhythmic than explainer. ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
+      instruction: `Write FOUR distinct narration variants (explainer, hooky/hype, documentary, self) timed to beats[] and the duration budget (durationSec=${durationSec ?? 'unknown'}s, maxSpokenSec=${maxSpokenSec ?? 'unknown'}s, minWords=${minWords ?? 'unknown'}, maxWords=${maxWords ?? 'unknown'}). Size each script to the video length at ~150 words/minute (2.5 words/sec) — fill minWords–maxWords; do not write a short sparse VO. Each line should use that beat's minWords–maxWords. Prefer short sentences with ~0.3s pauses between lines. Scene-aligned lines[] required when beats are present. Also return overlayHooks: exactly 6 on-screen attention phrases — mix punchy short (2–3 words) and longer viral (4–8 words or two short lines separated by | ). Prefer curiosity, stakes, contrast, taboo, money, identity, or reveal angles — never generic ("you won't believe", "watch this"). The hooky/hype variant (styleB) must open with a sharper scroll-stop line and keep sentences shorter/more rhythmic than explainer. The self variant (id "self") is first-person lived narration: I / me / my for the speaker on screen, he/she/they for others — e.g. "I go there. I know that. But he pretends." ${personHook} ${dialogueHook} Output JSON with overlayHooks[] and variants[].`,
     });
     runInput = { kind: 'text', text: inputText };
   } else {
@@ -555,7 +559,7 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
       ...(schema ? { schema } : {}),
       cacheKey,
       contentItemId,
-      ...(kind === 'analyze' || kind === 'narration' ? { maxTokens: 8192 } : {}),
+        ...(kind === 'analyze' || kind === 'narration' ? { maxTokens: 12288 } : {}),
     });
 
     const updatedStep = { ...currentStep };
@@ -648,12 +652,8 @@ export async function runAi(job: AiJob, boss: PgBoss): Promise<void> {
           ...(aiTitle && placeholderTitle ? { title: aiTitle } : {}),
         },
       });
-      // Chain A/B suggestions (Phase 7 #10) — non-blocking, uses cached input.
-      await boss.send(QUEUE.AI, { kind: 'ab_suggestions', contentItemId }, {
-        singletonKey: `ab-${contentItemId}`,
-      });
       console.log(
-        `[worker:ai] metadata done for ${contentItemId} (tags=${metaOut.tags.length}) — enqueued A/B suggestions`,
+        `[worker:ai] metadata done for ${contentItemId} (tags=${metaOut.tags.length}) — skipping A/B suggestions (manual only)`,
       );
     }
   } catch (err) {
