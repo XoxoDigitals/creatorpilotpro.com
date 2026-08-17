@@ -4,6 +4,7 @@ import { mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { accountIdFromDriveFolderName } from './drive-archive-path.js';
 
 /**
  * Minimal Google Drive client for the media library (docs/02 §6).
@@ -16,8 +17,9 @@ import { pipeline } from 'node:stream/promises';
  *   SA uses the broader `drive` scope so a *shared* parent folder is visible
  *   (drive.file alone cannot see folders the SA did not create).
  *
- * Env bootstrap: GOOGLE_DRIVE_* (see resolveGDriveConfig). Settings → General
- * preferred when non-empty.
+ * Library layout under root: `{Account Name}__{accountId}/{yyyy}/{mm}/`
+ * (see drive-archive-path.ts). Env bootstrap: GOOGLE_DRIVE_* (see
+ * resolveGDriveConfig). Settings → General preferred when non-empty.
  */
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -238,6 +240,77 @@ function driveSupportsAll(): string {
   return 'supportsAllDrives=true&includeItemsFromAllDrives=true';
 }
 
+/**
+ * True when the granted OAuth scope string can browse arbitrary Drive folders
+ * (full `drive` or `drive.readonly`). `drive.file` alone cannot list user folders.
+ */
+export function driveScopeAllowsFolderBrowse(scope: string | null | undefined): boolean {
+  const parts = (scope ?? '')
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.some(
+    (s) =>
+      s === 'https://www.googleapis.com/auth/drive' ||
+      s === 'https://www.googleapis.com/auth/drive.readonly',
+  );
+}
+
+/**
+ * Turn a Google Drive HTTP error into actionable Settings copy.
+ * Google often returns 404 notFound when the token lacks Drive access (privacy).
+ */
+export function formatDriveApiError(status: number, body: string, action: string): string {
+  let googleMsg = '';
+  let reason = '';
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        error?: {
+          message?: string;
+          status?: string;
+          errors?: Array<{ reason?: string; message?: string }>;
+        };
+      };
+      googleMsg = parsed.error?.message ?? parsed.error?.errors?.[0]?.message ?? '';
+      reason =
+        parsed.error?.errors?.[0]?.reason ?? parsed.error?.status ?? '';
+    } catch {
+      /* keep raw body */
+    }
+  }
+
+  const detail = (googleMsg || trimmed).slice(0, 180);
+  const reconnectHint =
+    'Enable Google Drive API for the Cloud project, add scope ' +
+    'https://www.googleapis.com/auth/drive on the OAuth consent screen, then ' +
+    'Settings → Google Drive → Disconnect and Connect with Google again.';
+
+  if (status === 401) {
+    return `${action} failed: Drive credentials expired or invalid. ${reconnectHint}`;
+  }
+  if (
+    status === 403 ||
+    reason === 'accessNotConfigured' ||
+    reason === 'PERMISSION_DENIED' ||
+    /has not been used|disabled|insufficient.?authentication.?scopes|ACCESS_TOKEN_SCOPE/i.test(
+      detail,
+    )
+  ) {
+    return `${action} failed: Drive permission denied. ${reconnectHint}${detail ? ` (${detail})` : ''}`;
+  }
+  if (status === 404 || reason === 'notFound' || /file not found/i.test(detail)) {
+    return (
+      `${action} failed: Google Drive returned not found. ` +
+      `This usually means the token cannot see that folder (missing full drive scope) ` +
+      `or the folder id is wrong. ${reconnectHint}` +
+      (detail ? ` Google said: ${detail}` : '')
+    );
+  }
+  return `${action} failed (${status})${detail ? `: ${detail}` : ''}`;
+}
+
 export class GoogleDriveClient {
   private accessToken: string | null = null;
   private accessExpiryMs = 0;
@@ -316,15 +389,22 @@ export class GoogleDriveClient {
   /**
    * List child folders under `parentId` (use `'root'` for My Drive top level).
    * Used by Settings → Select folder (no Google Picker API required).
+   *
+   * Service accounts have no useful My Drive root — at `root` we list folders
+   * the SA can already see (shared with it / Shared Drives).
    */
   async listFolders(parentId: string = 'root'): Promise<GDriveFolderEntry[]> {
     const token = await this.getAccessToken();
-    const safeParent = parentId.replace(/'/g, "\\'");
-    const q = [
-      `mimeType='application/vnd.google-apps.folder'`,
-      `'${safeParent}' in parents`,
-      'trashed=false',
-    ].join(' and ');
+    const parent = (parentId || 'root').trim() || 'root';
+    const saRootBrowse = this.config.auth === 'service_account' && parent === 'root';
+    const safeParent = parent.replace(/'/g, "\\'");
+    const q = saRootBrowse
+      ? `mimeType='application/vnd.google-apps.folder' and trashed=false`
+      : [
+          `mimeType='application/vnd.google-apps.folder'`,
+          `'${safeParent}' in parents`,
+          'trashed=false',
+        ].join(' and ');
     const out: GDriveFolderEntry[] = [];
     let pageToken: string | undefined;
     do {
@@ -332,7 +412,9 @@ export class GoogleDriveClient {
         q,
         fields: 'nextPageToken,files(id,name)',
         pageSize: '100',
-        orderBy: 'folder,name',
+        orderBy: 'name',
+        spaces: 'drive',
+        corpora: saRootBrowse ? 'allDrives' : 'user',
         supportsAllDrives: 'true',
         includeItemsFromAllDrives: 'true',
       });
@@ -342,7 +424,7 @@ export class GoogleDriveClient {
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');
-        throw new Error(`Drive folder list failed (${res.status}): ${body.slice(0, 200)}`);
+        throw new Error(formatDriveApiError(res.status, body, 'Drive folder list'));
       }
       const json = (await res.json()) as {
         nextPageToken?: string;
@@ -358,7 +440,9 @@ export class GoogleDriveClient {
 
   /**
    * Ensure a nested folder path exists under the configured root
-   * (e.g. `items/{contentItemId}/final`). Returns the leaf folder id.
+   * (e.g. `{Account}__{id}/2026/08`). Returns the leaf folder id.
+   * The first segment is matched by trailing `__{accountId}` when present so
+   * account renames still reuse the same Drive folder.
    */
   async ensureFolderPath(relativePath: string): Promise<string> {
     const parts = relativePath
@@ -366,10 +450,56 @@ export class GoogleDriveClient {
       .map((p) => p.trim())
       .filter(Boolean);
     let parentId = this.config.rootFolderId;
-    for (const name of parts) {
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i]!;
+      if (i === 0) {
+        const accountId = accountIdFromDriveFolderName(name);
+        if (accountId) {
+          parentId = await this.findOrCreateAccountFolder(name, accountId, parentId);
+          continue;
+        }
+      }
       parentId = await this.findOrCreateFolder(name, parentId);
     }
     return parentId;
+  }
+
+  /**
+   * Prefer an existing child folder whose name ends with `__{accountId}`;
+   * otherwise find-or-create by the exact preferred name.
+   */
+  private async findOrCreateAccountFolder(
+    preferredName: string,
+    accountId: string,
+    parentId: string,
+  ): Promise<string> {
+    const token = await this.getAccessToken();
+    const suffix = `__${accountId}`.replace(/'/g, "\\'");
+    const q = [
+      `name contains '${suffix}'`,
+      `mimeType='application/vnd.google-apps.folder'`,
+      `'${parentId}' in parents`,
+      'trashed=false',
+    ].join(' and ');
+    const listUrl =
+      `${DRIVE_FILES}?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=25` +
+      `&${driveSupportsAll()}`;
+    const listRes = await this.fetchImpl(listUrl, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!listRes.ok) {
+      const body = await listRes.text().catch(() => '');
+      throw new Error(formatDriveApiError(listRes.status, body, 'Drive folder list'));
+    }
+    const listed = (await listRes.json()) as {
+      files?: Array<{ id: string; name: string }>;
+    };
+    const exact = listed.files?.find((f) => f.name === preferredName);
+    if (exact?.id) return exact.id;
+    const bySuffix = listed.files?.find((f) => accountIdFromDriveFolderName(f.name) === accountId);
+    if (bySuffix?.id) return bySuffix.id;
+
+    return this.findOrCreateFolder(preferredName, parentId);
   }
 
   private async findOrCreateFolder(name: string, parentId: string): Promise<string> {
@@ -387,7 +517,8 @@ export class GoogleDriveClient {
       headers: { authorization: `Bearer ${token}` },
     });
     if (!listRes.ok) {
-      throw new Error(`Drive folder list failed (${listRes.status})`);
+      const body = await listRes.text().catch(() => '');
+      throw new Error(formatDriveApiError(listRes.status, body, 'Drive folder list'));
     }
     const listed = (await listRes.json()) as { files?: Array<{ id: string }> };
     if (listed.files?.[0]?.id) return listed.files[0].id;

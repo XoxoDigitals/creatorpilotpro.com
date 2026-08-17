@@ -5,6 +5,14 @@ export {
   hotTierPath,
 } from './tiered-storage.js';
 export {
+  sanitizeDriveFolderSegment,
+  driveAccountFolderName,
+  accountIdFromDriveFolderName,
+  driveYearMonthParts,
+  buildDriveArchiveFolderPath,
+  driveArchiveFilename,
+} from './drive-archive-path.js';
+export {
   GoogleDriveClient,
   drivePreviewEmbedUrl,
   assetHasMedia,
@@ -18,6 +26,8 @@ export {
   GDRIVE_OAUTH_SCOPE,
   GDRIVE_CONNECT_OAUTH_SCOPE,
   GDRIVE_SERVICE_ACCOUNT_SCOPE,
+  driveScopeAllowsFolderBrowse,
+  formatDriveApiError,
   type GDriveAuthMode,
   type GDriveConfig,
   type GDriveFolderEntry,

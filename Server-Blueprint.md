@@ -348,9 +348,12 @@ Register exactly (HTTPS, no trailing slash on host):
 
 ```
 https://app.creatorpilotpro.com/api/v1/accounts/connect/google/callback
+https://app.creatorpilotpro.com/api/v1/storage/gdrive/connect/callback
 https://app.creatorpilotpro.com/api/v1/accounts/connect/meta/callback
 https://app.creatorpilotpro.com/api/v1/accounts/connect/tiktok/callback
 ```
+
+Same Google OAuth client for YouTube + Drive; both redirect URIs must be listed.
 
 Privacy / site URL for app review: `https://app.creatorpilotpro.com` and `/legal/*`.
 

@@ -123,11 +123,16 @@ export class TieredStorage implements StorageTier {
   }
 
   /**
-   * Resumable upload local -> Drive mirrored tree; verify size when Drive
+   * Resumable upload local -> Drive library tree; verify size when Drive
    * returns it. `driveFolderPath` is relative to GOOGLE_DRIVE_ROOT_FOLDER_ID
-   * (e.g. `items/{contentItemId}/final`).
+   * (e.g. `{Account}__{id}/2026/08`). Optional `driveFilename` avoids
+   * collisions when many assets share one month folder.
    */
-  async archiveToDrive(obj: StoredObject, driveFolderPath: string): Promise<StoredObject> {
+  async archiveToDrive(
+    obj: StoredObject,
+    driveFolderPath: string,
+    opts?: { driveFilename?: string },
+  ): Promise<StoredObject> {
     const client = this.drive;
     if (!client) {
       // Only fall back to env-only require when no client was injected (callers
@@ -144,7 +149,10 @@ export class TieredStorage implements StorageTier {
       throw new Error('archiveToDrive: object has no localPath to upload.');
     }
 
-    const filename = obj.localPath.split(/[\\/]/).pop() ?? 'asset.bin';
+    const filename =
+      opts?.driveFilename?.trim() ||
+      obj.localPath.split(/[\\/]/).pop() ||
+      'asset.bin';
     const uploaded = await client.uploadFile({
       localPath: obj.localPath,
       filename,

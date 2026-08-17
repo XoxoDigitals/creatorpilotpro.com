@@ -15,6 +15,8 @@ import { ConfigService } from '@nestjs/config';
 import {
   GoogleDriveClient,
   TieredStorage,
+  buildDriveArchiveFolderPath,
+  driveArchiveFilename,
   drivePreviewEmbedUrl,
   hotTierPath,
   md5File,
@@ -22,6 +24,7 @@ import {
   resolveStorageBackend,
   requireGDriveConfig,
   GDRIVE_CONNECT_OAUTH_SCOPE,
+  driveScopeAllowsFolderBrowse,
   type GDriveConfig,
   type GDriveFolderEntry,
   type GDriveSettingsPartial,
@@ -119,6 +122,65 @@ export class StorageService {
     return new TieredStorage({
       drive: cfg ? new GoogleDriveClient(cfg) : null,
     });
+  }
+
+  /**
+   * Resolve account + archive date for Drive library layout
+   * (`{Account}__{id}/{yyyy}/{mm}`). Prefer content publishedAt, else item createdAt.
+   */
+  private async resolveDriveArchiveContext(
+    contentItemId: string,
+    preferredAccountId?: string | null,
+  ): Promise<{ accountId: string | null; accountName: string | null; archiveDate: Date }> {
+    const item = await this.prisma.client.contentItem.findUnique({
+      where: { id: contentItemId },
+      select: {
+        createdAt: true,
+        idea: { select: { account: { select: { id: true, name: true } } } },
+        sourceVideo: {
+          select: {
+            watchedSource: {
+              select: { targetAccount: { select: { id: true, name: true } } },
+            },
+          },
+        },
+        publishTargets: {
+          select: {
+            accountId: true,
+            publishedAt: true,
+            account: { select: { id: true, name: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+          take: 10,
+        },
+      },
+    });
+
+    let account: { id: string; name: string } | null = null;
+    if (preferredAccountId) {
+      account = await this.prisma.client.socialAccount.findFirst({
+        where: { id: preferredAccountId, deletedAt: null },
+        select: { id: true, name: true },
+      });
+    }
+    if (!account) {
+      account =
+        item?.idea?.account ??
+        item?.sourceVideo?.watchedSource?.targetAccount ??
+        item?.publishTargets.find((t) => t.account)?.account ??
+        null;
+    }
+
+    const publishedAts = (item?.publishTargets ?? [])
+      .map((t) => t.publishedAt)
+      .filter((d): d is Date => d != null)
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    return {
+      accountId: account?.id ?? null,
+      accountName: account?.name ?? null,
+      archiveDate: publishedAts[0] ?? item?.createdAt ?? new Date(),
+    };
   }
 
   /**
@@ -226,9 +288,17 @@ export class StorageService {
     if (useDrive) {
       try {
         const tiers = await this.tiersWithResolvedDrive();
+        const ctx = await this.resolveDriveArchiveContext(input.contentItemId, input.accountId);
+        const folderPath = buildDriveArchiveFolderPath({
+          accountId: ctx.accountId,
+          accountName: ctx.accountName,
+          archiveDate: ctx.archiveDate,
+        });
+        const driveFilename = driveArchiveFilename(input.contentItemId, input.kind, dest);
         const archived = await tiers.archiveToDrive(
           { localPath: dest, md5, bytes, state: 'LOCAL' },
-          `items/${input.contentItemId}/${input.kind.toLowerCase()}`,
+          folderPath,
+          { driveFilename },
         );
         driveFileId = archived.driveFileId ?? null;
         const evicted = await tiers.evict(archived);
@@ -320,7 +390,7 @@ export class StorageService {
 
   /** OAuth redirect URI for system-level Drive connect (same Google client as YouTube). */
   private gdriveRedirectUri(): string {
-    const web = process.env.WEB_APP_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
+    const web = this.config.get<string>('webAppUrl') ?? 'http://localhost:3000';
     return `${web}/api/v1/storage/gdrive/connect/callback`;
   }
 
@@ -362,6 +432,13 @@ export class StorageService {
         'Google did not return a refresh token. Revoke app access in Google Account → Security → Third-party access, then Connect again.',
       );
     }
+    if (!driveScopeAllowsFolderBrowse(bundle.scope)) {
+      throw new BadRequestException(
+        'Google did not grant Drive folder access. On the OAuth consent screen add scope ' +
+          'https://www.googleapis.com/auth/drive (not only drive.file), save, revoke this app under ' +
+          'Google Account → Security → Third-party access if needed, then Connect with Google again.',
+      );
+    }
 
     await this.settings.put('storage.gdrive', {
       authMode: 'oauth',
@@ -391,8 +468,16 @@ export class StorageService {
    * already stored (OAuth may be connected without a root folder yet).
    */
   async listGdriveFolders(parentId?: string): Promise<GDriveFolderEntry[]> {
-    const client = await this.driveClientForBrowse();
-    return client.listFolders(parentId?.trim() || 'root');
+    try {
+      const client = await this.driveClientForBrowse();
+      return await client.listFolders(parentId?.trim() || 'root');
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err;
+      const msg =
+        err instanceof Error ? err.message : 'Could not list Google Drive folders.';
+      // BadRequest so the UI toast shows the actionable text (not a generic 500).
+      throw new BadRequestException(msg);
+    }
   }
 
   /** Persist selected library root folder id. */
@@ -481,9 +566,17 @@ export class StorageService {
         : await md5File(asset.localPath);
 
     const tiers = await this.tiersWithResolvedDrive();
+    const ctx = await this.resolveDriveArchiveContext(asset.contentItemId);
+    const folderPath = buildDriveArchiveFolderPath({
+      accountId: ctx.accountId,
+      accountName: ctx.accountName,
+      archiveDate: ctx.archiveDate,
+    });
+    const driveFilename = driveArchiveFilename(asset.contentItemId, asset.kind, asset.localPath);
     const archived = await tiers.archiveToDrive(
       { localPath: asset.localPath, md5, bytes, state: 'LOCAL', driveFileId: asset.driveFileId ?? undefined },
-      `items/${asset.contentItemId}/${asset.kind.toLowerCase()}`,
+      folderPath,
+      { driveFilename },
     );
     const evicted = await tiers.evict(archived);
     const updated = await this.prisma.client.asset.update({

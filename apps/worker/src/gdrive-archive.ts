@@ -3,8 +3,10 @@
  * selects gdrive as the storage backend.
  * Clears localPath after a successful upload so Drive is the system of record.
  *
- * Credentials + backend: Settings → General (`storage.gdrive`, encrypted) merged
- * over GOOGLE_DRIVE_* / STORAGE_BACKEND env bootstrap — same resolve path as the API.
+ * Library path: `{Account Name}__{accountId}/{yyyy}/{mm}/` under the selected
+ * root (find-or-create). Credentials + backend: Settings → General
+ * (`storage.gdrive`, encrypted) merged over GOOGLE_DRIVE_* / STORAGE_BACKEND
+ * env bootstrap — same resolve path as the API.
  *
  * TODO(gdrive): also archive ORIGINAL source downloads + VOICEOVER/BG_AUDIO/
  * SUBTITLE intermediates once finals/thumbnails are stable in production.
@@ -14,6 +16,8 @@ import { join } from 'node:path';
 import {
   GoogleDriveClient,
   TieredStorage,
+  buildDriveArchiveFolderPath,
+  driveArchiveFilename,
   md5File,
   resolveGDriveConfig,
   resolveStorageBackend,
@@ -51,6 +55,50 @@ async function resolveDriveClient(): Promise<GoogleDriveClient | null> {
   return cfg ? new GoogleDriveClient(cfg) : null;
 }
 
+/** Same account resolution order as render-process / content views. */
+async function resolveArchiveContext(contentItemId: string): Promise<{
+  accountId: string | null;
+  accountName: string | null;
+  archiveDate: Date;
+}> {
+  const prisma = getPrisma();
+  const item = await prisma.contentItem.findUnique({
+    where: { id: contentItemId },
+    select: {
+      createdAt: true,
+      idea: { select: { account: { select: { id: true, name: true } } } },
+      sourceVideo: {
+        select: {
+          watchedSource: {
+            select: { targetAccount: { select: { id: true, name: true } } },
+          },
+        },
+      },
+      publishTargets: {
+        select: { accountId: true, publishedAt: true, account: { select: { id: true, name: true } } },
+        orderBy: { createdAt: 'asc' },
+        take: 10,
+      },
+    },
+  });
+
+  const fromIdea = item?.idea?.account ?? null;
+  const fromSource = item?.sourceVideo?.watchedSource?.targetAccount ?? null;
+  const fromTarget = item?.publishTargets.find((t) => t.account)?.account ?? null;
+  const account = fromIdea ?? fromSource ?? fromTarget;
+
+  const publishedAts = (item?.publishTargets ?? [])
+    .map((t) => t.publishedAt)
+    .filter((d): d is Date => d != null)
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  return {
+    accountId: account?.id ?? null,
+    accountName: account?.name ?? null,
+    archiveDate: publishedAts[0] ?? item?.createdAt ?? new Date(),
+  };
+}
+
 export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<void> {
   const settings = await loadGDriveSettingsFromDb();
   if (resolveStorageBackend(settings) !== 'gdrive') return;
@@ -66,6 +114,14 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
       ? { md5: asset.md5, bytes: Number(asset.bytes) }
       : await md5File(asset.localPath);
 
+  const ctx = await resolveArchiveContext(asset.contentItemId);
+  const folderPath = buildDriveArchiveFolderPath({
+    accountId: ctx.accountId,
+    accountName: ctx.accountName,
+    archiveDate: ctx.archiveDate,
+  });
+  const driveFilename = driveArchiveFilename(asset.contentItemId, asset.kind, asset.localPath);
+
   const drive = await resolveDriveClient();
   const tiers = new TieredStorage({ drive });
   const archived = await tiers.archiveToDrive(
@@ -76,7 +132,8 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
       state: 'LOCAL',
       driveFileId: asset.driveFileId ?? undefined,
     },
-    `items/${asset.contentItemId}/${asset.kind.toLowerCase()}`,
+    folderPath,
+    { driveFilename },
   );
 
   const localPath = asset.localPath;

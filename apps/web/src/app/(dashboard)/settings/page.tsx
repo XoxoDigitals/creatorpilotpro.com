@@ -55,6 +55,11 @@ export default function GeneralSettingsPage() {
   const [folders, setFolders] = useState<DriveFolder[]>([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [folderBusy, setFolderBusy] = useState(false);
+  const [webOrigin, setWebOrigin] = useState('http://localhost:3000');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') setWebOrigin(window.location.origin);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -301,8 +306,11 @@ export default function GeneralSettingsPage() {
                   Enable <span className="font-medium">Google Drive API</span> for that Google Cloud project
                 </li>
                 <li>
-                  Add the Drive callback redirect URI on the OAuth client (shown under Platform Apps →
-                  Google)
+                  Add this exact redirect URI on the OAuth client (Google Cloud → Credentials →
+                  your Web client → Authorized redirect URIs), then save:
+                  <code className="mt-1 block break-all rounded bg-zinc-200 px-2 py-1 font-mono text-[11px] text-zinc-900">
+                    {`${webOrigin}/api/v1/storage/gdrive/connect/callback`}
+                  </code>
                 </li>
                 <li>
                   Click <span className="font-medium">Connect with Google</span>, then{' '}
@@ -455,6 +463,15 @@ export default function GeneralSettingsPage() {
                 {driveStatus?.googleAppConfigured === false && !oauthConnected && (
                   <p className="w-full text-[11px] text-amber-800">
                     Add Client ID/Secret in Settings → Platform Apps → Google first.
+                  </p>
+                )}
+                {!oauthConnected && (
+                  <p className="w-full text-[11px] text-zinc-600">
+                    If Google shows <span className="font-medium">redirect_uri_mismatch</span>, add
+                    this URI exactly (same as Platform Apps):
+                    <code className="mt-1 block break-all rounded bg-zinc-100 px-2 py-1 font-mono text-[11px] text-zinc-900">
+                      {`${webOrigin}/api/v1/storage/gdrive/connect/callback`}
+                    </code>
                   </p>
                 )}
               </div>

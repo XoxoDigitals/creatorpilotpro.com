@@ -3,10 +3,46 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import {
   buildServiceAccountAssertion,
+  driveScopeAllowsFolderBrowse,
+  formatDriveApiError,
   normalizePrivateKey,
   resolveGDriveConfig,
   resolveStorageBackend,
 } from './gdrive-client.js';
+
+test('driveScopeAllowsFolderBrowse accepts full drive / readonly only', () => {
+  assert.equal(
+    driveScopeAllowsFolderBrowse('https://www.googleapis.com/auth/drive'),
+    true,
+  );
+  assert.equal(
+    driveScopeAllowsFolderBrowse(
+      'https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/drive',
+    ),
+    true,
+  );
+  assert.equal(
+    driveScopeAllowsFolderBrowse('https://www.googleapis.com/auth/drive.readonly'),
+    true,
+  );
+  assert.equal(
+    driveScopeAllowsFolderBrowse('https://www.googleapis.com/auth/drive.file'),
+    false,
+  );
+  assert.equal(driveScopeAllowsFolderBrowse('https://www.googleapis.com/auth/youtube'), false);
+});
+
+test('formatDriveApiError maps 404 notFound to reconnect guidance', () => {
+  const msg = formatDriveApiError(
+    404,
+    JSON.stringify({
+      error: { code: 404, message: 'File not found: .', errors: [{ reason: 'notFound' }] },
+    }),
+    'Drive folder list',
+  );
+  assert.match(msg, /not found/i);
+  assert.match(msg, /drive scope|Connect with Google/i);
+});
 
 test('normalizePrivateKey unescapes JSON-style \\n', () => {
   const normalized = normalizePrivateKey('-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----\\n');

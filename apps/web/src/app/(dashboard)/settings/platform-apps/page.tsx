@@ -136,6 +136,21 @@ export default function PlatformAppsPage() {
             Save Google OAuth
           </Button>
 
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-950">
+            <p className="font-semibold text-amber-950">
+              Authorized redirect URIs (paste exactly into Google Cloud → OAuth client)
+            </p>
+            <p className="mt-1 text-amber-900/90">
+              Must match character-for-character (https, no trailing slash on the host). Drive Connect
+              fails with <code className="rounded bg-amber-100 px-1">redirect_uri_mismatch</code> if
+              only the YouTube URI is registered.
+            </p>
+            <div className="mt-2 space-y-2">
+              <RedirectUriRow label="YouTube channel connect" url={googleRedirect} />
+              <RedirectUriRow label="Google Drive media library" url={gdriveRedirect} />
+            </div>
+          </div>
+
           <SetupGuide title="How to set up Google Cloud">
             <ol className="ml-4 list-decimal space-y-2">
               <li>Open the <ExtLink href="https://console.cloud.google.com/projectcreate">Google Cloud console</ExtLink> and create a new project (or use an existing one).</li>
@@ -146,7 +161,7 @@ export default function PlatformAppsPage() {
               </li>
               <li>Configure the <ExtLink href="https://console.cloud.google.com/apis/credentials/consent">OAuth consent screen</ExtLink>. If your channels live under a Google Workspace organization, choose <b>Internal</b> — this skips app verification entirely.</li>
               <li>Go to <ExtLink href="https://console.cloud.google.com/apis/credentials">Credentials → Create credentials → OAuth client ID</ExtLink>. Application type = <b>Web application</b>.</li>
-              <li>Add these <b>Authorized redirect URIs</b> and save: <Callback url={googleRedirect} /> (YouTube) and <Callback url={gdriveRedirect} /> (Drive media library).</li>
+              <li>Add both <b>Authorized redirect URIs</b> from the amber box above (YouTube + Drive) and save. Do not use the API host or a different path.</li>
               <li>Add scopes on the OAuth consent screen: <code className="rounded bg-zinc-100 px-1">youtube</code> (manage / upload / thumbnails), <code className="rounded bg-zinc-100 px-1">youtube.readonly</code>, <code className="rounded bg-zinc-100 px-1">yt-analytics.readonly</code>, <code className="rounded bg-zinc-100 px-1">yt-analytics-monetary.readonly</code> (revenue), and <code className="rounded bg-zinc-100 px-1">drive</code> (Settings → Google Drive Connect + folder pick). Re-connect after changing scopes.</li>
               <li>Copy the generated <b>Client ID</b> and <b>Client Secret</b> into the fields above and click <b>Save Google OAuth</b>.</li>
               <li>YouTube&apos;s default upload quota is 6 videos/day per project. Request more via the <b>YouTube API Services - Audit and Quota Extension</b> form linked from the Cloud console. Approvals typically take 1–4 weeks.</li>
@@ -270,6 +285,32 @@ function Callback({ url }: { url: string }) {
     <code className="mt-1 block break-all rounded bg-zinc-100 px-2 py-1 text-[11px] text-zinc-800">
       {url}
     </code>
+  );
+}
+
+function RedirectUriRow({ label, url }: { label: string; url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div>
+      <p className="mb-0.5 text-[11px] font-medium text-amber-900">{label}</p>
+      <div className="flex flex-wrap items-start gap-2">
+        <code className="min-w-0 flex-1 break-all rounded border border-amber-200 bg-white px-2 py-1.5 font-mono text-[11px] text-zinc-900">
+          {url}
+        </code>
+        <button
+          type="button"
+          className="shrink-0 rounded border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-950 hover:bg-amber-100"
+          onClick={() => {
+            void navigator.clipboard.writeText(url).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </div>
   );
 }
 
