@@ -442,14 +442,16 @@ model Asset {
   contentItemId String
   contentItem   ContentItem  @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
   kind          AssetKind
-  localPath     String?
-  driveFileId   String?
-  md5           String?
-  bytes         BigInt?
-  durationSec   Float?
-  width         Int?
-  height        Int?
-  storageState  StorageState @default(LOCAL)
+  localPath        String?
+  driveFileId      String?
+  /// When the binary was successfully uploaded to Google Drive (embed readiness clock).
+  driveUploadedAt  DateTime?
+  md5              String?
+  bytes            BigInt?
+  durationSec      Float?
+  width            Int?
+  height           Int?
+  storageState     StorageState @default(LOCAL)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

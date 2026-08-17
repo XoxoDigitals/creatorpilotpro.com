@@ -1,5 +1,5 @@
 import type { Asset, ContentItem } from '@scp/db';
-import { assetHasMedia, drivePreviewEmbedUrl } from '@scp/storage';
+import { assetHasMedia, resolveAssetEmbedUrl } from '@scp/storage';
 import { buildHookTextVariants, isOverlayOffId, OVERLAY_OFF_ID, normalizeColorFilterPreset, normalizeYoutubeFormat } from '@scp/shared';
 import { toAssetView, type AssetView } from '../storage/asset.view';
 
@@ -298,19 +298,25 @@ function parsePublishMetadata(raw: unknown): {
 }
 
 function pickEmbedUrl(
-  assets: Pick<Asset, 'kind' | 'localPath' | 'driveFileId'>[],
+  assets: Pick<Asset, 'kind' | 'localPath' | 'driveFileId' | 'driveUploadedAt'>[],
   kinds: Asset['kind'][],
 ): string | null {
   for (const kind of kinds) {
-    const asset = assets.find((a) => a.kind === kind && a.driveFileId);
-    if (asset?.driveFileId) return drivePreviewEmbedUrl(asset.driveFileId);
+    const asset = assets.find((a) => a.kind === kind && (a.localPath || a.driveFileId));
+    if (!asset) continue;
+    const url = resolveAssetEmbedUrl({
+      driveFileId: asset.driveFileId,
+      driveUploadedAt: asset.driveUploadedAt,
+      localPath: asset.localPath,
+    });
+    if (url) return url;
   }
   return null;
 }
 
 export function toAiPipelineItemView(
   c: ContentItem & {
-    assets?: Pick<Asset, 'kind' | 'localPath' | 'driveFileId'>[];
+    assets?: Pick<Asset, 'kind' | 'localPath' | 'driveFileId' | 'driveUploadedAt'>[];
     publishTargets?: { accountId: string; account?: { platform: string } | null }[];
     idea?: { accountId?: string; account?: { platform: string } | null } | null;
     sourceVideo?: {

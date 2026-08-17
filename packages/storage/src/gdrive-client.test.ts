@@ -4,10 +4,14 @@ import { generateKeyPairSync } from 'node:crypto';
 import {
   buildServiceAccountAssertion,
   driveScopeAllowsFolderBrowse,
+  DRIVE_EMBED_READY_MS,
   formatDriveApiError,
+  isDriveEmbedReady,
+  localPurgeAt,
   normalizeDriveListParentId,
   normalizePrivateKey,
   parseDriveFolderId,
+  resolveAssetEmbedUrl,
   resolveGDriveConfig,
   resolveStorageBackend,
 } from './gdrive-client.js';
@@ -184,4 +188,59 @@ test('buildServiceAccountAssertion produces a 3-part RS256 JWT', () => {
   };
   assert.equal(claim.iss, 'sa@project.iam.gserviceaccount.com');
   assert.equal(claim.scope, 'https://www.googleapis.com/auth/drive');
+});
+
+test('DRIVE_EMBED_READY_MS is 12 hours', () => {
+  assert.equal(DRIVE_EMBED_READY_MS, 12 * 60 * 60 * 1000);
+});
+
+test('isDriveEmbedReady requires upload age ≥ 12 hours', () => {
+  const now = new Date('2026-08-16T18:00:00.000Z');
+  assert.equal(isDriveEmbedReady(null, now), false);
+  assert.equal(isDriveEmbedReady(new Date('2026-08-16T12:00:00.000Z'), now), false);
+  assert.equal(isDriveEmbedReady(new Date('2026-08-16T06:00:00.000Z'), now), true);
+  assert.equal(isDriveEmbedReady('2026-08-15T18:00:00.000Z', now), true);
+});
+
+test('localPurgeAt is driveUploadedAt + 12h (null when local-only)', () => {
+  assert.equal(localPurgeAt(null), null);
+  assert.equal(
+    localPurgeAt(new Date('2026-08-16T06:00:00.000Z'))?.toISOString(),
+    '2026-08-16T18:00:00.000Z',
+  );
+});
+
+test('resolveAssetEmbedUrl prefers local until Drive embed is ready', () => {
+  const now = new Date('2026-08-16T18:00:00.000Z');
+  const fileId = 'drive-file-1';
+  // Dual store, fresh upload → no embed (use local stream).
+  assert.equal(
+    resolveAssetEmbedUrl({
+      driveFileId: fileId,
+      driveUploadedAt: new Date('2026-08-16T17:00:00.000Z'),
+      localPath: '/data/items/x/final/out.mp4',
+      now,
+    }),
+    null,
+  );
+  // Dual store, ≥12h → Drive preview.
+  assert.match(
+    resolveAssetEmbedUrl({
+      driveFileId: fileId,
+      driveUploadedAt: new Date('2026-08-16T06:00:00.000Z'),
+      localPath: '/data/items/x/final/out.mp4',
+      now,
+    }) ?? '',
+    /drive-file-1/,
+  );
+  // Drive-only → embed immediately even if not ready.
+  assert.match(
+    resolveAssetEmbedUrl({
+      driveFileId: fileId,
+      driveUploadedAt: new Date('2026-08-16T17:00:00.000Z'),
+      localPath: null,
+      now,
+    }) ?? '',
+    /drive-file-1/,
+  );
 });

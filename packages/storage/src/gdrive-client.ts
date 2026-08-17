@@ -3,7 +3,6 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { accountIdFromDriveFolderName } from './drive-archive-path.js';
 
 /**
@@ -68,6 +67,61 @@ export interface GDriveUploadResult {
 /** iframe / preview URL for Drive-hosted media. */
 export function drivePreviewEmbedUrl(fileId: string): string {
   return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/preview`;
+}
+
+/**
+ * Google needs time to process uploaded video for iframe playback. Until this
+ * window elapses, prefer the local media stream when a hot-tier copy exists.
+ */
+export const DRIVE_EMBED_READY_MS = 12 * 60 * 60 * 1000;
+
+/** True when Drive upload is old enough for reliable preview/embed playback. */
+export function isDriveEmbedReady(
+  driveUploadedAt: Date | string | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (driveUploadedAt == null) return false;
+  const t =
+    typeof driveUploadedAt === 'string'
+      ? Date.parse(driveUploadedAt)
+      : driveUploadedAt.getTime();
+  if (!Number.isFinite(t)) return false;
+  return now.getTime() - t >= DRIVE_EMBED_READY_MS;
+}
+
+/**
+ * Scheduled local hot-tier purge time for dual-store assets: Drive upload + 12h
+ * (same clock as embed readiness). Local-only assets have no auto-delete.
+ */
+export function localPurgeAt(
+  driveUploadedAt: Date | string | null | undefined,
+): Date | null {
+  if (driveUploadedAt == null) return null;
+  const t =
+    typeof driveUploadedAt === 'string'
+      ? Date.parse(driveUploadedAt)
+      : driveUploadedAt.getTime();
+  if (!Number.isFinite(t)) return null;
+  return new Date(t + DRIVE_EMBED_READY_MS);
+}
+
+/**
+ * Drive preview URL only when upload age ≥ 12h (or there is no local copy to
+ * stream). Drive-only assets fall back to embed immediately so the UI still
+ * has a player — callers may surface a "still processing" note when not ready.
+ */
+export function resolveAssetEmbedUrl(input: {
+  driveFileId?: string | null;
+  driveUploadedAt?: Date | string | null;
+  localPath?: string | null;
+  now?: Date;
+}): string | null {
+  if (!input.driveFileId) return null;
+  const hasLocal = Boolean(input.localPath);
+  if (hasLocal && !isDriveEmbedReady(input.driveUploadedAt, input.now)) {
+    return null;
+  }
+  return drivePreviewEmbedUrl(input.driveFileId);
 }
 
 /** True when an asset row can be shown or published (local and/or Drive). */
@@ -704,8 +758,38 @@ export class GoogleDriveClient {
     }
   }
 
-  /** Download a Drive file to a local path (publish restore / re-edit). */
-  async downloadFile(fileId: string, destPath: string): Promise<void> {
+  /** Metadata used to verify binary downloads (original bytes, not export). */
+  async getFileMetadata(fileId: string): Promise<{
+    md5Checksum: string | null;
+    size: number | null;
+    mimeType: string | null;
+  }> {
+    const token = await this.getAccessToken();
+    const res = await this.fetchImpl(
+      `${DRIVE_FILES}/${encodeURIComponent(fileId)}?fields=md5Checksum,size,mimeType&${driveSupportsAll()}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Drive metadata failed (${res.status}): ${body.slice(0, 200)}`);
+    }
+    const file = (await res.json()) as {
+      md5Checksum?: string;
+      size?: string;
+      mimeType?: string;
+    };
+    return {
+      md5Checksum: file.md5Checksum?.toLowerCase() ?? null,
+      size: file.size ? Number(file.size) : null,
+      mimeType: file.mimeType ?? null,
+    };
+  }
+
+  /**
+   * Download original binary bytes (`alt=media`) to a local path.
+   * Verifies Content-Length when present so truncated downloads fail fast.
+   */
+  async downloadFile(fileId: string, destPath: string): Promise<{ bytes: number }> {
     const token = await this.getAccessToken();
     await mkdir(dirname(destPath), { recursive: true });
     const res = await this.fetchImpl(
@@ -716,14 +800,41 @@ export class GoogleDriveClient {
       const body = await res.text().catch(() => '');
       throw new Error(`Drive download failed (${res.status}): ${body.slice(0, 200)}`);
     }
-    // Convert web ReadableStream → Node Writable via pipeline when possible.
+    const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+    if (contentType.includes('text/html') || contentType.includes('application/json')) {
+      const body = await res.text().catch(() => '');
+      throw new Error(
+        `Drive download returned non-binary content-type ${contentType}: ${body.slice(0, 200)}`,
+      );
+    }
+    const expectedLenHeader = res.headers.get('content-length');
+    const expectedLen = expectedLenHeader ? Number(expectedLenHeader) : null;
+    let bytes = 0;
     const nodeStream = res.body as unknown as Readable;
+    const out = createWriteStream(destPath);
     try {
-      await pipeline(nodeStream, createWriteStream(destPath));
+      for await (const chunk of nodeStream) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bytes += buf.length;
+        if (!out.write(buf)) {
+          await new Promise<void>((resolve) => out.once('drain', resolve));
+        }
+      }
+      await new Promise<void>((resolve, reject) => {
+        out.end(() => resolve());
+        out.on('error', reject);
+      });
     } catch (err) {
       await unlink(destPath).catch(() => undefined);
       throw err;
     }
+    if (expectedLen != null && Number.isFinite(expectedLen) && bytes !== expectedLen) {
+      await unlink(destPath).catch(() => undefined);
+      throw new Error(
+        `Drive download truncated — Content-Length ${expectedLen}, received ${bytes}`,
+      );
+    }
+    return { bytes };
   }
 }
 

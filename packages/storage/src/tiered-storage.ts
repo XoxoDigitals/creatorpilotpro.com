@@ -68,9 +68,10 @@ function guessMime(filename: string): string {
  *
  * - `putLocal` always registers a file already on disk.
  * - `archiveToDrive` uploads to the configured library folder when Drive env
- *   is present (required when STORAGE_BACKEND=gdrive).
- * - `restore` prefers a valid local copy; otherwise downloads from Drive.
- * - `evict` deletes the local copy after Drive id is present.
+ *   is present (required when STORAGE_BACKEND=gdrive) and leaves local in place
+ *   (`BOTH`) so preview/publish can use the hot tier until Drive embed is ready.
+ * - `restore` prefers a valid local copy; otherwise downloads original bytes from Drive.
+ * - `evict` deletes the local copy after Drive id is present (optional space reclaim).
  */
 export class TieredStorage implements StorageTier {
   private readonly drive: GoogleDriveClient | null;
@@ -123,8 +124,8 @@ export class TieredStorage implements StorageTier {
   }
 
   /**
-   * Resumable upload local -> Drive library tree; verify size when Drive
-   * returns it. `driveFolderPath` is relative to GOOGLE_DRIVE_ROOT_FOLDER_ID
+   * Resumable upload local -> Drive library tree; verify size + md5 when Drive
+   * returns them. `driveFolderPath` is relative to GOOGLE_DRIVE_ROOT_FOLDER_ID
    * (e.g. `{Account}__{id}/2026/08`). Optional `driveFilename` avoids
    * collisions when many assets share one month folder.
    */
@@ -166,9 +167,17 @@ export class TieredStorage implements StorageTier {
         `archiveToDrive: Drive size mismatch — local ${obj.bytes}, Drive ${uploaded.size}`,
       );
     }
+    const driveMd5 = uploaded.md5Checksum?.toLowerCase() ?? null;
+    const localMd5 = obj.md5.toLowerCase();
+    if (driveMd5 && driveMd5 !== localMd5) {
+      throw new Error(
+        `archiveToDrive: md5 mismatch — local ${localMd5}, Drive ${driveMd5}`,
+      );
+    }
 
     return {
       ...obj,
+      md5: driveMd5 ?? localMd5,
       driveFileId: uploaded.fileId,
       state: obj.localPath ? 'BOTH' : 'DRIVE',
     };
@@ -176,7 +185,8 @@ export class TieredStorage implements StorageTier {
 
   /**
    * Pull an evicted/Drive object back to the hot tier for re-edit/re-publish.
-   * Local-present fast path when md5 still matches; otherwise download from Drive.
+   * Prefers an intact local copy; otherwise downloads original bytes via
+   * `alt=media` and verifies against Drive's md5Checksum (updates stale DB hashes).
    */
   async restore(obj: StoredObject, destPath: string): Promise<StoredObject> {
     if (obj.localPath) {
@@ -184,10 +194,15 @@ export class TieredStorage implements StorageTier {
         const stats = await stat(obj.localPath);
         if (stats.isFile()) {
           const { md5, bytes } = await md5File(obj.localPath);
-          // Prefer exact md5 match; if Drive is unavailable, still use the local file.
-          if (!obj.md5 || md5 === obj.md5 || !obj.driveFileId) {
-            return { ...obj, localPath: obj.localPath, md5, bytes, state: 'LOCAL' };
-          }
+          // Intact local wins for publish/preview (dual-store). Recompute hash
+          // when the DB value drifted so callers can persist the correction.
+          return {
+            ...obj,
+            localPath: obj.localPath,
+            md5,
+            bytes,
+            state: obj.driveFileId ? 'BOTH' : 'LOCAL',
+          };
         }
       } catch {
         // Fall through to Drive restore.
@@ -203,18 +218,38 @@ export class TieredStorage implements StorageTier {
         'restore: Drive client not configured — cannot pull Drive-only object to hot tier.',
       );
     }
+
+    const meta = await client.getFileMetadata(obj.driveFileId);
     await client.downloadFile(obj.driveFileId, destPath);
     const { md5, bytes } = await md5File(destPath);
-    if (obj.md5 && md5 !== obj.md5) {
+
+    if (meta.size != null && bytes !== meta.size) {
       await unlink(destPath).catch(() => undefined);
       throw new Error(
-        `restore: md5 mismatch after Drive download — expected ${obj.md5}, got ${md5}`,
+        `restore: incomplete Drive download — expected ${meta.size} bytes, got ${bytes}`,
       );
     }
+
+    const driveMd5 = meta.md5Checksum;
+    const expected = obj.md5?.toLowerCase() || null;
+    if (driveMd5 && md5 !== driveMd5) {
+      await unlink(destPath).catch(() => undefined);
+      throw new Error(
+        `restore: md5 mismatch after Drive download — Drive metadata ${driveMd5}, got ${md5}`,
+      );
+    }
+    if (!driveMd5 && expected && md5 !== expected) {
+      await unlink(destPath).catch(() => undefined);
+      throw new Error(
+        `restore: md5 mismatch after Drive download — expected ${expected}, got ${md5}`,
+      );
+    }
+    // Prefer Drive checksum (authoritative for the stored binary). If DB had a
+    // stale local hash that differed, accepting driveMd5/md5 corrects it.
     return {
       ...obj,
       localPath: destPath,
-      md5,
+      md5: driveMd5 ?? md5,
       bytes,
       state: 'BOTH',
     };

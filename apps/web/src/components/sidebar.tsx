@@ -125,7 +125,7 @@ export function Sidebar({ user }: { user: SessionUser }) {
     { href: '/calendar', label: 'Calendar', icon: 'calendar' },
     { href: '/review', label: 'Review Queue', icon: 'review', badge: pendingReviews },
     { href: '/incidents', label: 'Incidents', icon: 'incidents', badge: openIncidents },
-    ...(canManageSystem ? [{ href: '/workers', label: 'Production', icon: 'workers' }] : []),
+    ...(canManageSystem ? [{ href: '/workers', label: 'Workers', icon: 'workers' }] : []),
     { href: '/analytics', label: 'Analytics', icon: 'analytics' },
   ];
 

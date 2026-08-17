@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { stat } from 'node:fs/promises';
 import type { ContentItemStatus, Prisma } from '@scp/db';
 import { withPublishReviewApproved, normalizeCaptionTemplateId, normalizeOverlayYPercent, normalizeCaptionColorMode, normalizeColorFilterPreset, normalizeYoutubeFormat, isOverlayOffId, OVERLAY_OFF_ID } from '@scp/shared';
-import { drivePreviewEmbedUrl } from '@scp/storage';
+import { isDriveEmbedReady, resolveAssetEmbedUrl } from '@scp/storage';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
 import { AiService } from '../ai/ai.service';
@@ -20,7 +20,7 @@ import type { CreateContentDto } from './dto/content.dto';
 const pipelineItemInclude = {
   assets: {
     where: { kind: { in: ['FINAL', 'ORIGINAL', 'THUMBNAIL'] } },
-    select: { kind: true, localPath: true, driveFileId: true },
+    select: { kind: true, localPath: true, driveFileId: true, driveUploadedAt: true },
   },
   publishTargets: {
     select: { accountId: true, account: { select: { platform: true } } },
@@ -317,7 +317,7 @@ export class ContentService {
       include: {
         assets: {
           where: { kind: { in: ['FINAL', 'ORIGINAL', 'THUMBNAIL'] } },
-          select: { kind: true, localPath: true, driveFileId: true },
+          select: { kind: true, localPath: true, driveFileId: true, driveUploadedAt: true },
         },
         publishTargets: {
           select: { accountId: true, account: { select: { platform: true } } },
@@ -346,7 +346,7 @@ export class ContentService {
       include: {
         assets: {
           where: { kind: { in: ['FINAL', 'ORIGINAL'] } },
-          select: { kind: true, localPath: true, driveFileId: true },
+          select: { kind: true, localPath: true, driveFileId: true, driveUploadedAt: true },
         },
         publishTargets: {
           where: { status: { in: ['PENDING', 'SCHEDULED'] } },
@@ -630,7 +630,7 @@ export class ContentService {
       include: {
         assets: {
           where: { kind: { in: ['FINAL', 'ORIGINAL', 'THUMBNAIL'] } },
-          select: { kind: true, localPath: true, driveFileId: true },
+          select: { kind: true, localPath: true, driveFileId: true, driveUploadedAt: true },
         },
         publishTargets: {
           select: { accountId: true, account: { select: { platform: true } } },
@@ -679,7 +679,7 @@ export class ContentService {
       include: {
         assets: {
           where: { kind: { in: ['FINAL', 'ORIGINAL', 'THUMBNAIL'] } },
-          select: { kind: true, localPath: true, driveFileId: true },
+          select: { kind: true, localPath: true, driveFileId: true, driveUploadedAt: true },
         },
         publishTargets: {
           select: { accountId: true, account: { select: { platform: true } } },
@@ -908,8 +908,8 @@ export class ContentService {
   /**
    * Look up the streamable video for a content item. Prefers FINAL (trimmed
    * & normalized) and falls back to ORIGINAL. Pass `prefer` to pin one kind
-   * (AI pipeline original vs rendered previews). Returns either a local path
-   * to stream or a Drive embed URL when the asset lives only in Drive.
+   * (AI pipeline original vs rendered previews). Prefers local stream; Drive
+   * embed only after the 12h readiness window (or immediately if Drive-only).
    */
   async getPlayableAsset(
     id: string,
@@ -920,6 +920,7 @@ export class ContentService {
     mimeType: string;
     driveFileId?: string;
     embedUrl?: string;
+    driveEmbedPending?: boolean;
   } | null> {
     const item = await this.prisma.client.contentItem.findFirst({
       where: { id, deletedAt: null },
@@ -937,10 +938,28 @@ export class ContentService {
       .find((a): a is NonNullable<typeof a> => !!a);
     if (!asset) return null;
 
+    const embedUrl =
+      resolveAssetEmbedUrl({
+        driveFileId: asset.driveFileId,
+        driveUploadedAt: asset.driveUploadedAt,
+        localPath: asset.localPath,
+      }) ?? undefined;
+    const driveEmbedPending = Boolean(
+      asset.driveFileId && asset.localPath && !isDriveEmbedReady(asset.driveUploadedAt),
+    );
+
     if (asset.localPath) {
       try {
         const s = await stat(asset.localPath);
-        return { path: asset.localPath, bytes: s.size, mimeType: 'video/mp4' };
+        return {
+          path: asset.localPath,
+          bytes: s.size,
+          mimeType: 'video/mp4',
+          driveFileId: asset.driveFileId ?? undefined,
+          // After 12h, UI may prefer Drive embed; still expose local path for stream fallback.
+          embedUrl,
+          driveEmbedPending,
+        };
       } catch {
         // Fall through to Drive if local missing.
       }
@@ -949,13 +968,19 @@ export class ContentService {
       return {
         mimeType: 'video/mp4',
         driveFileId: asset.driveFileId,
-        embedUrl: drivePreviewEmbedUrl(asset.driveFileId),
+        // Drive-only: embed even inside the processing window (no local stream).
+        embedUrl: resolveAssetEmbedUrl({
+          driveFileId: asset.driveFileId,
+          driveUploadedAt: asset.driveUploadedAt,
+          localPath: null,
+        })!,
+        driveEmbedPending: !isDriveEmbedReady(asset.driveUploadedAt),
       };
     }
     return null;
   }
 
-  /** Stored thumbnail — local stream or Drive embed. */
+  /** Stored thumbnail — local stream or Drive embed (12h rule when local exists). */
   async getThumbnailAsset(
     id: string,
   ): Promise<{
@@ -964,6 +989,7 @@ export class ContentService {
     mimeType: string;
     driveFileId?: string;
     embedUrl?: string;
+    driveEmbedPending?: boolean;
   } | null> {
     const item = await this.prisma.client.contentItem.findFirst({
       where: { id, deletedAt: null },
@@ -972,6 +998,16 @@ export class ContentService {
     if (!item) throw new NotFoundException('Content item not found.');
     const asset = item.assets.find((a) => a.localPath || a.driveFileId);
     if (!asset) return null;
+
+    const embedUrl =
+      resolveAssetEmbedUrl({
+        driveFileId: asset.driveFileId,
+        driveUploadedAt: asset.driveUploadedAt,
+        localPath: asset.localPath,
+      }) ?? undefined;
+    const driveEmbedPending = Boolean(
+      asset.driveFileId && asset.localPath && !isDriveEmbedReady(asset.driveUploadedAt),
+    );
 
     if (asset.localPath) {
       const ext = asset.localPath.split('.').pop()?.toLowerCase() ?? '';
@@ -985,7 +1021,14 @@ export class ContentService {
               : 'image/jpeg';
       try {
         const s = await stat(asset.localPath);
-        return { path: asset.localPath, bytes: s.size, mimeType };
+        return {
+          path: asset.localPath,
+          bytes: s.size,
+          mimeType,
+          driveFileId: asset.driveFileId ?? undefined,
+          embedUrl,
+          driveEmbedPending,
+        };
       } catch {
         // Fall through.
       }
@@ -994,7 +1037,12 @@ export class ContentService {
       return {
         mimeType: 'image/jpeg',
         driveFileId: asset.driveFileId,
-        embedUrl: drivePreviewEmbedUrl(asset.driveFileId),
+        embedUrl: resolveAssetEmbedUrl({
+          driveFileId: asset.driveFileId,
+          driveUploadedAt: asset.driveUploadedAt,
+          localPath: null,
+        })!,
+        driveEmbedPending: !isDriveEmbedReady(asset.driveUploadedAt),
       };
     }
     return null;

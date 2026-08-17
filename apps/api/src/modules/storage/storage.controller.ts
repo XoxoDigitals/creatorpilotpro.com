@@ -2,7 +2,9 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
+  Param,
   Post,
   Put,
   Query,
@@ -13,7 +15,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { StorageService } from './storage.service';
-import type { AssetView } from './asset.view';
+import type { AssetView, LocalAssetView } from './asset.view';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { Audit } from '../../common/decorators/audit.decorator';
@@ -26,6 +28,12 @@ const setRootFolderSchema = z.object({
 });
 
 type SetRootFolderDto = z.infer<typeof setRootFolderSchema>;
+
+const bulkLocalIdsSchema = z.object({
+  assetIds: z.array(z.string().min(1)).min(1).max(200),
+});
+
+type BulkLocalIdsDto = z.infer<typeof bulkLocalIdsSchema>;
 
 /**
  * Storage module (docs/02 §6, docs/06 §2). Manual media upload → hot tier and/or
@@ -42,6 +50,39 @@ export class StorageController {
   @Roles('OWNER', 'ADMIN')
   async status() {
     return this.storage.driveStatus();
+  }
+
+  /** Local hot-tier video inventory (Workers page). OWNER/ADMIN only. */
+  @Get('local-assets')
+  @Roles('OWNER', 'ADMIN')
+  listLocalAssets(): Promise<LocalAssetView[]> {
+    return this.storage.listLocalAssets();
+  }
+
+  /** Bulk delete — static path before :id routes. */
+  @Post('local-assets/delete-local')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('asset.deleteLocalBulk', 'Asset')
+  deleteLocalBulk(@Body(new ZodBody(bulkLocalIdsSchema)) body: BulkLocalIdsDto) {
+    return this.storage.deleteLocalAssets(body.assetIds);
+  }
+
+  @Delete('local-assets/:id')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('asset.deleteLocal', 'Asset')
+  async deleteLocal(@Param('id') id: string): Promise<{ ok: true }> {
+    await this.storage.deleteLocalAsset(id);
+    return { ok: true };
+  }
+
+  @Post('local-assets/:id/clear-incidents')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('incident.resolveRelated', 'Incident')
+  clearIncidents(
+    @Param('id') id: string,
+    @CurrentUser() actor: SessionUser,
+  ): Promise<{ resolved: number; incidentIds: string[] }> {
+    return this.storage.clearRelatedIncidents(id, actor.id);
   }
 
   // --- Google Drive OAuth (system-level library) -----------------------------

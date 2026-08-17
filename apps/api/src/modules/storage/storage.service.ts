@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, rename, unlink } from 'node:fs/promises';
+import { access, constants, mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
@@ -42,11 +42,21 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SettingsService } from '../system/settings.service';
 import { GoogleOAuthService, type GoogleConfig } from '../accounts/oauth/google.service';
 import { signState, verifyState } from '../accounts/oauth/oauth-state.util';
-import { toAssetView, type AssetView } from './asset.view';
+import { toAssetView, toLocalDeleteAtIso, type AssetView, type LocalAssetView } from './asset.view';
 
 type UploadKind = 'ORIGINAL' | 'FINAL' | 'THUMBNAIL';
 
-/** Replace path-hostile characters so a client filename can't escape the tier root. */
+/** Video kinds shown on the Workers local-media inventory. */
+const LOCAL_VIDEO_KINDS = ['ORIGINAL', 'FINAL', 'PROCESSED'] as const;
+
+async function localFileExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function safeFilename(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? 'upload';
   const cleaned = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
@@ -285,6 +295,7 @@ export class StorageService {
     }
 
     let driveFileId: string | null = null;
+    let driveUploadedAt: Date | null = null;
     let storageState: 'LOCAL' | 'DRIVE' | 'BOTH' = 'LOCAL';
 
     if (useDrive) {
@@ -303,9 +314,12 @@ export class StorageService {
           { driveFilename },
         );
         driveFileId = archived.driveFileId ?? null;
-        const evicted = await tiers.evict(archived);
-        localPath = evicted.localPath ?? null;
-        storageState = 'DRIVE';
+        driveUploadedAt = new Date();
+        // Dual store: keep local hot-tier copy for preview/publish until (and after) Drive embed is ready.
+        localPath = dest;
+        md5 = archived.md5;
+        bytes = archived.bytes;
+        storageState = 'BOTH';
       } catch (err) {
         await unlink(dest).catch(() => undefined);
         throw new ServiceUnavailableException(
@@ -322,6 +336,7 @@ export class StorageService {
         kind: input.kind,
         localPath,
         driveFileId,
+        driveUploadedAt,
         md5,
         bytes: BigInt(bytes),
         storageState,
@@ -566,8 +581,8 @@ export class StorageService {
   }
 
   /**
-   * Archive an existing local Asset to Drive and clear localPath when
-   * Drive is the selected backend. Used by workers via shared @scp/storage helpers;
+   * Archive an existing local Asset to Drive while keeping the local copy
+   * (dual store BOTH). Used by workers via shared @scp/storage helpers;
    * kept here for API-side finalize paths.
    */
   async archiveLocalAsset(assetId: string): Promise<AssetView> {
@@ -580,7 +595,9 @@ export class StorageService {
     requireGDriveConfig(process.env, driveCfg);
     const asset = await this.prisma.client.asset.findUnique({ where: { id: assetId } });
     if (!asset) throw new NotFoundException('Asset not found.');
-    if (asset.driveFileId && !asset.localPath) return toAssetView(asset);
+    if (asset.driveFileId && (asset.storageState === 'DRIVE' || asset.storageState === 'BOTH')) {
+      return toAssetView(asset);
+    }
     if (!asset.localPath) throw new BadRequestException('Asset has no local path to archive.');
 
     const { md5, bytes } =
@@ -601,18 +618,187 @@ export class StorageService {
       folderPath,
       { driveFilename },
     );
-    const evicted = await tiers.evict(archived);
+    const uploadedAt = new Date();
     const updated = await this.prisma.client.asset.update({
       where: { id: asset.id },
       data: {
-        driveFileId: evicted.driveFileId ?? null,
-        localPath: null,
-        md5,
-        bytes: BigInt(bytes),
-        storageState: 'DRIVE',
+        driveFileId: archived.driveFileId ?? null,
+        driveUploadedAt: uploadedAt,
+        localPath: asset.localPath,
+        md5: archived.md5,
+        bytes: BigInt(archived.bytes),
+        storageState: 'BOTH',
       },
     });
     return toAssetView(updated);
+  }
+
+  /**
+   * List video assets that still have a localPath (hot tier). Used by Workers
+   * local-media inventory. Upcoming delete = driveUploadedAt + 12h when dual-stored.
+   */
+  async listLocalAssets(): Promise<LocalAssetView[]> {
+    const assets = await this.prisma.client.asset.findMany({
+      where: {
+        localPath: { not: null },
+        kind: { in: [...LOCAL_VIDEO_KINDS] },
+        contentItem: { deletedAt: null },
+      },
+      include: {
+        contentItem: {
+          select: {
+            id: true,
+            title: true,
+            idea: { select: { account: { select: { id: true, name: true } } } },
+            sourceVideo: {
+              select: {
+                watchedSource: {
+                  select: { targetAccount: { select: { id: true, name: true } } },
+                },
+              },
+            },
+            publishTargets: {
+              select: { account: { select: { id: true, name: true } } },
+              orderBy: { createdAt: 'asc' },
+              take: 5,
+            },
+            incidents: {
+              where: {
+                status: { in: ['OPEN', 'ACKED'] },
+                OR: [
+                  { kind: 'STORAGE' },
+                  { title: { contains: 'not available locally', mode: 'insensitive' } },
+                  { title: { contains: 'No media file', mode: 'insensitive' } },
+                  { title: { contains: 'Downloaded media missing', mode: 'insensitive' } },
+                ],
+              },
+              select: { id: true },
+            },
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    });
+
+    const rows: LocalAssetView[] = [];
+    for (const a of assets) {
+      if (!a.localPath) continue;
+      const account =
+        a.contentItem.idea?.account ??
+        a.contentItem.sourceVideo?.watchedSource?.targetAccount ??
+        a.contentItem.publishTargets.find((t) => t.account)?.account ??
+        null;
+      let bytes = a.bytes != null ? Number(a.bytes) : null;
+      const fileMissing = !(await localFileExists(a.localPath));
+      if (!fileMissing && bytes == null) {
+        try {
+          const s = await stat(a.localPath);
+          bytes = s.size;
+        } catch {
+          /* ignore */
+        }
+      }
+      rows.push({
+        id: a.id,
+        contentItemId: a.contentItemId,
+        title: a.contentItem.title || a.kind,
+        kind: a.kind,
+        accountId: account?.id ?? null,
+        accountName: account?.name ?? null,
+        bytes,
+        storageState: a.storageState,
+        driveUploadedAt: a.driveUploadedAt?.toISOString() ?? null,
+        localDeleteAt: toLocalDeleteAtIso(a.driveUploadedAt),
+        canDeleteLocal: Boolean(a.driveFileId),
+        fileMissing,
+        relatedIncidentIds: a.contentItem.incidents.map((i) => i.id),
+        createdAt: a.createdAt.toISOString(),
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * Delete the local hot-tier copy when a Drive file id exists (safe reclaim).
+   * Does not touch Drive. Refuses local-only assets.
+   */
+  async deleteLocalAsset(assetId: string): Promise<LocalAssetView | null> {
+    const asset = await this.prisma.client.asset.findUnique({ where: { id: assetId } });
+    if (!asset) throw new NotFoundException('Asset not found.');
+    if (!asset.localPath) throw new BadRequestException('Asset has no local file to delete.');
+    if (!asset.driveFileId) {
+      throw new BadRequestException(
+        'Cannot delete local file without a Google Drive copy. Archive to Drive first, or keep the local-only file.',
+      );
+    }
+
+    await unlink(asset.localPath).catch(() => undefined);
+    await this.prisma.client.asset.update({
+      where: { id: asset.id },
+      data: {
+        localPath: null,
+        storageState: 'DRIVE',
+      },
+    });
+    return null;
+  }
+
+  /** Bulk delete local copies for assets that have a Drive backup. */
+  async deleteLocalAssets(assetIds: string[]): Promise<{ deleted: number; skipped: number }> {
+    const unique = [...new Set(assetIds.filter(Boolean))];
+    let deleted = 0;
+    let skipped = 0;
+    for (const id of unique) {
+      try {
+        await this.deleteLocalAsset(id);
+        deleted += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+    return { deleted, skipped };
+  }
+
+  /**
+   * Resolve open/acked media/local-availability incidents for an asset's content item.
+   */
+  async clearRelatedIncidents(
+    assetId: string,
+    actorId: string,
+  ): Promise<{ resolved: number; incidentIds: string[] }> {
+    const asset = await this.prisma.client.asset.findUnique({
+      where: { id: assetId },
+      select: { contentItemId: true },
+    });
+    if (!asset) throw new NotFoundException('Asset not found.');
+    return this.clearIncidentsForContentItem(asset.contentItemId, actorId);
+  }
+
+  async clearIncidentsForContentItem(
+    contentItemId: string,
+    actorId: string,
+  ): Promise<{ resolved: number; incidentIds: string[] }> {
+    const incidents = await this.prisma.client.incident.findMany({
+      where: {
+        contentItemId,
+        status: { in: ['OPEN', 'ACKED'] },
+        OR: [
+          { kind: 'STORAGE' },
+          { title: { contains: 'not available locally', mode: 'insensitive' } },
+          { title: { contains: 'No media file', mode: 'insensitive' } },
+          { title: { contains: 'Downloaded media missing', mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (incidents.length === 0) return { resolved: 0, incidentIds: [] };
+    const ids = incidents.map((i) => i.id);
+    await this.prisma.client.incident.updateMany({
+      where: { id: { in: ids } },
+      data: { status: 'RESOLVED', resolvedById: actorId, resolvedAt: new Date() },
+    });
+    return { resolved: ids.length, incidentIds: ids };
   }
 }
 

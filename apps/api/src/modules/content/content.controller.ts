@@ -215,7 +215,8 @@ export class ContentController {
 
   /**
    * Resolve embed / stream URLs for UI players without downloading the file.
-   * Prefer Drive preview when archived; otherwise same-origin media stream.
+   * Prefer local stream until Drive embed is ready (≥12h); then Drive preview.
+   * Drive-only assets use embed immediately (may still be processing on Google).
    */
   @Get(':id/media-info')
   async mediaInfo(
@@ -226,18 +227,28 @@ export class ContentController {
     embedUrl: string | null;
     streamUrl: string;
     mimeType: string;
+    driveEmbedPending: boolean;
   }> {
     const info = await this.resolveMedia(id, kind);
     if (!info) throw new NotFoundException('No playable asset for this item.');
     const streamUrl = mediaStreamPath(id, kind);
-    if (info.embedUrl && !info.path) {
-      return { mode: 'embed', embedUrl: info.embedUrl, streamUrl, mimeType: info.mimeType };
+    const driveEmbedPending = Boolean(info.driveEmbedPending);
+    // Drive-only, or dual-store after the 12h window → iframe preview.
+    if (info.embedUrl && (!info.path || !driveEmbedPending)) {
+      return {
+        mode: 'embed',
+        embedUrl: info.embedUrl,
+        streamUrl,
+        mimeType: info.mimeType,
+        driveEmbedPending,
+      };
     }
     return {
       mode: 'stream',
       embedUrl: info.embedUrl ?? null,
       streamUrl,
       mimeType: info.mimeType,
+      driveEmbedPending,
     };
   }
 

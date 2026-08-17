@@ -39,3 +39,12 @@ export function duration(sec: number | null): string {
   const s = sec % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+
+/** Human-readable byte size for storage inventory rows. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes)) return '—';
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}

@@ -15,6 +15,10 @@ export {
 export {
   GoogleDriveClient,
   drivePreviewEmbedUrl,
+  DRIVE_EMBED_READY_MS,
+  isDriveEmbedReady,
+  localPurgeAt,
+  resolveAssetEmbedUrl,
   assetHasMedia,
   readGDriveConfigFromEnv,
   resolveGDriveConfig,

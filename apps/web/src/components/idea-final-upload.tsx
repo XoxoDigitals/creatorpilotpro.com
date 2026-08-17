@@ -113,6 +113,7 @@ export function IdeaFinalUpload({
   const [scheduleWarning, setScheduleWarning] = useState<string | null>(null);
   const [videoEmbedUrl, setVideoEmbedUrl] = useState<string | null>(null);
   const [thumbEmbedUrl, setThumbEmbedUrl] = useState<string | null>(null);
+  const [driveEmbedPending, setDriveEmbedPending] = useState(false);
 
   useEffect(() => {
     if (demo) return;
@@ -132,6 +133,7 @@ export function IdeaFinalUpload({
     if (!idea.contentItemId || !idea.hasFinalVideo) {
       setVideoEmbedUrl(null);
       setThumbEmbedUrl(null);
+      setDriveEmbedPending(false);
       return;
     }
     let cancelled = false;
@@ -144,10 +146,12 @@ export function IdeaFinalUpload({
       if (cancelled) return;
       setVideoEmbedUrl(video.mode === 'embed' ? video.embedUrl : null);
       setThumbEmbedUrl(thumb?.mode === 'embed' ? thumb.embedUrl : null);
+      setDriveEmbedPending(Boolean(video.driveEmbedPending));
     }).catch(() => {
       if (!cancelled) {
         setVideoEmbedUrl(null);
         setThumbEmbedUrl(null);
+        setDriveEmbedPending(false);
       }
     });
     return () => {
@@ -280,6 +284,7 @@ export function IdeaFinalUpload({
                 kind="video"
                 embedUrl={videoEmbedUrl}
                 streamUrl={contentMediaUrl(idea.contentItemId)}
+                driveEmbedPending={driveEmbedPending}
                 className="aspect-video w-full rounded-md border border-zinc-200 bg-black"
               />
               {!videoEmbedUrl && (

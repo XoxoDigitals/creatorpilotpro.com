@@ -1,7 +1,8 @@
 /**
  * Archive a local Asset row to Google Drive when Settings (or env fallback)
  * selects gdrive as the storage backend.
- * Clears localPath after a successful upload so Drive is the system of record.
+ * Keeps the local hot-tier copy (dual store: LOCAL_AND_DRIVE / BOTH) so preview
+ * and publish work while Google processes the Drive file for embed playback.
  *
  * Library path: `{Account Name}__{accountId}/{yyyy}/{mm}/` under the selected
  * root (find-or-create). Credentials + backend: Settings → General
@@ -11,7 +12,7 @@
  * TODO(gdrive): also archive ORIGINAL source downloads + VOICEOVER/BG_AUDIO/
  * SUBTITLE intermediates once finals/thumbnails are stable in production.
  */
-import { access, constants, unlink } from 'node:fs/promises';
+import { access, constants } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   GoogleDriveClient,
@@ -122,7 +123,10 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
   const prisma = getPrisma();
   const asset = await prisma.asset.findUnique({ where: { id: assetId } });
   if (!asset?.localPath) return;
-  if (asset.driveFileId && asset.storageState === 'DRIVE') return;
+  // Already dual-stored or Drive-only — do not re-upload.
+  if (asset.driveFileId && (asset.storageState === 'DRIVE' || asset.storageState === 'BOTH')) {
+    return;
+  }
 
   const { md5, bytes } =
     asset.md5 && asset.bytes != null
@@ -151,20 +155,20 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
     { driveFilename },
   );
 
-  const localPath = asset.localPath;
+  const uploadedAt = new Date();
   await prisma.asset.update({
     where: { id: asset.id },
     data: {
       driveFileId: archived.driveFileId ?? null,
-      localPath: null,
-      md5,
-      bytes: BigInt(bytes),
-      storageState: 'DRIVE',
+      driveUploadedAt: uploadedAt,
+      localPath: asset.localPath,
+      md5: archived.md5,
+      bytes: BigInt(archived.bytes),
+      storageState: 'BOTH',
     },
   });
-  await unlink(localPath).catch(() => undefined);
   console.log(
-    `[worker:gdrive] archived ${asset.kind} ${asset.id} → Drive ${archived.driveFileId} (${folderPath}/${driveFilename})`,
+    `[worker:gdrive] archived ${asset.kind} ${asset.id} → Drive ${archived.driveFileId} (${folderPath}/${driveFilename}) [dual-store BOTH]`,
   );
 }
 

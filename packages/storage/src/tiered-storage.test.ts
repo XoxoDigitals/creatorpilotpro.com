@@ -122,3 +122,67 @@ test('hotTierPath builds the canonical layout and lower-cases kind', () => {
   const p = hotTierPath('/data', 'itm_123', 'FINAL', 'out.mp4');
   assert.equal(p, join('/data', 'items', 'itm_123', 'final', 'out.mp4'));
 });
+
+test('restore accepts Drive download when metadata md5 matches (stale DB hash OK)', async () => {
+  const data = Buffer.from('original drive binary bytes');
+  const driveMd5 = md5Hex(data);
+  const staleDbMd5 = md5Hex('wrong-local-hash-before-upload');
+  const dir = await mkdtemp(join(tmpdir(), 'scp-restore-'));
+  const dest = join(dir, 'restored.bin');
+
+  const fakeDrive = {
+    getFileMetadata: async () => ({
+      md5Checksum: driveMd5,
+      size: data.byteLength,
+      mimeType: 'video/mp4',
+    }),
+    downloadFile: async (_id: string, path: string) => {
+      await writeFile(path, data);
+      return { bytes: data.byteLength };
+    },
+  };
+
+  try {
+    const storage = new TieredStorage({
+      drive: fakeDrive as unknown as import('./gdrive-client.js').GoogleDriveClient,
+    });
+    const restored = await storage.restore(
+      {
+        driveFileId: 'file-1',
+        md5: staleDbMd5,
+        bytes: data.byteLength,
+        state: 'DRIVE',
+      },
+      dest,
+    );
+    assert.equal(restored.md5, driveMd5);
+    assert.equal(restored.bytes, data.byteLength);
+    assert.equal(restored.state, 'BOTH');
+    assert.equal(restored.localPath, dest);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('restore prefers intact local copy even when DB md5 drifted', async () => {
+  const data = Buffer.from('local dual-store copy');
+  const { path, cleanup } = await tempFile(data);
+  try {
+    const storage = new TieredStorage({ drive: null });
+    const restored = await storage.restore(
+      {
+        localPath: path,
+        driveFileId: 'file-1',
+        md5: md5Hex('stale'),
+        bytes: 1,
+        state: 'BOTH',
+      },
+      path,
+    );
+    assert.equal(restored.md5, md5Hex(data));
+    assert.equal(restored.localPath, path);
+    assert.equal(restored.state, 'BOTH');
+  } finally {
+    await cleanup();
+  }
+});

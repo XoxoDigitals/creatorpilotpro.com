@@ -311,6 +311,49 @@ export async function resolveIncident(id: string): Promise<void> {
   await api.post(`/incidents/${id}/resolve`);
 }
 
+// --- Local media inventory (Workers page) ----------------------------------
+
+export interface LocalMediaAsset {
+  id: string;
+  contentItemId: string;
+  title: string;
+  kind: string;
+  accountId: string | null;
+  accountName: string | null;
+  bytes: number | null;
+  storageState: string;
+  driveUploadedAt: string | null;
+  localDeleteAt: string | null;
+  canDeleteLocal: boolean;
+  fileMissing: boolean;
+  relatedIncidentIds: string[];
+  createdAt: string;
+}
+
+export async function getLocalMediaAssets(): Promise<LocalMediaAsset[]> {
+  return api.get<LocalMediaAsset[]>('/storage/local-assets');
+}
+
+export async function deleteLocalMediaAsset(id: string): Promise<void> {
+  await api.del(`/storage/local-assets/${id}`);
+}
+
+export async function deleteLocalMediaAssetsBulk(
+  assetIds: string[],
+): Promise<{ deleted: number; skipped: number }> {
+  return api.post<{ deleted: number; skipped: number }>('/storage/local-assets/delete-local', {
+    assetIds,
+  });
+}
+
+export async function clearLocalMediaIncidents(
+  assetId: string,
+): Promise<{ resolved: number; incidentIds: string[] }> {
+  return api.post<{ resolved: number; incidentIds: string[] }>(
+    `/storage/local-assets/${assetId}/clear-incidents`,
+  );
+}
+
 // --- Publish targets (calendar / schedule read side) -----------------------
 
 export interface PublishTargetDetail {
@@ -337,7 +380,8 @@ export interface PublishTargetDetail {
 type ApiPublishTarget = PublishTargetDetail;
 
 const TARGET_STATUS: Record<ApiPublishTarget['status'], PostStatus> = {
-  PENDING: 'SCHEDULED',
+  /** Awaiting content review before the slot is live. */
+  PENDING: 'IN_REVIEW',
   SCHEDULED: 'SCHEDULED',
   PUBLISHING: 'SCHEDULED',
   PUBLISHED: 'PUBLISHED',
@@ -766,7 +810,12 @@ export function contentThumbnailUrl(id: string): string {
 export async function getContentMediaInfo(
   id: string,
   kind?: 'thumbnail',
-): Promise<{ mode: 'embed' | 'stream'; embedUrl: string | null; streamUrl: string }> {
+): Promise<{
+  mode: 'embed' | 'stream';
+  embedUrl: string | null;
+  streamUrl: string;
+  driveEmbedPending?: boolean;
+}> {
   const qs = kind === 'thumbnail' ? '?kind=thumbnail' : '';
   return api.get(`/content/${encodeURIComponent(id)}/media-info${qs}`);
 }

@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Display media via Google Drive preview iframe when archived, otherwise a
- * native <video>/<img> against the same-origin stream URL.
+ * Display media via Google Drive preview iframe when archived & ready,
+ * otherwise a native <video>/<img> against the same-origin stream URL.
  */
 export function MediaEmbed({
   embedUrl,
@@ -12,6 +12,7 @@ export function MediaEmbed({
   title,
   poster,
   autoPlay = false,
+  driveEmbedPending = false,
 }: {
   embedUrl?: string | null;
   streamUrl: string;
@@ -21,17 +22,27 @@ export function MediaEmbed({
   poster?: string;
   /** Previews stay paused until the user hits play. */
   autoPlay?: boolean;
+  /** Drive-only preview while Google is still processing playback. */
+  driveEmbedPending?: boolean;
 }) {
   if (embedUrl) {
     return (
-      <iframe
-        title={title ?? (kind === 'video' ? 'Video preview' : 'Image preview')}
-        src={embedUrl}
-        className={className ?? 'aspect-video w-full max-w-md rounded-md border border-zinc-200 bg-black'}
-        allow={autoPlay ? 'autoplay; encrypted-media' : 'encrypted-media'}
-        allowFullScreen
-        referrerPolicy="strict-origin-when-cross-origin"
-      />
+      <div className="space-y-1">
+        {driveEmbedPending ? (
+          <p className="text-xs text-zinc-500">
+            Google Drive is still processing this file for playback — preview may show a processing
+            message until ready (usually within 12 hours).
+          </p>
+        ) : null}
+        <iframe
+          title={title ?? (kind === 'video' ? 'Video preview' : 'Image preview')}
+          src={embedUrl}
+          className={className ?? 'aspect-video w-full max-w-md rounded-md border border-zinc-200 bg-black'}
+          allow={autoPlay ? 'autoplay; encrypted-media' : 'encrypted-media'}
+          allowFullScreen
+          referrerPolicy="strict-origin-when-cross-origin"
+        />
+      </div>
     );
   }
 
