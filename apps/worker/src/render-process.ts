@@ -321,6 +321,10 @@ export async function runRender(contentItemId: string, boss: PgBoss): Promise<vo
 
   if (!ffmpegAvail) {
     // Without ffmpeg, we can't merge — mark the existing FINAL as is + incident
+    const existingFinal = item.assets.find((a) => a.kind === 'FINAL');
+    if (existingFinal) {
+      await archiveAssetToDriveIfConfigured(existingFinal.id);
+    }
     await prisma.contentItem.update({ where: { id: contentItemId }, data: { status: 'RENDERED' } });
     await raiseIncident(prisma, {
       kind: 'SYSTEM',

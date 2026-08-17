@@ -28,6 +28,8 @@ export {
   GDRIVE_SERVICE_ACCOUNT_SCOPE,
   driveScopeAllowsFolderBrowse,
   formatDriveApiError,
+  parseDriveFolderId,
+  normalizeDriveListParentId,
   type GDriveAuthMode,
   type GDriveConfig,
   type GDriveFolderEntry,

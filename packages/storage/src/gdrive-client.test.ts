@@ -5,7 +5,9 @@ import {
   buildServiceAccountAssertion,
   driveScopeAllowsFolderBrowse,
   formatDriveApiError,
+  normalizeDriveListParentId,
   normalizePrivateKey,
+  parseDriveFolderId,
   resolveGDriveConfig,
   resolveStorageBackend,
 } from './gdrive-client.js';
@@ -42,6 +44,41 @@ test('formatDriveApiError maps 404 notFound to reconnect guidance', () => {
   );
   assert.match(msg, /not found/i);
   assert.match(msg, /drive scope|Connect with Google/i);
+  assert.match(msg, /parent folder id|empty|\./i);
+});
+
+test('parseDriveFolderId extracts URL ids and rejects dot/empty/root', () => {
+  assert.equal(
+    parseDriveFolderId('https://drive.google.com/drive/folders/1fQ-4iF4ipyx2mB_CR7HTbGC-3x2e5RtH'),
+    '1fQ-4iF4ipyx2mB_CR7HTbGC-3x2e5RtH',
+  );
+  assert.equal(parseDriveFolderId('1fQ-4iF4ipyx2mB_CR7HTbGC-3x2e5RtH'), '1fQ-4iF4ipyx2mB_CR7HTbGC-3x2e5RtH');
+  assert.equal(parseDriveFolderId('.'), null);
+  assert.equal(parseDriveFolderId(''), null);
+  assert.equal(parseDriveFolderId('root'), null);
+  assert.equal(parseDriveFolderId('root', { allowRoot: true }), 'root');
+});
+
+test('normalizeDriveListParentId defaults empty to root and rejects dot', () => {
+  assert.equal(normalizeDriveListParentId(undefined), 'root');
+  assert.equal(normalizeDriveListParentId(''), 'root');
+  assert.equal(normalizeDriveListParentId('root'), 'root');
+  assert.throws(() => normalizeDriveListParentId('.'), /Invalid Drive folder id/);
+});
+
+test('resolveGDriveConfig rejects rootFolderId "." as unconfigured', () => {
+  assert.equal(
+    resolveGDriveConfig(
+      {
+        clientId: 'id',
+        clientSecret: 'secret',
+        refreshToken: 'rt',
+        rootFolderId: '.',
+      },
+      {},
+    ),
+    null,
+  );
 });
 
 test('normalizePrivateKey unescapes JSON-style \\n', () => {

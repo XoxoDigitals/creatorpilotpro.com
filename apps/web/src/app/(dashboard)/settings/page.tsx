@@ -175,13 +175,21 @@ export default function GeneralSettingsPage() {
   }
 
   async function loadFolders(parentId: string) {
+    const id = parentId.trim() || 'root';
+    if (id === '.' || id === '..') {
+      toast(
+        'Invalid folder id "." — use Select folder or paste a Drive folder URL / id.',
+        'error',
+      );
+      return;
+    }
     setFoldersLoading(true);
     try {
       const list = await api.get<DriveFolder[]>(
-        `/storage/gdrive/folders?parentId=${encodeURIComponent(parentId)}`,
+        `/storage/gdrive/folders?parentId=${encodeURIComponent(id)}`,
       );
       setFolders(list);
-      setFolderParentId(parentId);
+      setFolderParentId(id);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Could not list folders', 'error');
     } finally {
@@ -207,8 +215,18 @@ export default function GeneralSettingsPage() {
     if (target) await loadFolders(target.id);
   }
 
+  function extractDriveFolderId(raw: string): string | null {
+    const s = raw.trim();
+    if (!s || s === '.' || s === '..') return null;
+    const fromUrl = s.match(/\/folders\/([a-zA-Z0-9_-]+)/i);
+    if (fromUrl?.[1]) return fromUrl[1];
+    if (/^[a-zA-Z0-9_-]{5,}$/.test(s) && s.toLowerCase() !== 'root') return s;
+    return null;
+  }
+
   async function selectFolderById(id: string) {
-    if (!id || id === 'root') {
+    const parsed = extractDriveFolderId(id);
+    if (!parsed) {
       toast(
         'Open a folder (or create one in Drive) and select it — My Drive root is not recommended.',
         'error',
@@ -218,7 +236,7 @@ export default function GeneralSettingsPage() {
     setFolderBusy(true);
     try {
       const res = await api.put<{ rootFolderId: string }>('/storage/gdrive/root-folder', {
-        folderId: id,
+        folderId: parsed,
       });
       setDriveFolderId(res.rootFolderId);
       setFolderPickerOpen(false);
@@ -573,6 +591,10 @@ export default function GeneralSettingsPage() {
                   className="min-w-0 flex-1"
                   value={driveFolderId}
                   onChange={(e) => setDriveFolderId(e.target.value)}
+                  onBlur={() => {
+                    const parsed = extractDriveFolderId(driveFolderId);
+                    if (parsed && parsed !== driveFolderId.trim()) setDriveFolderId(parsed);
+                  }}
                   placeholder="From Drive URL …/folders/{id} or use Select folder"
                   autoComplete="off"
                 />
@@ -596,8 +618,9 @@ export default function GeneralSettingsPage() {
           <Button
             variant="primary"
             size="sm"
-            onClick={() =>
-              save('storage.gdrive', {
+            onClick={() => {
+              const folderId = extractDriveFolderId(driveFolderId) ?? undefined;
+              void save('storage.gdrive', {
                 backend: driveBackend,
                 authMode: driveAuthMode,
                 ...(driveAuthMode === 'oauth'
@@ -610,9 +633,9 @@ export default function GeneralSettingsPage() {
                       clientEmail: driveClientEmail,
                       privateKey: drivePrivateKey,
                     }),
-                rootFolderId: driveFolderId.trim() || undefined,
-              })
-            }
+                rootFolderId: folderId,
+              });
+            }}
           >
             Save Drive settings
           </Button>

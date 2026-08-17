@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { dialogueOverlayEnableExpr, reactionAvatarOverlayXy } from './ffmpeg.js';
 import { ffmpegKeyColor, reactionAvatarNobgCachePath } from './rembg-avatar.js';
 import {
+  bridgeSpeakingGaps,
   reactionAvatarSourceTrimSec,
   resolveReactionAvatarSpeakingRanges,
   speakingRangesFromSubtitleCues,
   sumSpeakingDurations,
   REACTION_AVATAR_FALLBACK_LEAD_IN_SEC,
+  REACTION_AVATAR_HOLD_GAP_SEC,
 } from './reaction-avatar-timing.js';
 
 describe('dialogueOverlayEnableExpr', () => {
@@ -93,6 +95,52 @@ describe('reaction avatar speaking / trim', () => {
     });
     expect(r.source).toBe('dialogue');
     expect(r.ranges).toEqual([{ startSec: 2, endSec: 4 }]);
+  });
+
+  it('holds avatar across short inter-segment VO gaps', () => {
+    const bridged = bridgeSpeakingGaps(
+      [
+        { startSec: 0, endSec: 1.0 },
+        { startSec: 1.0 + 0.32, endSec: 2.5 },
+      ],
+      REACTION_AVATAR_HOLD_GAP_SEC,
+    );
+    expect(bridged).toEqual([{ startSec: 0, endSec: 2.5 }]);
+
+    const r = resolveReactionAvatarSpeakingRanges({
+      showDuring: 'dialogue',
+      dialogueRanges: [
+        { startSec: 0, endSec: 1 },
+        { startSec: 1.32, endSec: 2.2 },
+      ],
+    });
+    expect(r.source).toBe('dialogue');
+    expect(r.ranges).toEqual([{ startSec: 0, endSec: 2.2 }]);
+
+    const fromSubs = resolveReactionAvatarSpeakingRanges({
+      showDuring: 'dialogue',
+      dialogueRanges: [],
+      subtitleCues: [
+        { startMs: 0, endMs: 1000 },
+        { startMs: 1320, endMs: 2500 },
+      ],
+    });
+    expect(fromSubs.source).toBe('subtitle');
+    expect(fromSubs.ranges).toEqual([{ startSec: 0, endSec: 2.5 }]);
+  });
+
+  it('does not bridge long silence in speaking-only mode', () => {
+    const r = resolveReactionAvatarSpeakingRanges({
+      showDuring: 'dialogue',
+      dialogueRanges: [
+        { startSec: 0, endSec: 1 },
+        { startSec: 3.5, endSec: 4 },
+      ],
+    });
+    expect(r.ranges).toEqual([
+      { startSec: 0, endSec: 1 },
+      { startSec: 3.5, endSec: 4 },
+    ]);
   });
 
   it('falls back to subtitle then VO then lead-in', () => {

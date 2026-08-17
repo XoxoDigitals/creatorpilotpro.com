@@ -25,6 +25,8 @@ import {
   requireGDriveConfig,
   GDRIVE_CONNECT_OAUTH_SCOPE,
   driveScopeAllowsFolderBrowse,
+  parseDriveFolderId,
+  normalizeDriveListParentId,
   type GDriveConfig,
   type GDriveFolderEntry,
   type GDriveSettingsPartial,
@@ -379,7 +381,11 @@ export class StorageService {
     return {
       backend,
       configured: !!cfg,
-      rootFolderId: cfg?.rootFolderId ?? stored?.rootFolderId?.trim() ?? null,
+      rootFolderId:
+        cfg?.rootFolderId ??
+        parseDriveFolderId(stored?.rootFolderId) ??
+        parseDriveFolderId(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID) ??
+        null,
       previewExample: cfg ? drivePreviewEmbedUrl('FILE_ID') : null,
       source,
       auth: authHint,
@@ -470,7 +476,19 @@ export class StorageService {
   async listGdriveFolders(parentId?: string): Promise<GDriveFolderEntry[]> {
     try {
       const client = await this.driveClientForBrowse();
-      return await client.listFolders(parentId?.trim() || 'root');
+      const raw = parentId?.trim();
+      let parent: string;
+      if (!raw) {
+        // No parent query: list under saved library root when set, else My Drive.
+        const stored = await this.settings.getDecrypted<GDriveSettingsPartial>('storage.gdrive');
+        parent =
+          parseDriveFolderId(stored?.rootFolderId) ||
+          parseDriveFolderId(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID) ||
+          'root';
+      } else {
+        parent = normalizeDriveListParentId(raw);
+      }
+      return await client.listFolders(parent);
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
       const msg =
@@ -482,8 +500,13 @@ export class StorageService {
 
   /** Persist selected library root folder id. */
   async setGdriveRootFolder(folderId: string): Promise<{ rootFolderId: string }> {
-    const id = folderId.trim();
-    if (!id) throw new BadRequestException('folderId is required.');
+    const id = parseDriveFolderId(folderId);
+    if (!id) {
+      throw new BadRequestException(
+        'folderId must be a Drive folder id or https://drive.google.com/drive/folders/{id} URL ' +
+          '(not ".", empty, or My Drive root).',
+      );
+    }
     await this.settings.put('storage.gdrive', { rootFolderId: id });
     return { rootFolderId: id };
   }
@@ -494,8 +517,8 @@ export class StorageService {
     const googleApp = await this.settings.getDecrypted<GoogleConfig>('platform_apps.google');
 
     const rootFolderId =
-      stored?.rootFolderId?.trim() ||
-      process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim() ||
+      parseDriveFolderId(stored?.rootFolderId) ||
+      parseDriveFolderId(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID) ||
       'root';
 
     const refreshToken =

@@ -100,7 +100,7 @@ function normalizeRange(startSec: number, endSec: number): DialogueTimeRange | n
   return { startSec: start, endSec: end };
 }
 
-/** Merge overlapping / near-adjacent dialogue windows (gap ≤ 0.3s). */
+/** Merge overlapping / near-adjacent dialogue windows (covers ~320ms VO gaps). */
 export function mergeDialogueRanges(ranges: DialogueTimeRange[]): DialogueTimeRange[] {
   const sorted = [...ranges]
     .map((r) => normalizeRange(r.startSec, r.endSec))
@@ -111,7 +111,7 @@ export function mergeDialogueRanges(ranges: DialogueTimeRange[]): DialogueTimeRa
   for (let i = 1; i < sorted.length; i++) {
     const cur = sorted[i]!;
     const last = out[out.length - 1]!;
-    if (cur.startSec <= last.endSec + 0.3) {
+    if (cur.startSec <= last.endSec + 0.35) {
       last.endSec = Math.max(last.endSec, cur.endSec);
     } else {
       out.push({ ...cur });

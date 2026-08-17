@@ -104,6 +104,58 @@ function pick(fromSettings: string | undefined, fromEnv: string | undefined): st
   return fromEnv?.trim() ?? '';
 }
 
+/**
+ * Extract a Drive folder file id from a raw id or a drive.google.com folder URL.
+ * Rejects `.` / `..` / empty (those produced Google's "File not found: ." 404).
+ * `root` is only returned when `allowRoot` is set (folder-list browse alias).
+ */
+export function parseDriveFolderId(
+  raw: string | null | undefined,
+  opts?: { allowRoot?: boolean },
+): string | null {
+  const original = (raw ?? '').trim();
+  if (!original) return null;
+
+  let s = original;
+  const folderUrl = original.match(/\/folders\/([a-zA-Z0-9_-]+)/i);
+  if (folderUrl?.[1]) {
+    s = folderUrl[1];
+  } else if (/drive\.google\.com/i.test(original)) {
+    const openId = original.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
+    if (openId?.[1]) s = openId[1];
+  }
+
+  if (s === '.' || s === '..') return null;
+  if (s.toLowerCase() === 'root') return opts?.allowRoot ? 'root' : null;
+  // Drive file ids are opaque; require a plausible token (not a path/name).
+  if (!/^[a-zA-Z0-9_-]{5,}$/.test(s)) return null;
+  return s;
+}
+
+/**
+ * Parent id for Drive folder browse. Empty → My Drive (`root`).
+ * Throws on `.` / unparseable values so we never call the API with junk
+ * (Google answers those with `File not found: .`).
+ */
+export function normalizeDriveListParentId(parentId?: string | null): string {
+  const raw = (parentId ?? '').trim();
+  if (!raw) return 'root';
+  if (raw === '.' || raw === '..') {
+    throw new Error(
+      'Invalid Drive folder id "." — open Select folder, or paste a folder URL / id from ' +
+        'https://drive.google.com/drive/folders/{id}.',
+    );
+  }
+  const parsed = parseDriveFolderId(raw, { allowRoot: true });
+  if (!parsed) {
+    throw new Error(
+      `Invalid Drive folder id "${raw.slice(0, 48)}". Use the folder id or a full ` +
+        'https://drive.google.com/drive/folders/… URL (not a folder name).',
+    );
+  }
+  return parsed;
+}
+
 /** Normalize PEM private keys pasted from JSON (`\\n`) or Settings. */
 export function normalizePrivateKey(raw: string): string {
   let key = raw.trim();
@@ -130,7 +182,8 @@ export function resolveGDriveConfig(
   settings: GDriveSettingsPartial | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): GDriveConfig | null {
-  const rootFolderId = pick(settings?.rootFolderId, env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
+  const rootFolderId =
+    parseDriveFolderId(pick(settings?.rootFolderId, env.GOOGLE_DRIVE_ROOT_FOLDER_ID)) ?? '';
   if (!rootFolderId) return null;
 
   const clientId = pick(settings?.clientId, env.GOOGLE_DRIVE_CLIENT_ID);
@@ -201,7 +254,8 @@ export function requireGDriveConfig(
     throw new Error(
       'Google Drive is selected as the storage backend but is not configured. Use Settings → General → ' +
         'Google Drive → Connect with Google and Select folder (or paste OAuth / service-account credentials), ' +
-        'set the root folder ID, and choose Google Drive as the backend — or set GOOGLE_DRIVE_* env bootstrap vars. ' +
+        'set a real root folder ID (from …/folders/{id}, not "." or empty), and choose Google Drive as the backend — ' +
+        'or set GOOGLE_DRIVE_* env bootstrap vars. ' +
         'For a service account, share the root folder with the SA email (Editor) or add it to a Shared Drive.',
     );
   }
@@ -301,8 +355,11 @@ export function formatDriveApiError(status: number, body: string, action: string
     return `${action} failed: Drive permission denied. ${reconnectHint}${detail ? ` (${detail})` : ''}`;
   }
   if (status === 404 || reason === 'notFound' || /file not found/i.test(detail)) {
+    const badParentHint = /file not found:\s*\./i.test(detail)
+      ? ' The parent folder id was empty, ".", or not a real Drive file id (folder names are not ids). '
+      : ' ';
     return (
-      `${action} failed: Google Drive returned not found. ` +
+      `${action} failed: Google Drive returned not found.${badParentHint}` +
       `This usually means the token cannot see that folder (missing full drive scope) ` +
       `or the folder id is wrong. ${reconnectHint}` +
       (detail ? ` Google said: ${detail}` : '')
@@ -395,7 +452,7 @@ export class GoogleDriveClient {
    */
   async listFolders(parentId: string = 'root'): Promise<GDriveFolderEntry[]> {
     const token = await this.getAccessToken();
-    const parent = (parentId || 'root').trim() || 'root';
+    const parent = normalizeDriveListParentId(parentId);
     const saRootBrowse = this.config.auth === 'service_account' && parent === 'root';
     const safeParent = parent.replace(/'/g, "\\'");
     const q = saRootBrowse

@@ -10,6 +10,11 @@ export type TimeRange = { startSec: number; endSec: number };
 export const REACTION_AVATAR_FALLBACK_LEAD_IN_SEC = 5;
 export const REACTION_AVATAR_FALLBACK_LEAD_IN_MIN_SEC = 3;
 export const REACTION_AVATAR_FALLBACK_LEAD_IN_MAX_SEC = 8;
+/**
+ * Hold PiP across short VO pauses (inter-segment silence is ~0.32s).
+ * Gaps longer than this still hide the avatar in speaking-only mode.
+ */
+export const REACTION_AVATAR_HOLD_GAP_SEC = 0.75;
 
 export type ReactionAvatarSpeakingSource =
   | 'dialogue'
@@ -24,6 +29,32 @@ function normalizeRange(startSec: number, endSec: number): TimeRange | null {
   const end = endSec;
   if (!(end > start + 0.05)) return null;
   return { startSec: start, endSec: end };
+}
+
+/**
+ * Merge speaking windows separated by ≤ `maxGapSec` so the avatar stays visible
+ * through short inter-segment VO gaps (not long intentional silence).
+ */
+export function bridgeSpeakingGaps(
+  ranges: TimeRange[],
+  maxGapSec: number = REACTION_AVATAR_HOLD_GAP_SEC,
+): TimeRange[] {
+  const sorted = [...ranges]
+    .map((r) => normalizeRange(r.startSec, r.endSec))
+    .filter((r): r is TimeRange => r != null)
+    .sort((a, b) => a.startSec - b.startSec);
+  if (sorted.length === 0) return [];
+  const out: TimeRange[] = [{ ...sorted[0]! }];
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sorted[i]!;
+    const last = out[out.length - 1]!;
+    if (cur.startSec <= last.endSec + maxGapSec) {
+      last.endSec = Math.max(last.endSec, cur.endSec);
+    } else {
+      out.push({ ...cur });
+    }
+  }
+  return out;
 }
 
 /** Total seconds covered by speaking windows (after normalizing). */
@@ -70,14 +101,16 @@ export function resolveReactionAvatarSpeakingRanges(opts: {
     return { ranges: [], source: 'always' };
   }
 
-  const dialogue = (opts.dialogueRanges ?? [])
-    .map((r) => normalizeRange(r.startSec, r.endSec))
-    .filter((r): r is TimeRange => r != null);
+  const dialogue = bridgeSpeakingGaps(
+    (opts.dialogueRanges ?? [])
+      .map((r) => normalizeRange(r.startSec, r.endSec))
+      .filter((r): r is TimeRange => r != null),
+  );
   if (dialogue.length > 0) {
     return { ranges: dialogue, source: 'dialogue' };
   }
 
-  const fromSubs = speakingRangesFromSubtitleCues(opts.subtitleCues ?? []);
+  const fromSubs = bridgeSpeakingGaps(speakingRangesFromSubtitleCues(opts.subtitleCues ?? []));
   if (fromSubs.length > 0) {
     return { ranges: fromSubs, source: 'subtitle' };
   }

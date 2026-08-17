@@ -15,6 +15,7 @@ import { renderSettingsFromVoiceSettings, resolveTrimStartMs } from '@scp/shared
 import { Ffmpeg } from './media/ffmpeg.js';
 import { getPrisma, raiseIncident, sourceHotPath } from './ingestion-support.js';
 import { getStorageRoot } from './config.js';
+import { archiveAssetToDriveIfConfigured } from './gdrive-archive.js';
 
 const storage = new TieredStorage();
 
@@ -100,7 +101,7 @@ export async function runMedia(sourceVideoId: string, _boss: PgBoss): Promise<vo
     const { md5, bytes } = await md5File(finalPath);
     // Certify the file we just wrote before registering it (verifies size + md5).
     await storage.putLocal({ destPath: finalPath, md5, bytes });
-    await prisma.asset.create({
+    const finalAsset = await prisma.asset.create({
       data: {
         contentItemId: item.id,
         kind: 'FINAL',
@@ -111,9 +112,10 @@ export async function runMedia(sourceVideoId: string, _boss: PgBoss): Promise<vo
         storageState: 'LOCAL',
       },
     });
+    await archiveAssetToDriveIfConfigured(finalAsset.id);
   } else {
     // Degraded path: no ffmpeg → the raw mp4 doubles as the FINAL asset.
-    await prisma.asset.create({
+    const finalAsset = await prisma.asset.create({
       data: {
         contentItemId: item.id,
         kind: 'FINAL',
@@ -124,6 +126,7 @@ export async function runMedia(sourceVideoId: string, _boss: PgBoss): Promise<vo
         storageState: 'LOCAL',
       },
     });
+    await archiveAssetToDriveIfConfigured(finalAsset.id);
     await raiseIncident(prisma, {
       kind: 'SYSTEM',
       severity: 'LOW',

@@ -102,7 +102,22 @@ async function resolveArchiveContext(contentItemId: string): Promise<{
 export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<void> {
   const settings = await loadGDriveSettingsFromDb();
   if (resolveStorageBackend(settings) !== 'gdrive') return;
-  requireGDriveConfig(process.env, settings);
+
+  let cfg;
+  try {
+    cfg = requireGDriveConfig(process.env, settings);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${msg} Select a library folder in Settings → General (not "." or empty) before using Google Drive storage.`,
+    );
+  }
+  if (!cfg.rootFolderId || cfg.rootFolderId === '.' || cfg.rootFolderId === 'root') {
+    throw new Error(
+      'Google Drive root folder id is missing or invalid. Use Settings → Select folder ' +
+        '(folder id looks like 1fQ-…) before archiving media.',
+    );
+  }
 
   const prisma = getPrisma();
   const asset = await prisma.asset.findUnique({ where: { id: assetId } });
@@ -122,7 +137,7 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
   });
   const driveFilename = driveArchiveFilename(asset.contentItemId, asset.kind, asset.localPath);
 
-  const drive = await resolveDriveClient();
+  const drive = new GoogleDriveClient(cfg);
   const tiers = new TieredStorage({ drive });
   const archived = await tiers.archiveToDrive(
     {
@@ -148,6 +163,9 @@ export async function archiveAssetToDriveIfConfigured(assetId: string): Promise<
     },
   });
   await unlink(localPath).catch(() => undefined);
+  console.log(
+    `[worker:gdrive] archived ${asset.kind} ${asset.id} → Drive ${archived.driveFileId} (${folderPath}/${driveFilename})`,
+  );
 }
 
 /**
