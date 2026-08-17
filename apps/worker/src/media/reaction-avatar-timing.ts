@@ -27,12 +27,23 @@ export function pickReactionAvatarSource(avatar: {
   assetPath?: string | null;
   lipSyncAssetPath?: string | null;
 }): ReactionAvatarPick | null {
-  if (!avatar.enabled) return null;
-  const silent = avatar.assetPath?.trim();
-  if (silent) return { rel: silent, kind: 'silent' };
-  const lip = avatar.lipSyncAssetPath?.trim();
-  if (lip) return { rel: lip, kind: 'lip-sync' };
+  const layers = reactionAvatarLayers(avatar);
+  if (layers.silentRel) return { rel: layers.silentRel, kind: 'silent' };
+  if (layers.lipSyncRel) return { rel: layers.lipSyncRel, kind: 'lip-sync' };
   return null;
+}
+
+/** Both uploads when present — silent stays on; lip-sync draws on top while speaking. */
+export function reactionAvatarLayers(avatar: {
+  enabled?: boolean;
+  assetPath?: string | null;
+  lipSyncAssetPath?: string | null;
+}): { silentRel: string | null; lipSyncRel: string | null } {
+  if (!avatar.enabled) return { silentRel: null, lipSyncRel: null };
+  return {
+    silentRel: avatar.assetPath?.trim() || null,
+    lipSyncRel: avatar.lipSyncAssetPath?.trim() || null,
+  };
 }
 
 export type ReactionAvatarSpeakingSource =

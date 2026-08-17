@@ -4,6 +4,7 @@ import { ffmpegKeyColor, reactionAvatarNobgCachePath } from './rembg-avatar.js';
 import {
   bridgeSpeakingGaps,
   pickReactionAvatarSource,
+  reactionAvatarLayers,
   reactionAvatarSourceTrimSec,
   resolveReactionAvatarSpeakingRanges,
   speakingRangesFromSubtitleCues,
@@ -32,6 +33,19 @@ describe('pickReactionAvatarSource', () => {
     ).toEqual({ rel: 'accounts/a/talk.mp4', kind: 'lip-sync' });
   });
 
+  it('returns both silent and lip-sync paths when uploaded', () => {
+    expect(
+      reactionAvatarLayers({
+        enabled: true,
+        assetPath: 'accounts/a/silent.png',
+        lipSyncAssetPath: 'accounts/a/talk.mp4',
+      }),
+    ).toEqual({
+      silentRel: 'accounts/a/silent.png',
+      lipSyncRel: 'accounts/a/talk.mp4',
+    });
+  });
+
   it('returns null when disabled or empty', () => {
     expect(pickReactionAvatarSource({ enabled: false, assetPath: 'x.png' })).toBeNull();
     expect(pickReactionAvatarSource({ enabled: true })).toBeNull();
@@ -57,7 +71,7 @@ describe('dialogueOverlayEnableExpr', () => {
 
 describe('reactionAvatarOverlayXy', () => {
   it('maps corners to overlay expressions', () => {
-    expect(reactionAvatarOverlayXy('br')).toEqual({ x: 'W-w-36', y: 'H-h-196' });
+    expect(reactionAvatarOverlayXy('br')).toEqual({ x: 'W-w-36', y: 'H-h-108' });
     expect(reactionAvatarOverlayXy('tl', 20)).toEqual({ x: '20', y: '20' });
   });
 });

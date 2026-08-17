@@ -291,7 +291,7 @@ export function reactionAvatarOverlayXy(
   margin = 36,
 ): { x: string; y: string } {
   // Keep bottom corners above burned captions (~2 lines).
-  const bottomPad = margin + 160;
+  const bottomPad = margin + 72;
   switch (corner) {
     case 'bl':
       return { x: String(margin), y: `H-h-${bottomPad}` };
