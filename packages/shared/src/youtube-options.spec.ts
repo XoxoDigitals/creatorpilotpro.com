@@ -18,4 +18,10 @@ describe('formatYoutubeAiDescriptionRules', () => {
     expect(rules).toContain('never invent a fake link');
     expect(rules).toContain('Keywords:');
   });
+
+  it('asks for Roman Urdu YouTube descriptions when language is Urdu', () => {
+    const rules = formatYoutubeAiDescriptionRules({ language: 'ur' });
+    expect(rules).toContain('Roman Urdu');
+    expect(rules).toContain('No Arabic/Urdu');
+  });
 });

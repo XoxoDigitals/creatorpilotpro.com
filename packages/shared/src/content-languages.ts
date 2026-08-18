@@ -56,7 +56,7 @@ const BY_CODE = new Map(ALL_LANGUAGES.map((lang) => [lang.code, lang]));
 export const DEFAULT_CONTENT_LANGUAGE = 'en';
 
 /** Bump when language-split prompt rules change so AI cache keys move. */
-export const OUTPUT_LANGUAGE_POLICY_REV = 3;
+export const OUTPUT_LANGUAGE_POLICY_REV = 4;
 
 export function parseLanguageCode(raw?: string | null): string {
   return (raw ?? DEFAULT_CONTENT_LANGUAGE).trim().toLowerCase().split(/[-_]/)[0] || DEFAULT_CONTENT_LANGUAGE;
@@ -150,6 +150,25 @@ export function formatIdeaTitleLanguageRules(language?: string | null): string {
 }
 
 /**
+ * Publish description / tags / hashtags. Urdu uses Roman Urdu like titles,
+ * not Nastaliq — that script is only for spoken voiceover.
+ */
+export function formatPublishCopyLanguageRules(language?: string | null): string {
+  const code = parseLanguageCode(language);
+  const lang = languageDisplayName(language);
+  if (code === 'ur') {
+    return 'Write videoDescription, description, tags, keywords, and hashtags in Roman Urdu (Latin letters only), natural spoken Urdu romanization. No Arabic/Urdu (Nastaliq) script in the description or tags.';
+  }
+  if (code === 'hi') {
+    return `Write videoDescription, description, tags, keywords, and hashtags in Hindi. Devanagari is OK; English search keywords are OK in tags.`;
+  }
+  if (isEnglishContentLanguage(language)) {
+    return 'Write videoDescription, description, tags, keywords, and hashtags in English.';
+  }
+  return `Write videoDescription, description, tags, keywords, and hashtags in ${lang}.`;
+}
+
+/**
  * Mandatory split: idea titles follow title-language rules; idea angle/hook/
  * rationale, stories, and visual prompts stay English; spoken, on-screen, and
  * non-title publish metadata use the channel language.
@@ -169,5 +188,5 @@ export function formatOutputLanguagePolicy(language?: string | null): string {
 - Voiceover / narrationScript / narrationLines: ${formatSpokenLanguageRules(language)}
 - Dialogue: same spoken-language rules as voiceover (dialogue[].line and quoted speech in animationPrompt).
 - On-screen text: captions, overlay lettering, thumbnail type, and any text that will appear in the image/video MUST be in ${lang}. Quote that ${lang} text inside otherwise-English prompts.
-- Publish metadata: videoDescription, description, tags, and hashtags MUST be in ${lang}. Publish titles follow the idea-title language rules above, not a fully English or fully ${lang} title unless those rules say so.`.trim();
+- Publish metadata: ${formatPublishCopyLanguageRules(language)} Publish titles follow the idea-title language rules above.`.trim();
 }

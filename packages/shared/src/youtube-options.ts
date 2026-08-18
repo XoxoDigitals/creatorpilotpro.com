@@ -1,4 +1,4 @@
-import { languageDisplayName } from './content-languages.js';
+import { formatPublishCopyLanguageRules } from './content-languages.js';
 
 /** Common YouTube Data API v3 video category IDs. */
 export const YOUTUBE_CATEGORIES = [
@@ -55,13 +55,12 @@ export function formatYoutubeAiDescriptionRules(options: {
   documentary?: boolean;
   language?: string | null;
 }): string {
-  const lang = languageDisplayName(options.language);
   const sources = options.documentary
     ? `
 - After the synopsis, add a Sources / Research section. For every factual claim (dates, numbers, court cases, company actions, laws, official reports), include a research link to a reputable public source (government, court docket, academic, major news). Use a real well-known URL only when you are sure of it. If the exact URL is uncertain, cite Organization + title + year — never invent a fake link.
 - Aim for 4–10 sources, one per major claim. No affiliate or spam links.`
     : '';
-  return `YouTube AI-mode videoDescription (publish caption — write in ${lang}):
+  return `YouTube AI-mode videoDescription (publish caption — ${formatPublishCopyLanguageRules(options.language)}):
 - Do not write a 1–3 sentence blurb. Write a LONG, detailed description (about 900–1800 characters, up to ~4000 if the story needs it) that actually explains the video: hook, what happens, who/what is involved, why it matters, and the takeaway.
 - Structure:
   1) Opening hook (2–4 sentences)

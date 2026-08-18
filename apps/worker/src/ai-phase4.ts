@@ -40,6 +40,7 @@ import {
   languageDisplayName,
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
+  formatPublishCopyLanguageRules,
   formatSpokenLanguageRules,
   formatLockedCharactersPrompt,
   mergeLockedCharactersIntoCast,
@@ -64,7 +65,6 @@ import {
   serializeSpokenNarrationLines,
   ttsEmotionFromVoiceSettings,
   TTS_EMOTIONS,
-  DOCUMENTARY_VOICE_EMOTION,
   type AiPerformanceInsights,
   type ChannelStyleFields,
   type CharacterReferenceInput,
@@ -1169,8 +1169,6 @@ export function normalizeProductionBriefOutput(
   }
   const narrationLines = normalizeNarrationLines(
     brief.narrationLines ?? brief.lines ?? brief.spokenLines,
-  ).map((line) =>
-    documentary ? { ...line, emotion: DOCUMENTARY_VOICE_EMOTION } : line,
   );
 
   let thumbnailPrompt = text(brief.thumbnailPrompt);
@@ -1278,7 +1276,7 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
         documentary: documentaryCollage || documentaryIdeas,
         language: channelLanguage,
       })
-    : `- videoDescription is publish-facing: write it in ${languageDisplayName(channelLanguage)}.`;
+    : `- videoDescription is publish-facing: ${formatPublishCopyLanguageRules(channelLanguage)}`;
   const needsVo = presentationNeedsVoiceover(channelStyle?.styleProfile);
   const audioFirst = presentation === 'voiceover' || presentation === 'mixed';
   const prompt = await getActivePrompt(prisma, task, 'default', idea.accountId);

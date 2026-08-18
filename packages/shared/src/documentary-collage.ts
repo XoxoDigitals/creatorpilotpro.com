@@ -46,9 +46,9 @@ export const DOCUMENTARY_TITLE_SHAPES = [
   'What Really Happened to [subject]',
 ] as const;
 
-/** Newscast delivery for documentary VO (Edge TTS, not ElevenLabs GUI). */
+/** TTS direction for documentary VO (emotions still vary per line). */
 export const DOCUMENTARY_VOICEOVER_DIRECTION =
-  'newscast delivery, crisp authoritative even pacing, mid-range, about 155 wpm, news-reader energy across the full track';
+  'clear documentary delivery, about 155 wpm; vary emotion per line rather than one news-reader tone for the whole track';
 
 const UNIVERSAL_VIDEO_PROMPT_MARKER = 'Universal video prompt:';
 const THUMBNAIL_VARIANTS_MARKER = 'Thumbnail prompt variants:';

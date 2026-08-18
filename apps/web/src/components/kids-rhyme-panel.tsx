@@ -137,7 +137,10 @@ export function OwnerVoiceUpload({
 }) {
   const toast = useToast();
   const [uploading, setUploading] = useState(false);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
   if (!waiting) return null;
+
+  const inputId = `rhyme-sound-${ideaId}`;
 
   return (
     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -147,38 +150,38 @@ export function OwnerVoiceUpload({
       <p className="mt-0.5 text-[11px] text-amber-800">
         MP3 / WAV / M4A. After upload we transcribe by time, then write visual prompts to the lyrics.
       </p>
-      <label className="mt-2 inline-flex">
-        <input
-          type="file"
-          accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg"
-          className="hidden"
-          disabled={uploading}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            e.target.value = '';
-            if (!file) return;
-            setUploading(true);
-            void apiUpload(`/ideas/${encodeURIComponent(ideaId)}/voiceover`, file)
-              .then(() => {
-                toast('Sound uploaded — transcribing by time and writing visual prompts…', 'success');
-                return onUploaded();
-              })
-              .catch((err) => {
-                toast(err instanceof ApiError ? err.message : 'Sound upload failed', 'error');
-              })
-              .finally(() => setUploading(false));
-          }}
-        />
-        <span className="inline-flex">
-          <Button type="button" size="sm" disabled={uploading}>
-            {uploading
-              ? 'Uploading…'
-              : hasExisting
-                ? 'Replace sound / rhyme sound'
-                : 'Upload sound / rhyme sound'}
-          </Button>
-        </span>
+      <label htmlFor={inputId} className="mt-2 block text-[11px] font-medium text-amber-900">
+        Choose audio file
       </label>
+      <input
+        id={inputId}
+        type="file"
+        accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg"
+        disabled={uploading}
+        className="mt-1 w-full max-w-md text-xs text-zinc-700 file:mr-3 file:rounded-md file:border file:border-zinc-300 file:bg-white file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-700 hover:file:bg-zinc-100 disabled:opacity-55"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          setSelectedName(file.name);
+          setUploading(true);
+          void apiUpload(`/ideas/${encodeURIComponent(ideaId)}/voiceover`, file)
+            .then(() => {
+              toast('Sound uploaded — transcribing by time and writing visual prompts…', 'success');
+              return onUploaded();
+            })
+            .catch((err) => {
+              toast(err instanceof ApiError ? err.message : 'Sound upload failed', 'error');
+              setSelectedName(null);
+            })
+            .finally(() => setUploading(false));
+        }}
+      />
+      {uploading ? (
+        <p className="mt-1 text-[11px] font-medium text-amber-800">Uploading…</p>
+      ) : selectedName ? (
+        <p className="mt-1 text-[11px] font-medium text-amber-900">Selected: {selectedName}</p>
+      ) : null}
     </div>
   );
 }

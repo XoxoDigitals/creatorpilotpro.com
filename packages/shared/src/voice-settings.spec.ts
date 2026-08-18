@@ -62,12 +62,14 @@ describe('mergeEmotionProsody', () => {
 });
 
 describe('formatNarrationEmotionBlock', () => {
-  it('sets documentary newscast and repurposed calm without per-line musts', () => {
+  it('asks documentary lines to vary emotion instead of one newscast track', () => {
     const block = formatNarrationEmotionBlock();
+    expect(block).toContain('fitting emotion');
     expect(block).toContain('newscast');
     expect(block).toContain('calm');
     expect(block).toContain('Documentary');
     expect(block).toContain('Repurposed');
+    expect(block.toLowerCase()).toContain('do not stamp every line newscast');
     expect(block.toLowerCase()).not.toContain('mandatory');
     expect(block).not.toContain('SITUATION');
   });

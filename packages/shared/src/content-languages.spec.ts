@@ -6,6 +6,7 @@ import {
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
   formatSpokenLanguageRules,
+  formatPublishCopyLanguageRules,
   isEnglishContentLanguage,
   languageDisplayName,
   resolveContentLanguage,
@@ -90,7 +91,9 @@ describe('content languages', () => {
     expect(policy).not.toContain('Ideas (title, angle, hook, rationale) MUST be written in English');
     expect(policy).toContain('Voiceover / narrationScript / narrationLines');
     expect(policy).toContain('Urdu (Nastaliq/Arabic)');
-    expect(policy).toContain('not Roman Urdu');
+    expect(formatSpokenLanguageRules('ur')).toContain('not Roman Urdu');
+    expect(formatPublishCopyLanguageRules('ur')).toContain('Roman Urdu');
+    expect(formatPublishCopyLanguageRules('ur')).toContain('No Arabic/Urdu');
     expect(formatSpokenLanguageRules('hi')).toContain('Devanagari');
     expect(formatSpokenLanguageRules('hi')).toContain('not Roman/Latin Hindi');
     expect(formatSpokenLanguageRules('de')).toContain('German');

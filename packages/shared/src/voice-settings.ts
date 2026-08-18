@@ -93,10 +93,9 @@ export const OPENAI_TTS_VOICE_LABELS: Record<OpenAiTtsVoice, string> = {
 };
 
 /**
- * Pipeline voice delivery. Documentary = newscast, repurposed = calm.
- * Folded into AI cache keys via SPEECH_EMOTION_RULES_REV.
+ * Pipeline voice delivery. Folded into AI cache keys via SPEECH_EMOTION_RULES_REV.
  */
-export const SPEECH_EMOTION_RULES_REV = 4;
+export const SPEECH_EMOTION_RULES_REV = 5;
 
 export const TTS_EMOTIONS = [
   'default',
@@ -371,9 +370,9 @@ const OPENAI_TTS_INSTRUCTIONS: Record<TtsEmotion, string> = {
     'Speak in a close, conspiratorial whisper, then open up slightly on the last words. Intimate, not inaudible.',
 };
 
-/** Documentary narrator: one newscast delivery for the whole VO. */
+/** Documentary narrator: vary emotion per line; newscast is one option, not the whole track. */
 export function formatDocumentaryVoiceEmotionRules(): string {
-  return `Voice delivery: newscast for the entire documentary voiceover (${TTS_EMOTION_NARRATION_HINTS.newscast}) Tag every narrationLines[].emotion as "${DOCUMENTARY_VOICE_EMOTION}". Do not change emotion line by line. Do not name the emotion or put stage directions in spoken words.`;
+  return `Voice delivery: keep documentary writing crisp and factual, but tag a FITTED emotion on every narrationLines[].emotion. Use ${DOCUMENTARY_VOICE_EMOTION} for dates and dry facts, calm or empathetic for consequence, excited for a reveal, sad for loss, angry for injustice, default otherwise. Do NOT tag every line newscast. Do not name the emotion or put stage directions in spoken words.`;
 }
 
 /** Repurposed narrator: one calm delivery for the whole VO. */
@@ -386,7 +385,7 @@ export function formatRepurposedVoiceEmotionRules(): string {
  */
 export function formatNarrationEmotionBlock(_fallback?: TtsEmotion | null): string {
   return `Voice delivery:
-- Documentary voiceover uses ${DOCUMENTARY_VOICE_EMOTION} for the whole track — crisp, even, news-reader. Do not vary narrator emotion line by line.
+- Documentary voiceover stays factual, but each spoken line gets a fitting emotion (newscast, calm, empathetic, sad, excited, angry, default). Do not stamp every line newscast.
 - Repurposed voiceover uses ${REPURPOSED_VOICE_EMOTION} for the whole track — steady and unhurried. Do not vary narrator emotion line by line.
 - Drama character dialogue may use a fitting emotion per spoken line when it helps; this is optional, not required.
 - Kids nursery rhymes should vary emotion per line (playful, whisper, cheerful, excited) and never use angry or newscast.
@@ -407,8 +406,7 @@ export const voiceSettingsSchema = z.object({
   /** Numeric speed for Kokoro / Gemini (1.0 = normal). */
   speed: z.number().positive().optional(),
   /**
-   * Channel Voice-tab fallback. Documentary/repurposed pipelines override this
-   * with newscast/calm for the whole track.
+   * Channel Voice-tab fallback when a spoken line has no emotion tag.
    */
   emotion: z.enum(TTS_EMOTIONS).optional(),
   /** OpenAI /audio/speech model. Used for AI package voiceovers. */

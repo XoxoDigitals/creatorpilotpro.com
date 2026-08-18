@@ -7,10 +7,10 @@
  * even when the DB PromptVersion row is unchanged / absent.
  */
 import { z } from 'zod';
-import { TaskType, formatIdeaTitleLanguageRules, formatOutputLanguagePolicy, formatRepurposedVoiceEmotionRules, languageDisplayName, parseTtsEmotion } from '@scp/shared';
+import { TaskType, formatIdeaTitleLanguageRules, formatOutputLanguagePolicy, formatPublishCopyLanguageRules, formatRepurposedVoiceEmotionRules, languageDisplayName, parseTtsEmotion } from '@scp/shared';
 
 /** Folded into cache promptVersion for VIDEO_ANALYSIS / NARRATION_REWRITE / METADATA. */
-export const REPURPOSE_PROMPT_REV = 18;
+export const REPURPOSE_PROMPT_REV = 19;
 
 export const videoAnalysisSegmentSchema = z.object({
   startSec: z.number(),
@@ -482,7 +482,6 @@ export function platformMetadataGuidance(platform?: string | null): string {
  * Channel style is appended separately via withChannelStyle.
  */
 export function defaultMetadataPrompt(platform?: string | null, language?: string | null): string {
-  const lang = languageDisplayName(language);
   return `You write publish-ready metadata for a repurposed short-form video.
 
 ${platformMetadataGuidance(platform)}
@@ -501,7 +500,7 @@ The "tags" array must always be present (use [] only when the platform guidance 
 Follow the channel style block when provided.
 ${formatOutputLanguagePolicy(language)}
 ${formatIdeaTitleLanguageRules(language)}
-Write description, tags, and keywords in ${lang}. Keep this instruction prompt in English. No markdown fences.`;
+${formatPublishCopyLanguageRules(language)} Keep this instruction prompt in English. No markdown fences.`;
 }
 
 /** @deprecated Prefer defaultMetadataPrompt(platform) — kept for callers without platform. */

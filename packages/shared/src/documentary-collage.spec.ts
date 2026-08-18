@@ -101,12 +101,13 @@ describe('documentary collage helpers', () => {
     expect(documentaryBeatSceneCount(60, 2)).toBe(30);
   });
 
-  it('uses newscast for the whole documentary VO', () => {
+  it('varies documentary VO emotion per line instead of one newscast track', () => {
     const rules = formatFernNarrationRules(60);
     expect(rules).toContain('Cold open');
     expect(rules).toContain('cliffhanger');
     expect(rules).toContain('narrationLines');
     expect(rules).toContain('newscast');
+    expect(rules.toLowerCase()).toContain('do not tag every line newscast');
     expect(rules).not.toContain('Grief');
     expect(rules).toMatch(/Do not name the emotion/i);
   });

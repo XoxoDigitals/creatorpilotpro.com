@@ -72,7 +72,7 @@ describe('metadata prompt language', () => {
     const prompt = defaultMetadataPrompt('YOUTUBE', 'hi');
     expect(prompt).toContain('Hindi');
     expect(prompt).toContain('mix Hindi (Devanagari) and English');
-    expect(prompt).toContain('Write description, tags, and keywords in Hindi');
+    expect(prompt).toContain('Write videoDescription, description, tags, keywords, and hashtags in Hindi');
     expect(prompt).toContain('LANGUAGE POLICY');
   });
 
@@ -80,7 +80,7 @@ describe('metadata prompt language', () => {
     const prompt = defaultMetadataPrompt('YOUTUBE', 'ur');
     expect(prompt).toContain('Roman Urdu');
     expect(prompt).toContain('No Arabic/Urdu script');
-    expect(prompt).toContain('Write description, tags, and keywords in Urdu');
+    expect(prompt).toContain('Write videoDescription, description, tags, keywords, and hashtags in Roman Urdu');
   });
 
   it('requires a YouTube tags array separate from description hashtags', () => {

@@ -175,11 +175,12 @@ describe('drama/dialogue style helpers', () => {
     expect(drama).not.toContain('sound design / audio layer');
   });
 
-  it('injects documentary newscast and repurposed calm into the channel style block', () => {
+  it('injects documentary per-line emotion and repurposed calm into the channel style block', () => {
     const block = formatChannelStyleBlock({ language: 'en', ttsEmotion: 'calm' });
     expect(block).toContain('Voice delivery');
     expect(block).toContain('newscast');
     expect(block).toContain('calm');
+    expect(block).toContain('Do not stamp every line newscast');
     expect(block).not.toContain('SITUATION');
   });
 });

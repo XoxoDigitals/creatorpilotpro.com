@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   formatIdeaTitleLanguageRules,
   formatOutputLanguagePolicy,
+  formatPublishCopyLanguageRules,
   formatSpokenLanguageRules,
   languageDisplayName,
   OUTPUT_LANGUAGE_POLICY_REV,
@@ -1210,7 +1211,7 @@ export function composeChannelStyles(
   if (tones.length) voice.push(`Tone: ${joinList(tones)}`);
   if (existingWriting) voice.push(`Writing style notes: ${existingWriting}`);
   voice.push(
-    `Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. Keep publish descriptions, tags, and on-screen captions in ${lang}. Publish titles follow the LANGUAGE POLICY title-language rules.`,
+    `Write crisp, scroll-stopping copy. Prefer concrete specifics over vague claims. ${formatPublishCopyLanguageRules(language)} On-screen captions stay in ${lang}. Publish titles follow the LANGUAGE POLICY title-language rules.`,
   );
   if (titleTemplate) {
     voice.push(`Default title template pattern: ${titleTemplate}`);
@@ -1262,7 +1263,7 @@ export function composeChannelStyles(
       '## Operating checklist',
       '- Idea titles follow the title-language rules; idea angle/hook/rationale/topicSummary and story drafts stay English, on-niche, format-fit, hook-first.',
       `- Scripts / narration / dialogue: match audio mode, pacing, and tone; speak ${lang}.`,
-      `- On-screen text, publish descriptions, and tags: ${lang}; publish titles follow the title-language rules; follow templates and caption style when set.`,
+      `- On-screen text: ${lang}. ${formatPublishCopyLanguageRules(language)} Publish titles follow the title-language rules; follow templates and caption style when set.`,
       '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language; fill Visual prompt DNA per scene.',
       '- Tags: discoverable, niche-relevant, no spam stuffing.',
       '- Thumbnails & animationPrompts: obey visual DNA + animation guideline sections.',
