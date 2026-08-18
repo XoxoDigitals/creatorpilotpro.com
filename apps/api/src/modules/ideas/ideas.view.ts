@@ -281,7 +281,7 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
       ).trim(),
     };
   });
-  const narrationScript = brief.voiceoverStatus === 'NONE' ? '' : brief.script;
+  const narrationScript = brief.script?.trim() ?? '';
   const timedTranscript = Array.isArray(brief.timedTranscript)
     ? brief.timedTranscript
         .map((entry) => {

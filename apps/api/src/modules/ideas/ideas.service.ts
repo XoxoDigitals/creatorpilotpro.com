@@ -13,7 +13,7 @@ import type {
 } from './dto/ideas.dto';
 import type { ContentItemView } from '../content/content.view';
 import { toContentItemView } from '../content/content.view';
-import { parseStyleProfile } from '@scp/shared';
+import { parseStyleProfile, isKidsRhymePackage } from '@scp/shared';
 import { resolvePackageResumeStage } from './package-resume';
 import { AiService } from '../ai/ai.service';
 
@@ -634,6 +634,15 @@ export class IdeasService {
     if (stage === 'voiceover') {
       if (!brief.script?.trim()) {
         throw new BadRequestException('No narration script to synthesize — regenerate the script first.');
+      }
+      const profile = await this.prisma.client.channelProfile.findUnique({
+        where: { accountId: idea.accountId },
+        select: { styleProfile: true },
+      });
+      if (isKidsRhymePackage(profile?.styleProfile)) {
+        throw new BadRequestException(
+          'Kids rhymes use an uploaded sound, not generated TTS. Upload the rhyme on the AI package.',
+        );
       }
       await this.prisma.client.idea.update({
         where: { id },

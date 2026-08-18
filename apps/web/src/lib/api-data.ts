@@ -1271,7 +1271,7 @@ function mapBrief(b: ApiProductionBrief): ProductionBrief {
     researchSummary: b.researchSummary,
     storySummary: b.storySummary ?? b.researchSummary,
     script: b.script,
-    narrationScript: b.narrationScript ?? (voiceoverStatus === 'NONE' ? '' : b.script),
+    narrationScript: b.narrationScript ?? b.script ?? '',
     englishSummary: b.englishSummary?.trim() || '',
     presentationMode: b.presentationMode ?? '',
     sceneBreakdown: scenes,

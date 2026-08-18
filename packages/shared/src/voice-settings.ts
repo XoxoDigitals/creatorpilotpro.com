@@ -3,7 +3,7 @@
  * Edge Neural (edge-tts) is the product default; other providers remain fallbacks.
  */
 import { z } from 'zod';
-import { resolveContentLanguage } from './content-languages.js';
+import { languageDisplayName, resolveContentLanguage } from './content-languages.js';
 
 export const TTS_PROVIDERS = ['edge', 'kokoro', 'gemini', 'openai'] as const;
 export type TtsProviderId = (typeof TTS_PROVIDERS)[number];
@@ -326,8 +326,10 @@ export function formatOpenAiTtsInstructions(
   opts?: { kidsRhyme?: boolean; language?: string | null },
 ): string {
   const delivery = OPENAI_TTS_INSTRUCTIONS[parseTtsEmotion(emotion)];
-  const lang = opts?.language?.trim();
-  const langLine = lang && lang !== 'en' ? ` Speak in ${lang}.` : '';
+  const langName = languageDisplayName(opts?.language);
+  const langLine = langName
+    ? ` Speak the written text in ${langName}. Use natural ${langName} pronunciation and rhythm.`
+    : '';
   const kids = opts?.kidsRhyme
     ? ' This is a children\'s nursery rhyme: sing-song cadence, bounce on rhyming words, warm smile, gentle giggle on jokes, gasp on surprises, never scary or sarcastic. Kids audience.'
     : '';

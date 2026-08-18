@@ -537,6 +537,30 @@ export class Ffmpeg {
     }
   }
 
+  /** Copy/resample VO to 44.1 kHz mono WAV with no EQ, pitch, compressor, or loudnorm. */
+  async copyVoiceoverWav(srcPath: string, destPath: string): Promise<void> {
+    await this.ensureAvailable();
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      srcPath,
+      '-ar',
+      '44100',
+      '-ac',
+      '1',
+      '-y',
+      destPath,
+    ];
+    const res = await this.runner(this.binary, args);
+    if (res.code !== 0) {
+      throw new Error(
+        ffmpegFailureMessage(`ffmpeg voiceover copy failed for ${srcPath}`, res.code, res.stderr),
+      );
+    }
+  }
+
   /**
    * True when the file has an audio stream whose mean volume is above silence
    * (used to keep original ambience under a voiceover).

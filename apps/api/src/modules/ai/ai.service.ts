@@ -947,6 +947,7 @@ Write as imperative rules. Do not retell the video's plot. Do not mention stock 
           emotion: parseTtsEmotion(dto.emotion),
           kidsRhyme: dto.kidsRhyme === true,
           model,
+          language: dto.language,
         });
         return {
           voiceId,

@@ -146,8 +146,6 @@ export default function AccountSettingsPage() {
   const [language, setLanguage] = useState('en');
   const [ttsProvider, setTtsProvider] = useState('openai');
   const [openaiTtsModel, setOpenaiTtsModel] = useState(OPENAI_TTS_MODEL);
-  const [openaiKeyDraft, setOpenaiKeyDraft] = useState('');
-  const [openaiKeyLast4, setOpenaiKeyLast4] = useState<string | null>(null);
   const [voice, setVoice] = useState('en-US-AriaNeural');
   const [voiceLocale, setVoiceLocale] = useState('en-US');
   const [voiceRate, setVoiceRate] = useState('+0%');
@@ -316,9 +314,10 @@ export default function AccountSettingsPage() {
         if (voiceCfg?.rate) setVoiceRate(voiceCfg.rate);
         if (voiceCfg?.pitch) setVoicePitch(voiceCfg.pitch);
         if (voiceCfg?.volume) setVoiceVolume(voiceCfg.volume);
-        setVoiceEmotion(parseTtsEmotion(voiceCfg?.emotion));
-        setOpenaiKeyLast4(p.openaiApiKeyLast4 ?? null);
-        setOpenaiKeyDraft('');
+        const loadedEmotion = parseTtsEmotion(voiceCfg?.emotion);
+        setVoiceEmotion(
+          useOpenAi && loadedEmotion === 'newscast' ? 'default' : loadedEmotion,
+        );
         setBackgroundBedPercent(
           clampBackgroundBedPercent(
             voiceCfg?.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
@@ -508,6 +507,7 @@ export default function AccountSettingsPage() {
         volume: voiceVolume,
         emotion: voiceEmotion,
         kidsRhyme: styleAnswers.nicheTags.includes('kids_rhymes') || styleAnswers.formats.includes('nursery_rhyme'),
+        language,
       });
       const audio = new Audio(`data:${res.mimeType};base64,${res.audioBase64}`);
       await audio.play();
@@ -645,7 +645,6 @@ export default function AccountSettingsPage() {
           defaultLanguage: defaultPublishLanguage || undefined,
           defaultRecordingCountry: defaultRecordingCountry.trim() || undefined,
         },
-        ...(openaiKeyDraft.trim() ? { openaiApiKey: openaiKeyDraft.trim() } : {}),
       });
       toast('Channel profile saved', 'success');
       await load();
@@ -1223,19 +1222,18 @@ export default function AccountSettingsPage() {
           )}
           {ttsProvider === 'openai' && (
             <>
-              <Field label="OpenAI API key (this account)">
-                <Input
-                  type="password"
-                  autoComplete="off"
-                  value={openaiKeyDraft}
-                  onChange={(e) => setOpenaiKeyDraft(e.target.value)}
-                  placeholder={
-                    openaiKeyLast4 ? `Saved · last 4 ${openaiKeyLast4}` : 'sk-… paste to replace'
-                  }
-                />
+              <Field label="Spoken language">
+                <Select value={language} onChange={(e) => applyLanguage(e.target.value)}>
+                  {contentLanguageSelectOptions(language).map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {contentLanguageOptionLabel(lang)}
+                    </option>
+                  ))}
+                </Select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Used for the selected OpenAI speech model and rhyme voice analysis. Falls back to
-                  Settings → AI OpenAI keys if empty. Saved encrypted. Never shown again.
+                  OpenAI uses one speech model for every language (English, Urdu, Hindi, …). The
+                  model speaks this language from the script text — there is no separate Urdu or
+                  English model.
                 </p>
               </Field>
               <div className="flex flex-wrap items-center gap-2">
@@ -1248,7 +1246,7 @@ export default function AccountSettingsPage() {
                   {previewingVoiceId === voice ? 'Playing…' : 'Preview emotion'}
                 </Button>
                 <span className="text-[11px] text-zinc-500">
-                  Speaks a short line with the selected voice + fallback emotion.
+                  Speaks a short line with the selected voice, language, and line emotion.
                 </span>
               </div>
               <Field label="Fallback emotion">
@@ -1263,9 +1261,9 @@ export default function AccountSettingsPage() {
                   ))}
                 </Select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  {openaiTtsModel} follows this as spoken delivery when the model supports
-                  instructions. Line-level emotions from the script still win (playful, whisper,
-                  excited…). TTS-1 / TTS-1 HD ignore this.
+                  Scripts use the full emotion set per line (cheerful, excited, playful, whisper,
+                  sad, angry, calm, empathetic, newscast). This value is only used when a line has
+                  no tag. Keep Neutral unless you want one default delivery.
                 </p>
               </Field>
             </>

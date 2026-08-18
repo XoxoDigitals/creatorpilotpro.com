@@ -127,10 +127,12 @@ export function KidsRhymePanel({
 export function OwnerVoiceUpload({
   ideaId,
   waiting,
+  hasExisting = false,
   onUploaded,
 }: {
   ideaId: string;
   waiting: boolean;
+  hasExisting?: boolean;
   onUploaded: () => void | Promise<void>;
 }) {
   const toast = useToast();
@@ -139,7 +141,9 @@ export function OwnerVoiceUpload({
 
   return (
     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-      <p className="font-medium">Upload sound / rhyme sound</p>
+      <p className="font-medium">
+        {hasExisting ? 'Replace sound / rhyme sound' : 'Upload sound / rhyme sound'}
+      </p>
       <p className="mt-0.5 text-[11px] text-amber-800">
         MP3 / WAV / M4A. After upload we transcribe by time, then write visual prompts to the lyrics.
       </p>
@@ -167,7 +171,11 @@ export function OwnerVoiceUpload({
         />
         <span className="inline-flex">
           <Button type="button" size="sm" disabled={uploading}>
-            {uploading ? 'Uploading…' : 'Upload sound / rhyme sound'}
+            {uploading
+              ? 'Uploading…'
+              : hasExisting
+                ? 'Replace sound / rhyme sound'
+                : 'Upload sound / rhyme sound'}
           </Button>
         </span>
       </label>

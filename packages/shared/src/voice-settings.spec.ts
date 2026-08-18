@@ -141,4 +141,13 @@ describe('OpenAI gpt-4o-mini-tts helpers', () => {
     expect(kids.toLowerCase()).toContain('nursery');
     expect(kids.toLowerCase()).not.toContain('angry');
   });
+
+  it('names the spoken language for OpenAI (no per-language model)', () => {
+    expect(formatOpenAiTtsInstructions('cheerful', { language: 'ur' }).toLowerCase()).toContain(
+      'urdu',
+    );
+    expect(formatOpenAiTtsInstructions('cheerful', { language: 'en' }).toLowerCase()).toContain(
+      'english',
+    );
+  });
 });

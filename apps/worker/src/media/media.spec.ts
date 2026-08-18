@@ -152,6 +152,18 @@ describe('Ffmpeg.enhanceVoiceover', () => {
   });
 });
 
+describe('Ffmpeg.copyVoiceoverWav', () => {
+  it('resamples to 44.1k mono without an equalizer chain', async () => {
+    const { runner, calls } = mockRunner();
+    await new Ffmpeg('ffmpeg', runner).copyVoiceoverWav('/raw.wav', '/plain.wav');
+    const enc = calls.find((c) => c.args.includes('-i'));
+    expect(enc?.args).toEqual(
+      expect.arrayContaining(['-i', '/raw.wav', '-ar', '44100', '-ac', '1', '-y', '/plain.wav']),
+    );
+    expect(enc?.args).not.toContain('-af');
+  });
+});
+
 describe('voiceoverBedMixFilter', () => {
   it('keeps the TTS enhance chain plus EBU loudnorm', () => {
     expect(VOICEOVER_ENHANCE_AF).toBe(

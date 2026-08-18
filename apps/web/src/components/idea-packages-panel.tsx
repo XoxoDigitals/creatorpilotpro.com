@@ -974,7 +974,8 @@ function PackageDetails({
               />
               <OwnerVoiceUpload
                 ideaId={idea.id}
-                waiting={waitingVoice}
+                waiting={!demo && !!rhyme}
+                hasExisting={!!pkg.voiceoverReady}
                 onUploaded={onUploaded}
               />
             </div>

@@ -1366,7 +1366,7 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - narrationScript must be one complete, cohesive narration covering the full ${videoDurationSec} seconds (roughly ${Math.round(videoDurationSec * 2.3)}-${Math.round(videoDurationSec * 2.8)} spoken words).
 - ${hookRetentionReminder}
 - Open with a HOOKY first sentence. If the idea/hook/angle is about a person (or characters[] will include a notable person), write like a compelling host: "this person from [place] is famous for…" / "you've seen this face — here's why they matter…" — specific to the idea, never a generic template, never invent biography.
-- Also return narrationLines: one spoken sentence per item as { text, emotion }. Use one even narrator delivery and tag emotion as "default". Do not name the emotion in spoken text. narrationScript must equal narrationLines[].text concatenated in order.
+- Also return narrationLines: one spoken sentence per item as { text, emotion }. Pick a fitting emotion per line from cheerful, excited, calm, empathetic, sad, angry, playful, whisper, newscast, default. Vary with the story — do not tag every line newscast or default. Do not name the emotion in spoken text. narrationScript must equal narrationLines[].text concatenated in order.
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
 - Do not invent scene image/video prompts yet. Later visuals MUST NOT invent spoken speech, lip-sync, or character dialogue.`
       : presentation === 'dialogue'
@@ -1392,7 +1392,7 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - ${mixedVoLayupRules}
 - narrationScript contains only the narrator portions for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not a lecture over dialogue clips.
 - Open narrator portions with a hooky person/subject line when the idea is about a notable person (same "this person from [place] is famous for…" energy), then continue the story.
-- Also return narrationLines: one narrator sentence per item as { text, emotion }. Use one even narrator delivery and tag emotion as "default". Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
+- Also return narrationLines: one narrator sentence per item as { text, emotion }. Pick a fitting emotion per line from cheerful, excited, calm, empathetic, sad, angry, playful, whisper, newscast, default. Vary with the story — do not tag every line newscast or default. Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
 - Note planned DIALOGUE windows and spoken character lines inside editingInstructions (and storySummary) for the later visual stage (spoken character lines in ${languageDisplayName(channelLanguage)}).`

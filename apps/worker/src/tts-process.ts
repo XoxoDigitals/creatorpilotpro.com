@@ -15,12 +15,9 @@ import { writeFile, mkdir, unlink, copyFile, stat } from 'node:fs/promises';
 import type PgBoss from 'pg-boss';
 import {
   QUEUE,
-  DOCUMENTARY_VOICE_EMOTION,
   REPURPOSED_VOICE_EMOTION,
   parseOpenAiTtsModel,
   resolveOpenAiTtsVoice,
-  isDocumentaryIdeaGeneration,
-  isDocumentaryVoiceoverPackage,
   isKidsRhymePackage,
   parseSpokenNarrationLines,
   parseVoiceSettings,
@@ -561,7 +558,7 @@ async function synthesizeViaOpenAi(opts: {
   }
 
   const finalPath = join(opts.voDir, 'voiceover.wav');
-  await concatNormalize(ffmpeg, ffmpegAvail, chunkWavs, opts.voDir, finalPath);
+  await concatNormalize(ffmpeg, ffmpegAvail, chunkWavs, opts.voDir, finalPath, INTER_SEGMENT_GAP_SEC, false);
   for (const cp of chunkWavs) {
     if (cp && cp !== finalPath) await unlink(cp).catch(() => {});
   }
@@ -655,6 +652,7 @@ async function concatNormalize(
   voDir: string,
   finalPath: string,
   gapSec: number = INTER_SEGMENT_GAP_SEC,
+  enhance = true,
 ): Promise<void> {
   // Enhancement (EQ + compressor + loudnorm) requires ffmpeg. Fail clearly
   // rather than storing unprocessed TTS — ffmpeg is an operational dependency.
@@ -663,9 +661,11 @@ async function concatNormalize(
   }
 
   const wavOut = ['-ar', '44100', '-ac', '1'] as const;
+  const finish = (src: string) =>
+    enhance ? ffmpeg.enhanceVoiceover(src, finalPath) : ffmpeg.copyVoiceoverWav(src, finalPath);
 
   if (chunkPaths.length === 1) {
-    await ffmpeg.enhanceVoiceover(chunkPaths[0]!, finalPath);
+    await finish(chunkPaths[0]!);
     return;
   }
 
@@ -699,7 +699,7 @@ async function concatNormalize(
     '-y',
     concatPath,
   ]);
-  await ffmpeg.enhanceVoiceover(concatPath, finalPath);
+  await finish(concatPath);
   await unlink(listPath).catch(() => {});
   await unlink(concatPath).catch(() => {});
   for (const s of tempSilence) await unlink(s).catch(() => {});
@@ -1201,11 +1201,25 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
     where: { accountId: idea.accountId },
     select: { styleProfile: true },
   });
-  const documentaryVo =
-    isDocumentaryVoiceoverPackage(styleRow?.styleProfile) ||
-    isDocumentaryIdeaGeneration(styleRow?.styleProfile);
   const kidsRhyme = isKidsRhymePackage(styleRow?.styleProfile);
-  const forceEmotion = documentaryVo ? DOCUMENTARY_VOICE_EMOTION : undefined;
+  if (kidsRhyme) {
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        voiceoverStatus: 'NONE',
+        packageStage: 'SCRIPT',
+        packageStageError: null,
+      },
+    });
+    await prisma.idea.update({
+      where: { id: ideaId },
+      data: { packageStatus: 'GENERATING', status: 'IN_PRODUCTION' },
+    });
+    console.log(
+      `[worker:tts] idea ${ideaId} is a kids rhyme — skipping OpenAI TTS; waiting for owner sound upload`,
+    );
+    return;
+  }
   const voDir = join(STORAGE_ROOT, 'ideas', ideaId, 'tts');
   const words = script.split(/\s+/).filter(Boolean).length;
   const extras = splitProductionBriefEditingExtras(idea.brief.editingInstructions ?? '');
@@ -1228,7 +1242,6 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
       accountId: idea.accountId,
       kidsRhyme,
       lines: storedLines,
-      ...(forceEmotion ? { forceEmotion } : {}),
     });
 
     const transcriptPath =
