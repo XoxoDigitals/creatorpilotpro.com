@@ -60,6 +60,8 @@ export interface IdeaGenerationJob {
   count?: number;
   /** Optional user topic seed that steers idea generation. */
   topicSeed?: string;
+  /** When true, use the seed as the exact video topic (single idea). */
+  exactTopic?: boolean;
 }
 
 export interface BriefGenerationJob {

@@ -27,6 +27,7 @@ import {
   voicesForOpenAiTtsModel,
   type StyleProfileAnswers,
   type LockedCharacter,
+  LOCKED_CHARACTER_LOOK_LABELS,
   type TtsEmotion,
   type CaptionTemplateId,
   type ColorFilterPreset,
@@ -186,6 +187,7 @@ export default function AccountSettingsPage() {
   const [settingsSection, setSettingsSection] = useState<
     | 'pipeline'
     | 'brand'
+    | 'characters'
     | 'metadata'
     | 'approval'
     | 'schedule'
@@ -198,6 +200,7 @@ export default function AccountSettingsPage() {
   const settingsTabs: { id: typeof settingsSection; label: string }[] = [
     { id: 'pipeline', label: 'Content pipeline' },
     { id: 'brand', label: 'Brand & prompt' },
+    { id: 'characters', label: 'Characters' },
     { id: 'metadata', label: 'Publish metadata' },
     { id: 'approval', label: 'Approval' },
     { id: 'schedule', label: 'Posting schedule' },
@@ -743,6 +746,7 @@ export default function AccountSettingsPage() {
         />
         <div className="space-y-4 p-4">
           <StyleQuestionnaire
+            accountId={id}
             answers={styleAnswers}
             lockedCharacters={lockedCharacters}
             animationReferencePrompt={animationReferencePrompt}
@@ -774,6 +778,74 @@ export default function AccountSettingsPage() {
           </Field>
         </div>
       </Card>
+      )}
+
+      {settingsSection === 'characters' && (
+        <Card>
+          <CardHeader
+            title="Character preview"
+            description="Preview and download locked character reference images. Edit names and upload images under Brand & prompt."
+          />
+          <div className="space-y-4 p-4">
+            {lockedCharacters.length === 0 ? (
+              <p className="text-sm text-zinc-500">
+                No locked characters yet. Add them under Brand & prompt → Character lock, save, then
+                upload a reference image.
+              </p>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {lockedCharacters.map((character, index) => {
+                  const label = character.name.trim() || `Character ${index + 1}`;
+                  const imageUrl = character.imagePath
+                    ? `/api/v1/accounts/${id}/locked-characters/${index}/image?t=${encodeURIComponent(character.imagePath)}`
+                    : null;
+                  const downloadUrl = character.imagePath
+                    ? `/api/v1/accounts/${id}/locked-characters/${index}/image?download=1&t=${encodeURIComponent(character.imagePath)}`
+                    : null;
+                  return (
+                    <div
+                      key={`${label}-${index}`}
+                      className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50 p-3"
+                    >
+                      {imageUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={imageUrl}
+                          alt={label}
+                          className="aspect-square w-full rounded-md border border-zinc-200 object-cover bg-white"
+                        />
+                      ) : (
+                        <div className="flex aspect-square w-full items-center justify-center rounded-md border border-dashed border-zinc-300 bg-white text-xs text-zinc-400">
+                          No image uploaded
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-sm font-medium text-zinc-900">{label}</p>
+                        <p className="text-[11px] text-zinc-500">
+                          {LOCKED_CHARACTER_LOOK_LABELS[character.look]}
+                          {character.imageFileName ? ` · ${character.imageFileName}` : ''}
+                        </p>
+                      </div>
+                      {downloadUrl ? (
+                        <a
+                          href={downloadUrl}
+                          download={character.imageFileName || `${label}.jpg`}
+                          className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
+                        >
+                          Download image
+                        </a>
+                      ) : (
+                        <p className="text-[11px] text-zinc-500">
+                          Upload an image under Brand & prompt to enable download.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
       )}
 
       {settingsSection === 'metadata' && (

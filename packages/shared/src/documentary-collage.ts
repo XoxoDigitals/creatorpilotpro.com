@@ -3,7 +3,14 @@
  * formats include documentary (or similar) and presentation is voiceover / mixed.
  * Mapped into the AI-owner package pipeline (ideas → script → visuals), not a chat UI.
  */
-import { formatSpokenLanguageRules } from './content-languages.js';
+import {
+  formatOnScreenTextLanguageRules,
+  formatSpokenLanguageRules,
+  spokenWordsForDuration,
+  narrationWpmForLanguage,
+  openAiTtsSpeedForLanguage,
+  thumbnailOverlayLanguageLabel,
+} from './content-languages.js';
 import {
   DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT,
   NEGATIVE_PROMPT_INLINE_PREFIX,
@@ -26,14 +33,21 @@ export const DOCUMENTARY_COLLAGE_THUMBNAIL_CLOSER =
 /**
  * Verbatim UNIVERSAL VIDEO PROMPT from engine STATE 8.
  * Applied to every collage still as the animation / video instruction.
+ * Duration is parameterized via documentaryUniversalVideoPrompt().
  */
-export const DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT = `Transform the provided image into a 10-second premium editorial documentary paper-collage animation. Preserve the final composition of the provided image exactly. Do not redesign, reposition, resize, or replace any element. The provided image is the FINISHED frame that the animation builds toward.
+export function documentaryUniversalVideoPrompt(clipDurationSec = 10): string {
+  const sec = Math.max(1, Math.round(clipDurationSec));
+  const holdStart = Math.max(1, Math.round(sec * 0.7));
+  return `Transform the provided image into a ${sec}-second premium editorial documentary paper-collage animation. Preserve the final composition of the provided image exactly. Do not redesign, reposition, resize, or replace any element. The provided image is the FINISHED frame that the animation builds toward.
 Style: hand-cut documentary paper collage in motion. Aged newsprint and archival surfaces, halftone photo cutouts, torn edges, tape, stamps, red string, typewriter strips. Every element moves as a rigid physical paper piece. Visible cutout thickness, print grain, soft layered shadows. Stop-motion cadence, stepped easing, 2-3 frame holds, the hand-made "cutting on twos" feel. Never smooth CGI motion.
 CAMERA, STRICT: the camera stays completely locked for the entire clip. No zoom, no pan, no tilt, no rotation, no orbit, no dolly, no tracking, no handheld shake, no focus pulls, no reframing, no cuts, no transitions, no morphing, no object replacement, no time skips. One continuous static shot.
-0 TO 7 SECONDS, BUILD-ON ASSEMBLY: the frame opens on the EMPTY background plate only: the bare aged-newsprint or archival surface with its stains, grain, and any fixed scaffolding (a map base, a timeline line, a corkboard), with every story element absent. Elements then enter one by one, back to front, in narrative order: background scraps settle first, then the hero cutout slides in with paper drag and a small settle, supporting cutouts drop or pin on with a 2-frame stamp settle, tape presses down, typewriter strips slide in, stamps slap on, red string draws itself from pin to pin, marker underlines and arrows draw themselves last. Each entrance lands with a tiny handcrafted bounce and casts a real layered shadow. No element moves again after it lands. By 7 seconds the frame exactly matches the provided image.
-7 TO 10 SECONDS, LIVING PAPER POSTER: everything holds position. Only subtle life remains: paper corners lift a millimeter in a draft, halftone dots shimmer faintly, string tension quivers once, shadows breathe, stamp ink glistens subtly. Nothing changes location, nothing scales, nothing rotates significantly, nothing enters or exits.
+0 TO ${holdStart} SECONDS, BUILD-ON ASSEMBLY: the frame opens on the EMPTY background plate only: the bare aged-newsprint or archival surface with its stains, grain, and any fixed scaffolding (a map base, a timeline line, a corkboard), with every story element absent. Elements then enter one by one, back to front, in narrative order: background scraps settle first, then the hero cutout slides in with paper drag and a small settle, supporting cutouts drop or pin on with a 2-frame stamp settle, tape presses down, typewriter strips slide in, stamps slap on, red string draws itself from pin to pin, marker underlines and arrows draw themselves last. Each entrance lands with a tiny handcrafted bounce and casts a real layered shadow. No element moves again after it lands. By ${holdStart} seconds the frame exactly matches the provided image.
+${holdStart} TO ${sec} SECONDS, LIVING PAPER POSTER: everything holds position. Only subtle life remains: paper corners lift a millimeter in a draft, halftone dots shimmer faintly, string tension quivers once, shadows breathe, stamp ink glistens subtly. Nothing changes location, nothing scales, nothing rotates significantly, nothing enters or exits.
 AUDIO: no music, no narration, no voices, no dialogue, no talking characters, no lip-sync speech. Only close-up paper ASMR and faint scene-appropriate ambience synced to the assembly: paper sliding, cardstock taps, tape press, stamp thud, string zip, pin click, soft room tone. All subtle. Voiceover is external — never invent spoken lines on the video track.
-FINAL RULE: the finished clip must feel like a real editorial paper collage assembling itself on a table, then holding as a living poster, matching the provided image exactly from 7 seconds to the end.`;
+FINAL RULE: the finished clip must feel like a real editorial paper collage assembling itself on a table, then holding as a living poster, matching the provided image exactly from ${holdStart} seconds to the end.`;
+}
+
+export const DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT = documentaryUniversalVideoPrompt(10);
 
 /** Title shapes from engine STATE 2 (idea generation). */
 export const DOCUMENTARY_TITLE_SHAPES = [
@@ -102,23 +116,19 @@ export function isDocumentaryIdeaGeneration(styleProfile: unknown): boolean {
   return answers.formats.some(isDocumentaryLikeFormat);
 }
 
-/** Target spoken word count at ~2.5 words per second. */
-export function documentaryTargetWordCount(durationSec: number): number {
-  const sec = Math.max(1, Math.round(durationSec));
-  return Math.round(sec * 2.5);
+/** Target spoken word count at narration WPM (scaled for hi/ur OpenAI 1.5×). */
+export function documentaryTargetWordCount(durationSec: number, language?: string | null): number {
+  return spokenWordsForDuration(durationSec, narrationWpmForLanguage(language)).target;
 }
 
-/** Prefer ~2.5s visual beats when clip length is longer than that. */
+/** Prefer owner clip length — do not invent tighter beats than requested. */
 export function documentaryBeatSceneCount(
   videoDurationSec: number,
   clipDurationSec: number,
 ): number {
   const video = Math.max(1, Math.round(videoDurationSec));
   const clip = Math.max(1, Math.round(clipDurationSec));
-  const fromClip = Math.max(1, Math.round(video / clip));
-  const fromBeats = Math.max(1, Math.round(video / 2.5));
-  // Prefer tighter beats when the owner left a long default clip length.
-  return clip > 3 ? Math.max(fromClip, fromBeats) : fromClip;
+  return Math.max(1, Math.round(video / clip));
 }
 
 export function formatDocumentaryIdeaRules(): string {
@@ -133,13 +143,16 @@ export function formatDocumentaryIdeaRules(): string {
 }
 
 export function formatFernNarrationRules(durationSec: number, language?: string | null): string {
-  const target = documentaryTargetWordCount(durationSec);
-  const min = Math.max(1, Math.round(target * 0.95));
-  const max = Math.max(min + 1, Math.round(target * 1.05));
+  const speed = openAiTtsSpeedForLanguage(language);
+  const words = spokenWordsForDuration(durationSec, narrationWpmForLanguage(language, speed));
   const spoken = formatSpokenLanguageRules(language);
+  const speedNote =
+    speed > 1
+      ? ` TTS speed is ${speed}× for this language — target word count already scales up so wall-clock audio still fills ${words.durationSec}s.`
+      : '';
   return `DOCUMENTARY voiceover narration (Fern DNA, mandatory):
 - Continuous narration only: one flowing prose block. No chapter labels, no headers, no camera directions, no visual cues.
-- Word count: target about ${target} spoken words for ${Math.round(durationSec)}s at ~2.5 words/sec (acceptable range ${min}-${max}, within ~5%).
+- Word count: target about ${words.target} spoken words for ${words.durationSec}s at ${words.wpm} WPM (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × seconds).${speedNote} Acceptable range ${words.min}-${words.max} (within ~10%).
 - ${spoken}
 - Cold open: first 3-4 sentences (about 30-40 words) open on a precise date, a location, and one small concrete action. Example SHAPE (rewrite in the channel spoken language/script — do not copy the English words): "November 24, 1971. Portland International Airport. A man in a dark suit buys a one-way ticket under the name Dan Cooper."
 - Crisp, precise documentary tone. Short declaratives mixed with one longer explanatory sentence per stretch. Temporal and causal connectives carry the story: then, by morning, three days later, because of this, which meant.
@@ -160,15 +173,15 @@ export function formatDocumentaryCollageVisualRules(options: {
 }): string {
   const { sceneCount, videoDurationSec, clipDurationSec } = options;
   return `DOCUMENTARY PAPER COLLAGE visuals (mandatory):
-- Beat breakdown: aim for about 2-3 seconds of narration per scene (about 5-8 words at 2.5 wps). A short sentence is one beat. A long sentence splits at its natural comma or clause into two beats. Every beat carries one visual idea only.
-- Return about ${sceneCount} scenes covering ~${Math.round(videoDurationSec)}s (prefer ~2-3s beats when practical; clip hint ~${Math.round(clipDurationSec)}s).
+- Beat breakdown: each scene should match the owner clip length (~${Math.round(clipDurationSec)}s). Cover the full voiceover with exactly ${sceneCount} scenes totaling ~${Math.round(videoDurationSec)}s.
+- Return exactly ${sceneCount} scenes covering ~${Math.round(videoDurationSec)}s total (each scene durationSec ≈ ${Math.round(clipDurationSec)}s — honor the owner clip length).
 - imagePrompt structure for EVERY scene (one prose block, fully self-contained):
   1. SCENE: concrete composition for this beat. One hero element (about 70% visual weight), 2-3 supporting elements max, generous negative space. If the beat carries a date, name, or number, it may appear as ONE short label of 1-4 words on a paper strip or stamp. Otherwise no text. Visualize the IDEA (object, document, map, timeline fragment, halftone figure, place), never illustrate every word.
   2. STYLE BLOCK, include this verbatim: ${DOCUMENTARY_COLLAGE_STYLE_BLOCK}
   3. CLOSER, end every prompt with exactly: ${DOCUMENTARY_COLLAGE_CLOSER}
   4. NEGATIVES: also return negativePrompt (still-image avoid list) and append it at the end of imagePrompt as "${NEGATIVE_PROMPT_INLINE_PREFIX} …". Start from: ${DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT}. Narration VO is external — forbid dialogue/talking characters on stills; focus on still-image artifacts (not motion/audio lists). Do NOT put image negatives into animationPrompt.
 - animationPrompt: for EVERY scene, use EXACTLY this universal video prompt (verbatim, do not rewrite). It already includes scene-synced paper ASMR / ambience sound design and forbids dialogue/voices/narration on the video track (video negatives live here — do not duplicate image negatives):
-${DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT}
+${documentaryUniversalVideoPrompt(clipDurationSec)}
 - Do not invent camera moves that contradict the locked-camera universal prompt.
 - Never use em dashes (—) in any prompt text.
 - Real-tragedy restraint: no gore, no victim mockery.`.trim();
@@ -179,11 +192,15 @@ ${DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT}
  */
 export function formatDocumentaryThumbnailInstructions(
   thumbnailReferencePrompt?: string | null,
+  language?: string | null,
 ): string {
+  const overlayLang = thumbnailOverlayLanguageLabel(language);
+  const onScreen = formatOnScreenTextLanguageRules(language);
   const dna = `DOCUMENTARY COLLAGE thumbnail DNA (mandatory):
 - Same newsprint collage world as the video, but pushed louder: bigger type, hotter red, harder contrast, built to read at 200 pixels wide.
 - Composition: one dominant halftone subject cutout (a figure with a black censor bar across the eyes where a real person is implied, an object, or a place), one or two torn-label text blocks in condensed all-caps carrying 1-3 words each (words chosen from the video's hook: EXPOSED, VANISHED, FOUND, the year, the amount), one red or yellow highlight device (rough marker circle, stamp box, or underline), aged newsprint base, torn edges bleeding off frame.
 - Text in the image: maximum 2 text elements, maximum 3 words each, huge, condensed, all-caps.
+- ${onScreen} Quote any on-image label words in ${overlayLang} inside the otherwise-English thumbnailPrompt.
 - 16:9, ultra-detailed, high contrast, no small details that die at thumbnail size, no watermark, no logos.
 - End the thumbnail prompt with exactly: ${DOCUMENTARY_COLLAGE_THUMBNAIL_CLOSER}
 - Never use em dashes (—).
@@ -222,8 +239,11 @@ export function ensureDocumentaryCollageImagePrompt(prompt: string): string {
 }
 
 /** Force the locked universal video prompt onto each scene. */
-export function ensureDocumentaryUniversalVideoPrompt(_prompt?: string): string {
-  return DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT;
+export function ensureDocumentaryUniversalVideoPrompt(
+  _prompt?: string,
+  clipDurationSec = 10,
+): string {
+  return documentaryUniversalVideoPrompt(clipDurationSec);
 }
 
 export function ensureDocumentaryThumbnailPrompt(prompt: string): string {

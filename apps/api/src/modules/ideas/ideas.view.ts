@@ -332,3 +332,47 @@ export function toBriefView(brief: ProductionBrief, presentationMode = ''): Prod
     createdAt: brief.createdAt.toISOString(),
   };
 }
+
+/** Soft package view while GENERATING/FAILED before a brief row exists. */
+export function pendingBriefView(
+  idea: {
+    id: string;
+    title: string;
+    packageStatus: string;
+    requestedVideoDurationSec: number | null;
+  },
+  presentationMode = 'voiceover',
+): ProductionBriefView {
+  const stage = idea.packageStatus === 'FAILED' ? 'FAILED' : 'SCRIPT';
+  return {
+    id: `pending:${idea.id}`,
+    ideaId: idea.id,
+    researchSummary: '',
+    storySummary: '',
+    script: '',
+    narrationScript: '',
+    englishSummary: '',
+    presentationMode,
+    sceneBreakdown: [],
+    characterPrompts: [],
+    editingInstructions: '',
+    targetDurationSec: idea.requestedVideoDurationSec,
+    videoTitle: idea.title,
+    videoDescription: '',
+    thumbnailPrompt: '',
+    thumbnailNegativePrompt: '',
+    universalVideoPrompt: '',
+    thumbnailPromptVariants: '',
+    voiceoverStatus: 'NONE',
+    voiceoverReady: false,
+    packageStage: stage,
+    packageStageError: null,
+    packageStageLabel: PACKAGE_STAGE_LABELS[stage] ?? stage,
+    timedTranscript: [],
+    narrationLines: [],
+    transcriptReady: false,
+    voiceIdUsed: null,
+    version: 0,
+    createdAt: new Date(0).toISOString(),
+  };
+}

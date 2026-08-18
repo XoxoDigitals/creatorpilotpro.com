@@ -96,9 +96,10 @@ describe('documentary collage helpers', () => {
     expect(documentaryTargetWordCount(120)).toBe(300);
   });
 
-  it('prefers tighter beat counts when clips are long', () => {
-    expect(documentaryBeatSceneCount(60, 10)).toBe(24);
+  it('uses owner clip length for scene counts', () => {
+    expect(documentaryBeatSceneCount(60, 10)).toBe(6);
     expect(documentaryBeatSceneCount(60, 2)).toBe(30);
+    expect(documentaryBeatSceneCount(600, 8)).toBe(75);
   });
 
   it('varies documentary VO emotion per line instead of one newscast track', () => {

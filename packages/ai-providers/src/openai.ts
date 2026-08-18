@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import {
+  clampOpenAiTtsSpeed,
   formatOpenAiTtsInstructions,
   openaiTtsSupportsInstructions,
+  openAiTtsSpeedForLanguage,
   parseOpenAiTtsModel,
   parseTtsEmotion,
   resolveOpenAiTtsVoice,
@@ -23,6 +25,7 @@ function parseVoiceCfg(system: string): {
   kidsRhyme: boolean;
   language?: string;
   model: string;
+  speed: number;
 } {
   try {
     const cfg = JSON.parse(system) as {
@@ -32,16 +35,22 @@ function parseVoiceCfg(system: string): {
       language?: string;
       openaiTtsModel?: string;
       model?: string;
+      speed?: number;
     };
     const model = parseOpenAiTtsModel(cfg.openaiTtsModel ?? cfg.model);
+    const language =
+      typeof cfg.language === 'string' && cfg.language.trim() ? cfg.language.trim() : undefined;
+    const speedRaw =
+      typeof cfg.speed === 'number' && Number.isFinite(cfg.speed) && cfg.speed > 0
+        ? cfg.speed
+        : openAiTtsSpeedForLanguage(language);
     return {
       voiceId: resolveOpenAiTtsVoice(cfg.voiceId, model),
       emotion: parseTtsEmotion(cfg.emotion),
       kidsRhyme: cfg.kidsRhyme === true,
       model,
-      ...(typeof cfg.language === 'string' && cfg.language.trim()
-        ? { language: cfg.language.trim() }
-        : {}),
+      speed: clampOpenAiTtsSpeed(speedRaw),
+      ...(language ? { language } : {}),
     };
   } catch {
     return {
@@ -49,6 +58,7 @@ function parseVoiceCfg(system: string): {
       emotion: 'default',
       kidsRhyme: false,
       model: parseOpenAiTtsModel(null),
+      speed: 1,
     };
   }
 }
@@ -78,6 +88,7 @@ export async function synthesizeWithOpenAiTts(opts: {
   kidsRhyme?: boolean;
   language?: string | null;
   model?: string | null;
+  speed?: number | null;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ buffer: Buffer; mimeType: string; model: string }> {
@@ -86,11 +97,13 @@ export async function synthesizeWithOpenAiTts(opts: {
   const model = parseOpenAiTtsModel(opts.model);
   const url = `${(opts.baseUrl ?? BASE_URL).replace(/\/$/, '')}/audio/speech`;
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const speed = clampOpenAiTtsSpeed(opts.speed ?? openAiTtsSpeedForLanguage(opts.language));
   const body: Record<string, unknown> = {
     model,
     voice: resolveOpenAiTtsVoice(opts.voice, model),
     input: text.slice(0, 4096),
     response_format: 'wav',
+    speed,
   };
   if (openaiTtsSupportsInstructions(model)) {
     body.instructions = formatOpenAiTtsInstructions(opts.emotion ?? 'default', {
@@ -192,6 +205,7 @@ export class OpenAIProvider implements AIProvider {
         emotion: cfg.emotion,
         kidsRhyme: cfg.kidsRhyme,
         language: cfg.language,
+        speed: cfg.speed,
         model: parseOpenAiTtsModel(req.model || cfg.model),
         baseUrl: this.config.baseUrl ?? BASE_URL,
         fetchImpl: this.config.fetchImpl,

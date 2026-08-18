@@ -37,7 +37,8 @@ import {
 /**
  * Accounts module (docs mission §2, docs/11 §1). RBAC: OWNER/ADMIN manage;
  * REVIEWER can list/get accounts they are granted (AccountAccessGuard +
- * AccountsService filter). Mutations stay OWNER/ADMIN.
+ * AccountsService filter). Channel settings mutations allow REVIEWER on granted
+ * accounts; connect/disconnect stay OWNER/ADMIN.
  * OAuth callbacks are @Public — trust comes from the signed state.
  */
 @ApiTags('accounts')
@@ -209,7 +210,7 @@ export class AccountsController {
   }
 
   @Patch(':id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.update', 'SocialAccount')
   patch(
     @Param('id') id: string,
@@ -219,7 +220,7 @@ export class AccountsController {
   }
 
   @Patch(':id/profile')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.profile.update', 'ChannelProfile')
   patchProfile(
     @Param('id') id: string,
@@ -229,7 +230,7 @@ export class AccountsController {
   }
 
   @Post(':id/reaction-avatar')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.reactionAvatar.upload', 'ChannelProfile')
   async uploadReactionAvatar(
     @Param('id') id: string,
@@ -250,7 +251,7 @@ export class AccountsController {
   }
 
   @Post(':id/reaction-avatar/lip-sync')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.reactionAvatar.lipSync.upload', 'ChannelProfile')
   async uploadReactionAvatarLipSync(
     @Param('id') id: string,
@@ -305,24 +306,92 @@ export class AccountsController {
   }
 
   @Delete(':id/reaction-avatar')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.reactionAvatar.clear', 'ChannelProfile')
   clearReactionAvatar(@Param('id') id: string): Promise<AccountView> {
     return this.accounts.clearReactionAvatar(id, { kind: 'all' });
   }
 
   @Delete(':id/reaction-avatar/silent')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.reactionAvatar.clearSilent', 'ChannelProfile')
   clearReactionAvatarSilent(@Param('id') id: string): Promise<AccountView> {
     return this.accounts.clearReactionAvatar(id, { kind: 'silent' });
   }
 
   @Delete(':id/reaction-avatar/lip-sync')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('account.reactionAvatar.clearLipSync', 'ChannelProfile')
   clearReactionAvatarLipSync(@Param('id') id: string): Promise<AccountView> {
     return this.accounts.clearReactionAvatar(id, { kind: 'lipSync' });
+  }
+
+  @Post(':id/locked-characters/:index/image')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('account.lockedCharacter.image.upload', 'ChannelProfile')
+  async uploadLockedCharacterImage(
+    @Param('id') id: string,
+    @Param('index') indexRaw: string,
+    @Req() req: FastifyRequest,
+  ): Promise<AccountView> {
+    if (!req.isMultipart()) {
+      throw new BadRequestException('Expected a multipart/form-data upload.');
+    }
+    const index = Number.parseInt(indexRaw, 10);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new BadRequestException('Character index must be a non-negative integer.');
+    }
+    const data = await req.file();
+    if (!data) throw new BadRequestException('No file part found in the upload.');
+    return this.accounts.saveLockedCharacterImage(id, index, {
+      filename: data.filename,
+      mimeType: data.mimetype,
+      stream: data.file,
+      isTruncated: () => data.file.truncated,
+    });
+  }
+
+  @Get(':id/locked-characters/:index/image')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  async getLockedCharacterImage(
+    @Param('id') id: string,
+    @Param('index') indexRaw: string,
+    @Res() reply: FastifyReply,
+    @Query('download') download?: string,
+  ): Promise<void> {
+    const index = Number.parseInt(indexRaw, 10);
+    if (!Number.isInteger(index) || index < 0) {
+      void reply.status(400).send({ message: 'Character index must be a non-negative integer.' });
+      return;
+    }
+    const hit = await this.accounts.lockedCharacterImageLocalPath(id, index);
+    if (!hit) {
+      void reply.status(404).send({ message: 'No character image uploaded.' });
+      return;
+    }
+    const disposition =
+      download === '1' || download === 'true'
+        ? `attachment; filename="${hit.fileName.replace(/"/g, '')}"`
+        : `inline; filename="${hit.fileName.replace(/"/g, '')}"`;
+    void reply
+      .header('Content-Type', hit.mimeType)
+      .header('Content-Disposition', disposition)
+      .header('Cache-Control', 'private, max-age=60')
+      .send(createReadStream(hit.path));
+  }
+
+  @Delete(':id/locked-characters/:index/image')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
+  @Audit('account.lockedCharacter.image.clear', 'ChannelProfile')
+  clearLockedCharacterImage(
+    @Param('id') id: string,
+    @Param('index') indexRaw: string,
+  ): Promise<AccountView> {
+    const index = Number.parseInt(indexRaw, 10);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new BadRequestException('Character index must be a non-negative integer.');
+    }
+    return this.accounts.clearLockedCharacterImage(id, index);
   }
 
   @Delete(':id')

@@ -56,7 +56,111 @@ const BY_CODE = new Map(ALL_LANGUAGES.map((lang) => [lang.code, lang]));
 export const DEFAULT_CONTENT_LANGUAGE = 'en';
 
 /** Bump when language-split prompt rules change so AI cache keys move. */
-export const OUTPUT_LANGUAGE_POLICY_REV = 4;
+export const OUTPUT_LANGUAGE_POLICY_REV = 6;
+
+/**
+ * Conversational dialogue pace (words per minute). Keeps character clips full
+ * without sounding rushed — ~2.67 words/sec at 1.0× TTS.
+ */
+export const DIALOGUE_SPEAKING_WPM = 160;
+
+/**
+ * Narration / voiceover pace (words per minute) — ~2.5 words/sec at 1.0× TTS.
+ * Matches documentary Fern targets.
+ */
+export const NARRATION_SPEAKING_WPM = 150;
+
+/**
+ * OpenAI `/audio/speech` speed for Hindi and Urdu — native-script TTS at 1.0
+ * reads slow; 1.5× keeps delivery natural. Write more words so wall-clock
+ * duration still fills (words ≈ baseWpm × speed × seconds / 60).
+ */
+export const OPENAI_INDIC_TTS_SPEED = 1.5;
+
+export function isIndicContentLanguage(language?: string | null): boolean {
+  const code = parseLanguageCode(language);
+  return code === 'hi' || code === 'ur';
+}
+
+/** OpenAI speech speed for the channel language (1.5 for hi/ur, else 1). */
+export function openAiTtsSpeedForLanguage(language?: string | null): number {
+  return isIndicContentLanguage(language) ? OPENAI_INDIC_TTS_SPEED : 1;
+}
+
+export function clampOpenAiTtsSpeed(speed?: number | null): number {
+  if (typeof speed !== 'number' || !Number.isFinite(speed) || speed <= 0) return 1;
+  return Math.min(4, Math.max(0.25, speed));
+}
+
+/** Effective narration WPM when TTS will play at `speed` (default: language policy). */
+export function narrationWpmForLanguage(language?: string | null, speed?: number | null): number {
+  const s = clampOpenAiTtsSpeed(speed ?? openAiTtsSpeedForLanguage(language));
+  return Math.max(60, Math.round(NARRATION_SPEAKING_WPM * s));
+}
+
+/** Effective dialogue WPM when TTS will play at `speed`. */
+export function dialogueWpmForLanguage(language?: string | null, speed?: number | null): number {
+  const s = clampOpenAiTtsSpeed(speed ?? openAiTtsSpeedForLanguage(language));
+  return Math.max(60, Math.round(DIALOGUE_SPEAKING_WPM * s));
+}
+
+export function spokenWordsForDuration(
+  durationSec: number,
+  wpm: number,
+): { target: number; min: number; max: number; wpm: number; durationSec: number } {
+  const sec = Math.max(1, Math.round(durationSec));
+  const pace = Math.max(60, Math.round(wpm));
+  const target = Math.max(1, Math.round((pace / 60) * sec));
+  return {
+    target,
+    min: Math.max(1, Math.round(target * 0.9)),
+    max: Math.max(target + 1, Math.round(target * 1.1)),
+    wpm: pace,
+    durationSec: sec,
+  };
+}
+
+/** How many back-and-forth dialogue exchanges should fill one clip. */
+export function dialogueExchangesForClip(clipDurationSec: number): number {
+  const clip = Math.max(1, Math.round(clipDurationSec));
+  // Roughly one exchange every ~3.5s; at least two for an 8s clip.
+  return Math.max(2, Math.round(clip / 3.5));
+}
+
+export function formatDialogueClipDensityRules(
+  clipDurationSec: number,
+  language?: string | null,
+): string {
+  const speed = openAiTtsSpeedForLanguage(language);
+  const words = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language, speed));
+  const exchanges = dialogueExchangesForClip(clipDurationSec);
+  const minLines = exchanges * 2;
+  const speedNote =
+    speed > 1
+      ? ` TTS for this language plays at ${speed}×, so write ~${speed}× more words than a 1.0× English read to fill the same ${words.durationSec}s.`
+      : '';
+  return `Clip dialogue density (mandatory for every dialogue / character scene of ~${words.durationSec}s):
+- Pace: ${words.wpm} words per minute (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × clipSeconds).${speedNote}
+- Spoken words in dialogue[] for THIS scene: about ${words.target} (acceptable ${words.min}-${words.max}). Never one short line then silence.
+- At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the full ${words.durationSec}s.
+- Keep the clip feeling lively and full of talk — not sparse, not a breathless dump. Match action/blocking in animationPrompt to the same ${words.durationSec}s.`;
+}
+
+export function formatNarrationDurationDensityRules(
+  durationSec: number,
+  language?: string | null,
+): string {
+  const speed = openAiTtsSpeedForLanguage(language);
+  const words = spokenWordsForDuration(durationSec, narrationWpmForLanguage(language, speed));
+  const speedNote =
+    speed > 1
+      ? ` Channel TTS speed is ${speed}× for this language — write about ${speed}× more words so the finished audio still fills ${words.durationSec}s of wall-clock time.`
+      : '';
+  return `Narration length (mandatory):
+- Pace: ${words.wpm} words per minute (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × seconds).${speedNote}
+- narrationScript must cover the full ${words.durationSec}s with about ${words.target} spoken words (acceptable ${words.min}-${words.max}, within ~10%).
+- Do not under-write (feels empty/boring) or heavily over-write (rushed). narrationLines[].text concatenated must equal narrationScript.`;
+}
 
 export function parseLanguageCode(raw?: string | null): string {
   return (raw ?? DEFAULT_CONTENT_LANGUAGE).trim().toLowerCase().split(/[-_]/)[0] || DEFAULT_CONTENT_LANGUAGE;
@@ -116,9 +220,9 @@ export function formatSpokenLanguageRules(language?: string | null): string {
   }
   const scriptRule =
     code === 'hi'
-      ? `Write EVERY spoken word in Hindi using Devanagari script (${native}). Pure Hindi — not Roman/Latin Hindi, not Hinglish transliteration, not English sentences. Proper nouns may stay Latin only when they have no standard Hindi spelling.`
+      ? `Write EVERY spoken word in Hindi using Devanagari script (${native}). Pure Hindi only — FORBIDDEN: Roman/Latin Hindi, Hinglish transliteration (e.g. "ek phone call"), English sentences. Proper nouns may stay Latin only when they have no standard Hindi spelling.`
       : code === 'ur'
-        ? `Write EVERY spoken word in Urdu using Urdu (Nastaliq/Arabic) script (${native}). Pure Urdu — not Roman Urdu, not Hindi, not Latin transliteration of the whole script. Proper nouns may stay Latin only when they have no standard Urdu spelling.`
+        ? `Write EVERY spoken word in Urdu using Urdu (Nastaliq/Arabic) script (${native}). Pure Urdu only — FORBIDDEN: Roman Urdu / Latin transliteration (e.g. "Aik phone call par beti ki aawaz"), Hindi Devanagari, English sentences. Example shape: "ایک فون کال پر بیٹی کی آواز سن کر ماں کا دل دہل گیا۔" Proper nouns may stay Latin only when they have no standard Urdu spelling.`
         : code === 'ar'
           ? `Write EVERY spoken word in Arabic script (${native}). Pure Arabic — not Latin transliteration.`
           : code === 'de'
@@ -126,8 +230,9 @@ export function formatSpokenLanguageRules(language?: string | null): string {
             : `Write EVERY spoken word in ${lang} using its native script (${native}). Pure ${lang} — never Latin/English transliteration of the whole voiceover.`;
   return `Spoken language (mandatory for narrationScript, narrationLines[].text, and dialogue[].line):
 - ${scriptRule}
-- Title rules do NOT apply here. Voiceover is not a title: it must be pure native-script ${lang} so TTS reads the same language the audience hears.
-- Do not write the voiceover in English and do not romanize it.`;
+- Title / description / thumbnail rules do NOT apply here. Publish titles may be Roman Urdu; voiceover must NEVER be Roman Urdu or Latin transliteration.
+- Voiceover is what TTS reads: it must be pure native-script ${lang} so the audience hears the correct language.
+- Do not write the voiceover in English and do not romanize it. If you output Latin letters for spoken lines, that is a hard failure.`;
 }
 
 /**
@@ -169,6 +274,34 @@ export function formatPublishCopyLanguageRules(language?: string | null): string
 }
 
 /**
+ * Burned-in / thumbnail lettering. Urdu thumbnails stay Roman Urdu (readable
+ * Latin) even though spoken VO uses Nastaliq.
+ */
+export function formatOnScreenTextLanguageRules(language?: string | null): string {
+  const code = parseLanguageCode(language);
+  const lang = languageDisplayName(language);
+  if (code === 'ur') {
+    return 'On-screen text (captions, overlays, thumbnail labels/lettering, any burned-in words): Roman Urdu only (Latin letters). Never Arabic/Urdu Nastaliq script on the thumbnail or in image/video text overlays.';
+  }
+  if (code === 'hi') {
+    return `On-screen text (captions, overlays, thumbnail labels/lettering): Hindi (Devanagari OK; short English keywords OK when they read well at thumbnail size).`;
+  }
+  if (isEnglishContentLanguage(language)) {
+    return 'On-screen text (captions, overlays, thumbnail labels/lettering): English.';
+  }
+  return `On-screen text (captions, overlays, thumbnail labels/lettering): ${lang}.`;
+}
+
+/**
+ * Language label to quote inside thumbnail prompts for on-image lettering.
+ */
+export function thumbnailOverlayLanguageLabel(language?: string | null): string {
+  const code = parseLanguageCode(language);
+  if (code === 'ur') return 'Roman Urdu (Latin letters only — never Nastaliq/Arabic script)';
+  return languageDisplayName(language);
+}
+
+/**
  * Mandatory split: idea titles follow title-language rules; idea angle/hook/
  * rationale, stories, and visual prompts stay English; spoken, on-screen, and
  * non-title publish metadata use the channel language.
@@ -187,6 +320,6 @@ export function formatOutputLanguagePolicy(language?: string | null): string {
 - imagePrompt, animationPrompt, thumbnailPrompt, videoPrompt, and negative-prompt bodies MUST stay in English (camera, lighting, composition, motion).
 - Voiceover / narrationScript / narrationLines: ${formatSpokenLanguageRules(language)}
 - Dialogue: same spoken-language rules as voiceover (dialogue[].line and quoted speech in animationPrompt).
-- On-screen text: captions, overlay lettering, thumbnail type, and any text that will appear in the image/video MUST be in ${lang}. Quote that ${lang} text inside otherwise-English prompts.
+- On-screen text: ${formatOnScreenTextLanguageRules(language)} Quote that text inside otherwise-English prompts.
 - Publish metadata: ${formatPublishCopyLanguageRules(language)} Publish titles follow the idea-title language rules above.`.trim();
 }

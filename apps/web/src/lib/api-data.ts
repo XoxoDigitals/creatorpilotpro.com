@@ -1457,12 +1457,14 @@ export async function getIdeasGenerationStatus(accountId: string): Promise<IdeaG
 export async function generateIdeas(
   accountId: string,
   count = 50,
-  options?: { topicSeed?: string },
+  options?: { topicSeed?: string; exactTopic?: boolean },
 ): Promise<{ runId: string }> {
   const topicSeed = options?.topicSeed?.trim();
+  const exactTopic = options?.exactTopic === true && Boolean(topicSeed);
   return api.post<{ runId: string }>(`/accounts/${encodeURIComponent(accountId)}/ideas/generate`, {
-    count,
+    count: exactTopic ? 1 : count,
     ...(topicSeed ? { topicSeed } : {}),
+    ...(exactTopic ? { exactTopic: true } : {}),
   });
 }
 

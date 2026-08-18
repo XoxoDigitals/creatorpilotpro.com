@@ -180,6 +180,7 @@ export class QueueProducer implements OnModuleInit, OnModuleDestroy {
     count = 50,
     generationRunId?: string,
     topicSeed?: string,
+    exactTopic = false,
   ): Promise<string> {
     if (!this.boss) {
       throw new ServiceUnavailableException('The job queue is not available. Please try again shortly.');
@@ -192,6 +193,7 @@ export class QueueProducer implements OnModuleInit, OnModuleDestroy {
         count,
         generationRunId,
         ...(topicSeed ? { topicSeed } : {}),
+        ...(exactTopic ? { exactTopic: true } : {}),
       },
       { singletonKey: `idea-gen-${accountId}` },
     );

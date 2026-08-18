@@ -1201,14 +1201,7 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
         autoOpened.current = true;
         setOpenIds(new Set([newest.id]));
       }
-      const ready = active.filter(
-        (idea) =>
-          idea.packageStatus === 'READY' ||
-          idea.packageStatus === 'DONE' ||
-          idea.packageStatus === 'GENERATING' ||
-          idea.packageStatus === 'FAILED' ||
-          idea.hasBrief,
-      );
+      const ready = active.filter((idea) => idea.hasBrief);
       const loaded = await Promise.all(
         ready.map(async (idea) => {
           try {

@@ -13,7 +13,7 @@ import {
 
 /**
  * Scheduling module (docs/06 §3). Per-account slot rules + the slot planner.
- * OWNER/ADMIN manage; REVIEWER reads.
+ * OWNER/ADMIN/REVIEWER manage slots on accounts they can access.
  */
 @ApiTags('scheduling')
 @Roles('OWNER', 'ADMIN', 'REVIEWER')
@@ -27,14 +27,14 @@ export class SchedulingController {
   }
 
   @Post('slots')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('schedule.slot.create', 'ScheduleSlot')
   createSlot(@Body(new ZodBody(createSlotSchema)) body: CreateSlotDto): Promise<ScheduleSlotView> {
     return this.scheduling.createSlot(body);
   }
 
   @Patch('slots/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('schedule.slot.update', 'ScheduleSlot')
   patchSlot(
     @Param('id') id: string,
@@ -44,7 +44,7 @@ export class SchedulingController {
   }
 
   @Delete('slots/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('schedule.slot.delete', 'ScheduleSlot')
   deleteSlot(@Param('id') id: string): Promise<{ id: string }> {
     return this.scheduling.deleteSlot(id);

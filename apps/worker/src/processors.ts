@@ -127,6 +127,7 @@ const aiProcessor: Processor = async (jobs: Job[]) => {
         data.count ?? 50,
         data.generationRunId,
         data.topicSeed,
+        data.exactTopic === true,
       );
     }
     else if (isBriefGenerationJob(data)) await runBriefGeneration(data.ideaId, boss);

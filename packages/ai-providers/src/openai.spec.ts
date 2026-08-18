@@ -17,10 +17,12 @@ describe('OpenAI TTS', () => {
         voice: string;
         instructions: string;
         response_format: string;
+        speed: number;
       };
       expect(body.model).toBe('gpt-4o-mini-tts');
       expect(body.voice).toBe('coral');
       expect(body.response_format).toBe('wav');
+      expect(body.speed).toBe(1);
       expect(body.instructions.toLowerCase()).toContain('cheer');
       return new Response(WAV_HEADER, { status: 200, headers: { 'content-type': 'audio/wav' } });
     }) as unknown as typeof fetch;
@@ -35,6 +37,23 @@ describe('OpenAI TTS', () => {
     });
     expect(result.buffer.length).toBeGreaterThan(40);
     expect(result.model).toBe('gpt-4o-mini-tts');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('posts 1.5 speed for Urdu speech', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { speed: number; language?: string };
+      expect(body.speed).toBe(1.5);
+      return new Response(WAV_HEADER, { status: 200, headers: { 'content-type': 'audio/wav' } });
+    }) as unknown as typeof fetch;
+
+    await synthesizeWithOpenAiTts({
+      apiKey: 'sk-test',
+      text: 'ایک فون کال',
+      voice: 'cedar',
+      language: 'ur',
+      fetchImpl,
+    });
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 

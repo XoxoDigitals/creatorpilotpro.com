@@ -326,9 +326,15 @@ export function formatOpenAiTtsInstructions(
 ): string {
   const delivery = OPENAI_TTS_INSTRUCTIONS[parseTtsEmotion(emotion)];
   const langName = languageDisplayName(opts?.language);
-  const langLine = langName
-    ? ` Speak the written text in ${langName}. Use natural ${langName} pronunciation and rhythm.`
-    : '';
+  const code = (opts?.language ?? '').trim().toLowerCase().split(/[-_]/)[0];
+  const langLine =
+    code === 'ur'
+      ? ' Speak the written Urdu (Nastaliq/Arabic script) with natural Urdu pronunciation. Do not switch to English or Roman Urdu.'
+      : code === 'hi'
+        ? ' Speak the written Hindi (Devanagari) with natural Hindi pronunciation. Do not switch to English or Roman Hindi.'
+        : langName
+          ? ` Speak the written text in ${langName}. Use natural ${langName} pronunciation and rhythm.`
+          : '';
   const kids = opts?.kidsRhyme
     ? ' This is a children\'s nursery rhyme: sing-song cadence, bounce on rhyming words, warm smile, gentle giggle on jokes, gasp on surprises, never scary or sarcastic. Kids audience.'
     : '';

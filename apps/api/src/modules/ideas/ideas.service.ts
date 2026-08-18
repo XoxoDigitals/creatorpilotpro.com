@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueProducer } from '../../common/queue/queue.producer';
-import { toIdeaView, toBriefView, type IdeaView, type ProductionBriefView } from './ideas.view';
+import { toIdeaView, toBriefView, pendingBriefView, type IdeaView, type ProductionBriefView } from './ideas.view';
 import type {
   GenerateIdeasDto,
   GeneratePackageDto,
@@ -162,7 +162,8 @@ export class IdeasService {
     dto?: GenerateIdeasDto,
   ): Promise<{ accountId: string; enqueued: true; count: number; runId: string }> {
     await this.assertAccount(accountId);
-    const count = dto?.count ?? 50;
+    const exactTopic = dto?.exactTopic === true && Boolean(dto?.topicSeed);
+    const count = exactTopic ? 1 : (dto?.count ?? 50);
     const topicSeed = dto?.topicSeed;
     const staleBefore = new Date(Date.now() - GENERATION_STALE_MS);
     const active = await this.prisma.client.jobRun.findFirst({
@@ -201,7 +202,7 @@ export class IdeasService {
       },
     });
     try {
-      await this.queue.enqueueIdeaGeneration(accountId, count, run.id, topicSeed);
+      await this.queue.enqueueIdeaGeneration(accountId, count, run.id, topicSeed, exactTopic);
     } catch (error) {
       await this.prisma.client.jobRun.update({
         where: { id: run.id },
@@ -482,9 +483,22 @@ export class IdeasService {
       include: IDEA_LIST_INCLUDE,
     });
 
+    // Keep a placeholder brief so GET /package does not 404 while the worker runs.
     await this.prisma.client.productionBrief.deleteMany({ where: { ideaId: id } });
+    await this.prisma.client.productionBrief.create({
+      data: {
+        ideaId: id,
+        researchSummary: '',
+        script: '',
+        videoTitle: updated.title,
+        videoDescription: '',
+        packageStage: 'SCRIPT',
+        voiceoverStatus: 'NONE',
+        targetDurationSec: dto.videoDurationSec,
+      },
+    });
     await this.queue.enqueueBriefGeneration(id);
-    return toIdeaView(updated);
+    return toIdeaView(await this.findIdeaOrThrow(id));
   }
 
   /**
@@ -690,6 +704,9 @@ export class IdeasService {
       include: {
         idea: {
           select: {
+            title: true,
+            packageStatus: true,
+            requestedVideoDurationSec: true,
             account: {
               select: {
                 profile: { select: { styleProfile: true } },
@@ -699,10 +716,33 @@ export class IdeasService {
         },
       },
     });
-    if (!brief) throw new NotFoundException('Creative package not found for this idea.');
-    const presentationMode = parseStyleProfile(brief.idea.account.profile?.styleProfile).answers
+    if (brief) {
+      const presentationMode = parseStyleProfile(brief.idea.account.profile?.styleProfile).answers
+        .presentation;
+      return toBriefView(brief, presentationMode);
+    }
+
+    // Soft pending response while GENERATING before/after brief rewrite — avoid
+    // noisy 404s from the AI packages poller.
+    const idea = await this.prisma.client.idea.findFirst({
+      where: { id: ideaId, deletedAt: null },
+      select: {
+        id: true,
+        title: true,
+        packageStatus: true,
+        requestedVideoDurationSec: true,
+        account: {
+          select: { profile: { select: { styleProfile: true } } },
+        },
+      },
+    });
+    if (!idea) throw new NotFoundException('Idea not found.');
+    if (idea.packageStatus !== 'GENERATING' && idea.packageStatus !== 'FAILED') {
+      throw new NotFoundException('Creative package not found for this idea.');
+    }
+    const presentationMode = parseStyleProfile(idea.account.profile?.styleProfile).answers
       .presentation;
-    return toBriefView(brief, presentationMode);
+    return pendingBriefView(idea, presentationMode);
   }
 
   /** Alias kept for older clients. */

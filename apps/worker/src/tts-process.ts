@@ -25,6 +25,7 @@ import {
   ttsEmotionFromVoiceSettings,
   resolveSpokenEmotion,
   parseTtsEmotion,
+  openAiTtsSpeedForLanguage,
   type TtsEmotion,
   type VoiceSettings,
 } from '@scp/shared';
@@ -543,6 +544,7 @@ async function synthesizeViaOpenAi(opts: {
       kidsRhyme: opts.kidsRhyme === true,
       language: opts.voice.language ?? opts.voice.locale,
       model: opts.voice.openaiTtsModel,
+      speed: opts.voice.speed ?? openAiTtsSpeedForLanguage(opts.voice.language ?? opts.voice.locale),
     });
     const rawPath = join(opts.voDir, `${base}.bin`);
     await writeFile(rawPath, synth.buffer);
@@ -1196,6 +1198,11 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
       openaiTtsModel: parseOpenAiTtsModel(voice.openaiTtsModel),
       voiceId: resolveOpenAiTtsVoice(voice.voiceId, voice.openaiTtsModel),
     };
+  }
+  const channelLang = voice.language ?? voice.locale ?? null;
+  const indicSpeed = openAiTtsSpeedForLanguage(channelLang);
+  if (indicSpeed > 1) {
+    voice = { ...voice, speed: indicSpeed };
   }
   const styleRow = await prisma.channelProfile.findUnique({
     where: { accountId: idea.accountId },

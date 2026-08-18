@@ -118,7 +118,7 @@ export default function AccountIdeasPage() {
     };
   }, [generationPending, id, load]);
 
-  async function startGeneration(seed?: string) {
+  async function startGeneration(seed?: string, exactTopic = false) {
     if (generationPending) return;
     if (demo) {
       toast('Connect a real account and add reference channels to generate ideas', 'info');
@@ -144,8 +144,10 @@ export default function AccountIdeasPage() {
     try {
       const { runId } = await generateIdeas(
         id,
-        50,
-        trimmedSeed ? { topicSeed: trimmedSeed } : undefined,
+        exactTopic ? 1 : 50,
+        trimmedSeed
+          ? { topicSeed: trimmedSeed, ...(exactTopic ? { exactTopic: true } : {}) }
+          : undefined,
       );
       const status = withClientTimeout(await getIdeasGenerationStatus(id));
       setGeneration({ ...status, runId: status.runId ?? runId });
@@ -170,7 +172,7 @@ export default function AccountIdeasPage() {
   }
 
   async function handleGenerateFromSeed() {
-    await startGeneration(topicSeed);
+    await startGeneration(topicSeed, true);
   }
 
   async function handleApprove(ideaId: string) {
@@ -260,15 +262,15 @@ export default function AccountIdeasPage() {
       <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-zinc-900">Seed your own topic</h2>
         <p className="mt-1 text-xs text-zinc-500">
-          Optional. Ideas expand on your seed while matching reference-channel title style and your
-          channel profile.
+          Enter the exact topic you want. Generates one idea with that title/topic so package
+          generation stays on it.
         </p>
         <div className="mt-3 space-y-3">
-          <Field label="Topic seed">
+          <Field label="Your topic">
             <Textarea
               value={topicSeed}
               onChange={(e) => setTopicSeed(e.target.value.slice(0, TOPIC_SEED_MAX))}
-              placeholder='e.g. "forgotten WWII submarine mysteries" or "why airports change runway numbers"'
+              placeholder='e.g. "How the 1912 Titanic wireless room actually worked"'
               rows={3}
               disabled={generationPending || demo}
               maxLength={TOPIC_SEED_MAX}
@@ -284,7 +286,7 @@ export default function AccountIdeasPage() {
               onClick={() => void handleGenerateFromSeed()}
               disabled={generationPending || !topicSeed.trim()}
             >
-              {generationPending ? 'Generating…' : 'Generate from seed'}
+              {generationPending ? 'Generating…' : 'Generate exact topic'}
             </Button>
           </div>
         </div>

@@ -12,6 +12,11 @@ export const generateIdeasSchema = z.object({
       const trimmed = v?.trim();
       return trimmed ? trimmed : undefined;
     }),
+  /**
+   * When true with topicSeed, generate one idea that uses the seed as the exact
+   * title/topic (no invent-original-title expansion).
+   */
+  exactTopic: z.boolean().optional().default(false),
 });
 export type GenerateIdeasDto = z.infer<typeof generateIdeasSchema>;
 

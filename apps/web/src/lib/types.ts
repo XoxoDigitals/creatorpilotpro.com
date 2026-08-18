@@ -13,7 +13,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 export const ROLE_HINTS: Record<Role, string> = {
   OWNER: 'Full access — all accounts and system settings',
   ADMIN: 'Manage accounts, users, and settings (not Owners)',
-  REVIEWER: 'Approvals, scheduling, and production on granted accounts',
+  REVIEWER: 'Approvals, scheduling, production, and channel settings on granted accounts',
 };
 
 export function isSystemAdmin(role: Role): boolean {

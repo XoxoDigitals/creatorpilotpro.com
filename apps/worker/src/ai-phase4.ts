@@ -22,6 +22,15 @@ import {
   formatThumbnailPromptInstructions,
   formatSceneVisualPromptRulesWithChannel,
   formatDramaDialoguePackageRules,
+  formatFernNarrationRules,
+  formatKidsRhymeIdeaRules,
+  formatKidsRhymeScriptRules,
+  formatKidsRhymeVisualRules,
+  formatLockedCharactersPrompt,
+  formatNarrationDurationDensityRules,
+  formatDialogueClipDensityRules,
+  formatOutputLanguagePolicy,
+  formatSpokenLanguageRules,
   formatCharacterReference,
   expandCharacterReferencesInText,
   embedNegativeGuidanceInPrompt,
@@ -33,31 +42,24 @@ import {
   isCartoonPackage,
   isUltraRealisticPackage,
   isKidsRhymePackage,
-  formatKidsRhymeScriptRules,
-  formatKidsRhymeVisualRules,
-  formatKidsRhymeIdeaRules,
   stripCartoonAnimeNegatives,
   languageDisplayName,
   formatIdeaTitleLanguageRules,
-  formatOutputLanguagePolicy,
   formatPublishCopyLanguageRules,
-  formatSpokenLanguageRules,
-  formatLockedCharactersPrompt,
   mergeLockedCharactersIntoCast,
   formatYoutubeAiDescriptionRules,
   DEFAULT_DRAMA_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT,
   DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT,
   DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT,
-  DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT,
   documentaryBeatSceneCount,
+  documentaryUniversalVideoPrompt,
   ensureDocumentaryCollageImagePrompt,
   ensureDocumentaryThumbnailPrompt,
   ensureDocumentaryUniversalVideoPrompt,
   formatDocumentaryCollageVisualRules,
   formatDocumentaryIdeaRules,
   formatDocumentaryThumbnailInstructions,
-  formatFernNarrationRules,
   joinProductionBriefEditingExtras,
   splitProductionBriefEditingExtras,
   needsEnglishVoiceoverSummary,
@@ -575,11 +577,15 @@ export async function runIdeaGeneration(
   count = 50,
   generationRunId?: string,
   topicSeed?: string,
+  exactTopic = false,
 ): Promise<void> {
   const prisma = getPrisma();
   const task = TaskType.IDEA_GENERATION;
-  const targetCount = Math.max(1, Math.min(50, Math.round(count) || 50));
   const seed = topicSeed?.trim() || undefined;
+  const useExactTopic = exactTopic === true && Boolean(seed);
+  const targetCount = useExactTopic
+    ? 1
+    : Math.max(1, Math.min(50, Math.round(count) || 50));
   const updateRun = async (
     status: 'ACTIVE' | 'COMPLETED' | 'FAILED',
     error?: string,
@@ -663,7 +669,15 @@ export async function runIdeaGeneration(
   const styleAnswers = parseStyleProfile(channelStyle?.styleProfile).answers;
   const ourChannelBlock = formatOurChannelAboutBlock(channelStyle, account?.name);
   const seedBlock = seed
-    ? `\n\n---\nOwner topic seed (REQUIRED inspiration):\n"${seed}"
+    ? useExactTopic
+      ? `\n\n---\nOwner EXACT topic (mandatory — produce ONE idea for this topic only):\n"${seed}"
+- Use the owner topic as the video title (light punctuation polish only; do not invent a different subject).
+- topicSummary MUST describe THIS exact topic in 2–4 sentences (who/what, why it matters, the core claim).
+- angle and hook MUST stay on this exact topic — expand clarity, never change the subject.
+- Still match competitor-channel headline FORMAT and channel niche/voice when polishing the title.
+- category may be UNIQUE when the topic is owner-directed.
+- Honor OUR channel about/niche and performance memory for angle/hook wording only.`
+      : `\n\n---\nOwner topic seed (REQUIRED inspiration):\n"${seed}"
 - Generate ideas inspired by and expanding on this seed topic — not unrelated tangents.
 - Do NOT use the seed text itself (or a trivial rephrase) as any title; invent original, catchy titles.
 - Still match competitor-channel headline FORMAT, pacing, and specificity when references are present.
@@ -711,6 +725,7 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
   const inputText = JSON.stringify({
     count: targetCount,
     ...(seed ? { topicSeed: seed } : {}),
+    ...(useExactTopic ? { exactTopic: true } : {}),
     ourChannel: {
       name: account?.name,
       handle: account?.handle,
@@ -746,7 +761,7 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
     styleVersion: styleVersionFromProfile(channelStyle),
     // Contract marker busts caches that used the old hard length-refine schema.
     inputContentHash: hashText(
-      `idea-title-contract-v8:${documentaryIdeas ? 'doc' : 'std'}:${inputText}`,
+      `idea-title-contract-v9:${documentaryIdeas ? 'doc' : 'std'}:${useExactTopic ? 'exact' : 'open'}:${inputText}`,
     ),
   });
 
@@ -759,9 +774,11 @@ Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about
       system: systemPrompt,
       input: {
         kind: 'text',
-        text: seed
-          ? `${inputText}\n\nUsing OUR CHANNEL about/niche plus the owner topic seed above, and reference channels for patterns only, generate exactly ${targetCount} distinct ideas as a JSON array.`
-          : `${inputText}\n\nUsing OUR CHANNEL about/niche as the topic ground truth and reference channels for patterns only, generate exactly ${targetCount} distinct ideas as a JSON array.`,
+        text: useExactTopic
+          ? `${inputText}\n\nUsing OUR CHANNEL about/niche plus the owner EXACT topic above, return exactly 1 idea as a JSON array whose title and topicSummary stay on that exact topic.`
+          : seed
+            ? `${inputText}\n\nUsing OUR CHANNEL about/niche plus the owner topic seed above, and reference channels for patterns only, generate exactly ${targetCount} distinct ideas as a JSON array.`
+            : `${inputText}\n\nUsing OUR CHANNEL about/niche as the topic ground truth and reference channels for patterns only, generate exactly ${targetCount} distinct ideas as a JSON array.`,
       },
       // Schema validates structure only; title length is fitted after parse so
       // a few off-target titles cannot fail the entire generation.
@@ -1099,7 +1116,10 @@ export function normalizeProductionBriefOutput(
     }
     if (documentary) {
       if (imagePrompt) imagePrompt = ensureDocumentaryCollageImagePrompt(imagePrompt);
-      animationPrompt = ensureDocumentaryUniversalVideoPrompt(animationPrompt);
+      animationPrompt = ensureDocumentaryUniversalVideoPrompt(
+        animationPrompt,
+        options.clipDurationSec,
+      );
     }
     const rawAudioMode =
       row.audioMode === 'narration' || row.audioMode === 'dialogue' || row.audioMode === 'both'
@@ -1148,9 +1168,7 @@ export function normalizeProductionBriefOutput(
       durationSec:
         typeof row.durationSec === 'number' && row.durationSec > 0
           ? row.durationSec
-          : documentary
-            ? Math.min(options.clipDurationSec, 3)
-            : options.clipDurationSec,
+          : options.clipDurationSec,
       imagePrompt,
       animationPrompt,
       negativePrompt,
@@ -1200,16 +1218,13 @@ export function normalizeProductionBriefOutput(
     thumbnailPrompt,
     thumbnailNegativePrompt,
     thumbnailPromptVariants: documentary ? thumbnailPromptVariants : text(rawVariants),
-    universalVideoPrompt: documentary ? DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT : '',
+    universalVideoPrompt: documentary ? documentaryUniversalVideoPrompt(options.clipDurationSec) : '',
     narrationScript,
     narrationLines,
     scenes,
     characters,
     editingInstructions: text(brief.editingInstructions),
-    targetDurationSec:
-      typeof brief.targetDurationSec === 'number' && brief.targetDurationSec > 0
-        ? Math.round(brief.targetDurationSec)
-        : options.videoDurationSec,
+    targetDurationSec: options.videoDurationSec,
   };
 }
 
@@ -1361,7 +1376,7 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - Focus on title, description, story, characters, narration, and thumbnailPrompt only in this stage.
 - Do not invent scene image/video prompts yet. Visuals must NOT invent spoken speech (existing narration negatives apply later).`
         : `Presentation mode is NARRATION / VOICEOVER (audio-first pipeline). TTS is generated from narrationScript.
-- narrationScript must be one complete, cohesive narration covering the full ${videoDurationSec} seconds (roughly ${Math.round(videoDurationSec * 2.3)}-${Math.round(videoDurationSec * 2.8)} spoken words).
+${formatNarrationDurationDensityRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 - Open with a HOOKY first sentence. If the idea/hook/angle is about a person (or characters[] will include a notable person), write like a compelling host: "this person from [place] is famous for…" / "you've seen this face — here's why they matter…" — specific to the idea, never a generic template, never invent biography.
 - Also return narrationLines: one spoken sentence per item as { text, emotion }. Pick a fitting emotion per line from cheerful, excited, calm, empathetic, sad, angry, playful, whisper, newscast, default. Vary with the story — do not tag every line newscast or default. Do not name the emotion in spoken text. narrationScript must equal narrationLines[].text concatenated in order.
@@ -1371,6 +1386,7 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
         ? `Presentation mode is DIALOGUES ONLY — no TTS. Spoken lines live in image/animation prompts + scene.dialogue[].
 - narrationScript must be an empty string.
 - ${hookRetentionReminder}
+${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
 - Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion on dialogue is optional (use a fitting value when it helps). The line must ALSO appear, labeled "Dialogue (emotion): Speaker: line" when emotion is set, inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
 - animationPrompt must combine camera, motion, timed beats, action, and exact dialogue so it can be pasted directly into a video-generation tool.
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".
@@ -1381,6 +1397,7 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 - ${mixedVoLayupRules}
+${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
 - narrationScript contains only the narrator portions (Fern continuous prose) for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not dialogue-only clips.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
@@ -1388,6 +1405,8 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
             : `Presentation mode is NARRATION + DIALOGUES (audio-first for narrator windows only).
 - ${hookRetentionReminder}
 - ${mixedVoLayupRules}
+${formatNarrationDurationDensityRules(Math.max(clipDurationSec, Math.round(videoDurationSec * 0.4)), channelLanguage)}
+${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
 - narrationScript contains only the narrator portions for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not a lecture over dialogue clips.
 - Open narrator portions with a hooky person/subject line when the idea is about a notable person (same "this person from [place] is famous for…" energy), then continue the story.
 - Also return narrationLines: one narrator sentence per item as { text, emotion }. Pick a fitting emotion per line from cheerful, excited, calm, empathetic, sad, angry, playful, whisper, newscast, default. Vary with the story — do not tag every line newscast or default. Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
@@ -1397,7 +1416,9 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
           : `Presentation mode is ${presentation || 'unspecified'}. Use narrationScript only when the saved style explicitly calls for narration.
 - ${hookRetentionReminder}`;
 
-  const dramaRules = dramaOrDialogue
+  const needsDialogueDensity =
+    dramaOrDialogue || presentation === 'dialogue' || presentation === 'mixed';
+  const dramaRules = needsDialogueDensity
     ? `\n${formatDramaDialoguePackageRules({
         clipDurationSec,
         language: channelLanguage,
@@ -1416,7 +1437,10 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
       : '';
 
   const thumbnailInstructions = documentaryCollage
-    ? formatDocumentaryThumbnailInstructions(channelStyle?.thumbnailReferencePrompt)
+    ? formatDocumentaryThumbnailInstructions(
+        channelStyle?.thumbnailReferencePrompt,
+        channelLanguage,
+      )
     : formatThumbnailPromptInstructions(channelStyle);
 
   const languageRules = formatOutputLanguagePolicy(channelLanguage);
@@ -1551,7 +1575,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     const editingInstructions = joinProductionBriefEditingExtras({
       editingInstructions: normalized.editingInstructions,
       universalVideoPrompt: documentaryCollage
-        ? normalized.universalVideoPrompt || DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT
+        ? normalized.universalVideoPrompt || documentaryUniversalVideoPrompt(clipDurationSec)
         : '',
       thumbnailPromptVariants: documentaryCollage ? normalized.thumbnailPromptVariants : '',
       thumbnailNegativePrompt: normalized.thumbnailNegativePrompt,
@@ -1573,10 +1597,29 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
       });
     }
 
-    await prisma.productionBrief.deleteMany({ where: { ideaId } });
-    await prisma.productionBrief.create({
-      data: {
+    await prisma.productionBrief.upsert({
+      where: { ideaId },
+      create: {
         ideaId,
+        researchSummary: normalized.storySummary,
+        script: scriptText,
+        englishSummary,
+        sceneBreakdown: (audioFirst ? [] : normalized.scenes) as any,
+        characterPrompts: normalized.characters as any,
+        editingInstructions,
+        targetDurationSec: normalized.targetDurationSec,
+        videoTitle: normalized.videoTitle,
+        videoDescription: normalized.videoDescription,
+        thumbnailPrompt: normalized.thumbnailPrompt,
+        voiceoverStatus: needsVo ? 'GENERATING' : 'NONE',
+        voiceoverLocalPath: null,
+        packageStage: 'SCRIPT',
+        packageStageError: null,
+        timedTranscript: (normalized.narrationLines ?? []) as any,
+        transcriptLocalPath: null,
+        voiceIdUsed: null,
+      },
+      update: {
         researchSummary: normalized.storySummary,
         script: scriptText,
         englishSummary,
@@ -1755,7 +1798,7 @@ export async function runIdeaTranscript(ideaId: string, boss: PgBoss): Promise<v
     }
 
     if (timings.length === 0 && script) {
-      const targetMs = (idea.brief.targetDurationSec ?? idea.requestedVideoDurationSec ?? 60) * 1000;
+      const targetMs = (idea.requestedVideoDurationSec ?? idea.brief.targetDurationSec ?? 60) * 1000;
       timings = heuristicTimingsFromScript(script, targetMs);
       console.warn(
         `[worker:ai-p4] no Edge timings for idea ${ideaId} — using heuristic sentence timeline`,
@@ -1878,7 +1921,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
   });
 
   const videoDurationSec =
-    idea.brief.targetDurationSec ?? idea.requestedVideoDurationSec ?? 60;
+    idea.requestedVideoDurationSec ?? idea.brief.targetDurationSec ?? 60;
   const clipDurationSec = idea.requestedClipDurationSec ?? 10;
   const channelStyle = await loadChannelStyle(prisma, idea.accountId);
   const presentation = normalizedPresentation(
@@ -1901,14 +1944,15 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
   const priorEditing = splitProductionBriefEditingExtras(idea.brief.editingInstructions ?? '');
 
   const router = buildRouter(prisma, masterKey);
-  const dramaRules = dramaOrDialogue
-    ? `\n${formatDramaDialoguePackageRules({
-        clipDurationSec,
-        language: channelLanguage,
-        includeNegativePrompts: true,
-        cartoonPackage,
-      })}`
-    : '';
+  const dramaRules =
+    dramaOrDialogue || presentation === 'dialogue' || presentation === 'mixed'
+      ? `\n${formatDramaDialoguePackageRules({
+          clipDurationSec,
+          language: channelLanguage,
+          includeNegativePrompts: true,
+          cartoonPackage,
+        })}`
+      : '';
   const documentaryRules = documentaryCollage
     ? `\n${formatDocumentaryCollageVisualRules({
         sceneCount,
@@ -1918,7 +1962,10 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
     : '';
   const kidsRhymeVisualRules = kidsRhyme ? `\n${formatKidsRhymeVisualRules()}` : '';
   const thumbnailInstructions = documentaryCollage
-    ? formatDocumentaryThumbnailInstructions(channelStyle?.thumbnailReferencePrompt)
+    ? formatDocumentaryThumbnailInstructions(
+        channelStyle?.thumbnailReferencePrompt,
+        channelLanguage,
+      )
     : formatThumbnailPromptInstructions(channelStyle);
   const languageRules = formatOutputLanguagePolicy(channelLanguage);
   const mixedVisualRules =
@@ -1926,7 +1973,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
       ? `- Mixed narration + dialogues: cover the FULL ${videoDurationSec}s video, not only the VO transcript. Follow any VO LAYUP TIMELINE in the provided editingInstructions.
 - Tag each scene with audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
 - NARRATION scenes: narrationSegment = exact VO text for that window; dialogue[] empty; visual prompts MUST NOT invent speech; use narration (no-talking) negatives; AUDIO-IN-PROMPT is SFX/music/ambience only.
-- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue (emotion): Speaker: line" (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. Do NOT add "no dialogue" negatives on these scenes.
+- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue (emotion): Speaker: line" (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)} Do NOT add "no dialogue" negatives on these scenes.
 - Keep/update the VO LAYUP TIMELINE in editingInstructions: Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE.`
       : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';
   const systemPrompt = withChannelStyle(
@@ -2020,7 +2067,9 @@ ${
     cartoonPackage,
     language: channelLanguage,
     thumbnailReferencePrompt: channelStyle?.thumbnailReferencePrompt?.trim() || undefined,
-    universalVideoPrompt: documentaryCollage ? DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT : undefined,
+    universalVideoPrompt: documentaryCollage
+      ? documentaryUniversalVideoPrompt(clipDurationSec)
+      : undefined,
     editingInstructions: priorEditing.editingInstructions || undefined,
   });
 
@@ -2072,9 +2121,7 @@ ${
     const rawScenes = Array.isArray((parsed as { sceneBreakdown?: unknown }).sceneBreakdown)
       ? ((parsed as { sceneBreakdown: unknown[] }).sceneBreakdown ?? [])
       : [];
-    const beatMs = documentaryCollage
-      ? Math.min(clipDurationSec, 3) * 1000
-      : clipDurationSec * 1000;
+    const beatMs = clipDurationSec * 1000;
     const scenesWithTiming = normalized.scenes.map((scene, index) => {
       const raw = (rawScenes[index] && typeof rawScenes[index] === 'object'
         ? rawScenes[index]
@@ -2116,7 +2163,7 @@ ${
       universalVideoPrompt: documentaryCollage
         ? normalized.universalVideoPrompt ||
           priorEditing.universalVideoPrompt ||
-          DOCUMENTARY_UNIVERSAL_VIDEO_PROMPT
+          documentaryUniversalVideoPrompt(clipDurationSec)
         : priorEditing.universalVideoPrompt,
       thumbnailPromptVariants:
         normalized.thumbnailPromptVariants || priorEditing.thumbnailPromptVariants,

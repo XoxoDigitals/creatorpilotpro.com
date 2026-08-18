@@ -487,6 +487,176 @@ export class AccountsService {
     return { path: abs, mimeType: mime };
   }
 
+  /**
+   * Save a locked-character reference image under STORAGE_ROOT/accounts/{id}/
+   * and record the relative path on styleProfile.lockedCharacters[index].
+   */
+  async saveLockedCharacterImage(
+    id: string,
+    index: number,
+    input: {
+      filename: string;
+      mimeType?: string;
+      stream: NodeJS.ReadableStream;
+      isTruncated: () => boolean;
+    },
+  ): Promise<AccountView> {
+    await this.loadActive(id);
+    const root = process.env.STORAGE_ROOT?.trim();
+    if (!root) {
+      throw new BadRequestException('STORAGE_ROOT is not configured on the API host.');
+    }
+    if (!Number.isInteger(index) || index < 0) {
+      throw new BadRequestException('Character index must be a non-negative integer.');
+    }
+
+    const ext = (() => {
+      const fromName = input.filename.includes('.')
+        ? input.filename.slice(input.filename.lastIndexOf('.')).toLowerCase()
+        : '';
+      if (/\.(png|jpe?g|webp|gif)$/i.test(fromName)) return fromName;
+      const mt = (input.mimeType ?? '').toLowerCase();
+      if (mt.includes('png')) return '.png';
+      if (mt.includes('jpeg') || mt.includes('jpg')) return '.jpg';
+      if (mt.includes('webp')) return '.webp';
+      if (mt.includes('gif')) return '.gif';
+      throw new BadRequestException('Use a PNG, JPG, WebP, or GIF character image.');
+    })();
+
+    const { mkdir, unlink, readdir } = await import('node:fs/promises');
+    const { createWriteStream } = await import('node:fs');
+    const { pipeline } = await import('node:stream/promises');
+    const { join } = await import('node:path');
+    const { parseStyleProfile } = await import('@scp/shared');
+
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId: id },
+    });
+    if (!profile) throw new NotFoundException('Channel profile not found.');
+    const style = parseStyleProfile(profile.styleProfile);
+    if (index >= style.lockedCharacters.length) {
+      throw new BadRequestException(
+        'Character does not exist yet — add and save the character first, then upload.',
+      );
+    }
+
+    const dir = join(root, 'accounts', id);
+    await mkdir(dir, { recursive: true });
+    const filePrefix = `locked-character-${index}`;
+    try {
+      const existing = await readdir(dir);
+      const re = new RegExp(`^${filePrefix}\\.`, 'i');
+      for (const name of existing) {
+        if (re.test(name)) {
+          await unlink(join(dir, name)).catch(() => {});
+        }
+      }
+    } catch {
+      /* empty dir */
+    }
+
+    const fileName = `${filePrefix}${ext}`;
+    const abs = join(dir, fileName);
+    const rel = `accounts/${id}/${fileName}`.replace(/\\/g, '/');
+    await pipeline(input.stream, createWriteStream(abs));
+    if (input.isTruncated()) {
+      await unlink(abs).catch(() => {});
+      throw new BadRequestException('Upload truncated — file too large.');
+    }
+
+    const prev = style.lockedCharacters[index]!;
+    if (prev.imagePath && prev.imagePath !== rel && root) {
+      await unlink(join(root, prev.imagePath.replace(/^[/\\]+/, ''))).catch(() => {});
+    }
+    style.lockedCharacters[index] = {
+      ...prev,
+      imagePath: rel,
+      imageFileName: input.filename || fileName,
+      imageMimeType: input.mimeType || '',
+    };
+
+    await this.prisma.client.channelProfile.update({
+      where: { accountId: id },
+      data: { styleProfile: style as unknown as Prisma.InputJsonValue },
+    });
+    const row = await this.loadActive(id);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
+  }
+
+  async clearLockedCharacterImage(id: string, index: number): Promise<AccountView> {
+    await this.loadActive(id);
+    const root = process.env.STORAGE_ROOT?.trim();
+    const { unlink } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { parseStyleProfile } = await import('@scp/shared');
+
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId: id },
+    });
+    if (!profile) throw new NotFoundException('Channel profile not found.');
+    const style = parseStyleProfile(profile.styleProfile);
+    if (index < 0 || index >= style.lockedCharacters.length) {
+      throw new BadRequestException('Character index is out of range.');
+    }
+    const prev = style.lockedCharacters[index]!;
+    if (root && prev.imagePath) {
+      await unlink(join(root, prev.imagePath.replace(/^[/\\]+/, ''))).catch(() => {});
+    }
+    style.lockedCharacters[index] = {
+      ...prev,
+      imagePath: '',
+      imageFileName: '',
+      imageMimeType: '',
+    };
+    await this.prisma.client.channelProfile.update({
+      where: { accountId: id },
+      data: { styleProfile: style as unknown as Prisma.InputJsonValue },
+    });
+    const row = await this.loadActive(id);
+    const metrics = await this.listCardMetrics([row]);
+    return toAccountView(row, metrics.get(id));
+  }
+
+  async lockedCharacterImageLocalPath(
+    id: string,
+    index: number,
+  ): Promise<{ path: string; mimeType: string; fileName: string } | null> {
+    await this.loadActive(id);
+    const root = process.env.STORAGE_ROOT?.trim();
+    if (!root) return null;
+    const { parseStyleProfile } = await import('@scp/shared');
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId: id },
+      select: { styleProfile: true },
+    });
+    const style = parseStyleProfile(profile?.styleProfile);
+    const character = style.lockedCharacters[index];
+    if (!character?.imagePath) return null;
+    const { access } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const abs = join(root, character.imagePath.replace(/^[/\\]+/, ''));
+    try {
+      await access(abs);
+    } catch {
+      return null;
+    }
+    const mime =
+      character.imageMimeType ||
+      (abs.toLowerCase().endsWith('.png')
+        ? 'image/png'
+        : abs.toLowerCase().endsWith('.webp')
+          ? 'image/webp'
+          : abs.toLowerCase().endsWith('.gif')
+            ? 'image/gif'
+            : 'image/jpeg');
+    return {
+      path: abs,
+      mimeType: mime,
+      fileName: character.imageFileName || `character-${index + 1}`,
+    };
+  }
+
   private async loadActive(
     id: string,
   ): Promise<SocialAccount & { profile: Prisma.ChannelProfileGetPayload<object> | null }> {

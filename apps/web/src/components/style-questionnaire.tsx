@@ -18,7 +18,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Field, Input, Textarea } from '@/components/ui/input';
 import { cn } from '@/lib/cn';
-import { ApiError, apiUpload } from '@/lib/api';
+import { ApiError, api, apiUpload } from '@/lib/api';
 
 function OptionChips({
   question,
@@ -118,16 +118,76 @@ function defaultLookForAnswers(answers: StyleProfileAnswers): LockedCharacterLoo
 }
 
 function CharacterLockEditor({
+  accountId,
   characters,
   answers,
   onChange,
 }: {
+  accountId?: string;
   characters: LockedCharacter[];
   answers: StyleProfileAnswers;
   onChange: (next: LockedCharacter[]) => void;
 }) {
+  const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   function update(index: number, patch: Partial<LockedCharacter>) {
     onChange(characters.map((character, i) => (i === index ? { ...character, ...patch } : character)));
+  }
+
+  async function uploadImage(index: number, file: File) {
+    if (!accountId) {
+      setUploadError('Save the channel first, then upload a character image.');
+      return;
+    }
+    setUploadError(null);
+    setUploadingIndex(index);
+    try {
+      const next = await apiUpload<{
+        profile?: { styleProfile?: unknown };
+      }>(`/accounts/${accountId}/locked-characters/${index}/image`, file);
+      const fromProfile = parseStyleProfile(next.profile?.styleProfile);
+      if (fromProfile.lockedCharacters.length) {
+        onChange(fromProfile.lockedCharacters);
+      }
+    } catch (err) {
+      setUploadError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not upload that image.',
+      );
+    } finally {
+      setUploadingIndex(null);
+    }
+  }
+
+  async function clearImage(index: number) {
+    if (!accountId) return;
+    setUploadError(null);
+    setUploadingIndex(index);
+    try {
+      const next = await api.del<{
+        profile?: { styleProfile?: unknown };
+      }>(`/accounts/${accountId}/locked-characters/${index}/image`);
+      const fromProfile = parseStyleProfile(next.profile?.styleProfile);
+      if (fromProfile.lockedCharacters.length) {
+        onChange(fromProfile.lockedCharacters);
+      } else {
+        update(index, { imagePath: '', imageFileName: '', imageMimeType: '' });
+      }
+    } catch (err) {
+      setUploadError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not remove that image.',
+      );
+    } finally {
+      setUploadingIndex(null);
+    }
   }
 
   return (
@@ -135,8 +195,9 @@ function CharacterLockEditor({
       <div>
         <p className="text-xs font-medium text-zinc-800">Character lock</p>
         <p className="mt-0.5 text-[11px] text-zinc-500">
-          Same face, body, and wardrobe in every video. Use 2D/3D cartoon for story channels, or
-          ultra realistic for photoreal people. Save, then Generate prompt.
+          Same face, body, and wardrobe in every video. Upload a reference still for each character,
+          then preview or download from the Characters tab. Save after adding a character before
+          uploading.
         </p>
       </div>
       {characters.map((character, index) => (
@@ -212,8 +273,50 @@ function CharacterLockEditor({
               placeholder="e.g. Same mole on left cheek, never change haircut"
             />
           </Field>
+          <div className="space-y-1.5 rounded-md border border-dashed border-zinc-200 bg-zinc-50 p-2">
+            <p className="text-[11px] font-medium text-zinc-600">Character image</p>
+            {character.imagePath ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/api/v1/accounts/${accountId}/locked-characters/${index}/image?t=${encodeURIComponent(character.imagePath)}`}
+                  alt={character.name || `Character ${index + 1}`}
+                  className="h-16 w-16 rounded object-cover border border-zinc-200 bg-white"
+                />
+                <span className="text-[11px] text-zinc-500 truncate max-w-[12rem]">
+                  {character.imageFileName || 'Uploaded'}
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={uploadingIndex === index}
+                  onClick={() => void clearImage(index)}
+                >
+                  Remove image
+                </Button>
+              </div>
+            ) : null}
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="block w-full text-[11px] text-zinc-600 file:mr-2 file:rounded file:border-0 file:bg-zinc-200 file:px-2 file:py-1 file:text-[11px]"
+              disabled={!accountId || uploadingIndex === index}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (file) void uploadImage(index, file);
+              }}
+            />
+            <p className="text-[11px] text-zinc-500">
+              {uploadingIndex === index
+                ? 'Uploading…'
+                : 'PNG/JPG/WebP. Save the character on this page first if upload fails.'}
+            </p>
+          </div>
         </div>
       ))}
+      {uploadError ? <p className="text-[11px] text-rose-600">{uploadError}</p> : null}
       <Button
         type="button"
         variant="secondary"
@@ -309,6 +412,7 @@ function CustomVisualStyleEditor({
 }
 
 export function StyleQuestionnaire({
+  accountId,
   answers,
   lockedCharacters,
   animationReferencePrompt,
@@ -327,6 +431,7 @@ export function StyleQuestionnaire({
   onShowAdvancedChange,
   onGeneratePrompt,
 }: {
+  accountId?: string;
   answers: StyleProfileAnswers;
   lockedCharacters: LockedCharacter[];
   animationReferencePrompt: string;
@@ -433,6 +538,7 @@ export function StyleQuestionnaire({
                   </p>
                 ) : null}
                 <CharacterLockEditor
+                  accountId={accountId}
                   characters={lockedCharacters}
                   answers={answers}
                   onChange={onLockedCharactersChange}

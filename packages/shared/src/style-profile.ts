@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import {
+  formatDialogueClipDensityRules,
   formatIdeaTitleLanguageRules,
+  formatOnScreenTextLanguageRules,
   formatOutputLanguagePolicy,
   formatPublishCopyLanguageRules,
   formatSpokenLanguageRules,
   languageDisplayName,
   OUTPUT_LANGUAGE_POLICY_REV,
+  thumbnailOverlayLanguageLabel,
 } from './content-languages.js';
 import {
   formatNarrationEmotionBlock,
@@ -80,6 +83,10 @@ export const lockedCharacterSchema = z.object({
   personality: z.string().default(''),
   consistencyDetails: z.string().default(''),
   look: z.enum(LOCKED_CHARACTER_LOOKS).default('ultra_realistic'),
+  /** Relative path under STORAGE_ROOT for an owner-uploaded reference image. */
+  imagePath: z.string().default(''),
+  imageFileName: z.string().default(''),
+  imageMimeType: z.string().default(''),
 });
 export type LockedCharacter = z.infer<typeof lockedCharacterSchema>;
 
@@ -578,13 +585,15 @@ export function formatLockedCharactersPrompt(
     const look = lockedCharacterLookLabel(character.look);
     const personality = character.personality.trim();
     const extra = character.consistencyDetails.trim();
-    return `${index + 1}. ${ref} — LOOK: ${look}${personality ? `. Personality: ${personality}` : ''}${extra ? `. Lock: ${extra}` : ''}.`;
+    const hasImage = Boolean(character.imagePath?.trim());
+    return `${index + 1}. ${ref} — LOOK: ${look}${personality ? `. Personality: ${personality}` : ''}${extra ? `. Lock: ${extra}` : ''}${hasImage ? '. REFERENCE IMAGE: owner uploaded a locked character still — match that face, body, wardrobe, and look exactly.' : ''}.`;
   });
   return [
     'CHARACTER LOCK (mandatory — same cast in EVERY video on this channel):',
     ...lines,
     'Reuse these exact people/mascots in characters[] and in every imagePrompt/animationPrompt.',
     'Do not rename, recast, age-up, or change face, body, wardrobe, or look unless Brand settings are updated.',
+    'When a REFERENCE IMAGE is noted, treat that still as ground truth for identity consistency.',
     'You may add one-off extras only when the story needs a new person; never replace a locked character.',
   ].join('\n');
 }
@@ -712,8 +721,6 @@ export function formatDramaDialoguePackageRules(options: {
 }): string {
   const lang = languageDisplayName(options.language);
   const clip = Math.max(1, Math.round(options.clipDurationSec));
-  const minWords = Math.max(12, Math.round(clip * 2.0));
-  const maxWords = Math.max(minWords + 4, Math.round(clip * 2.8));
   const negatives = options.includeNegativePrompts !== false;
   const cartoon =
     options.cartoonPackage === true ||
@@ -731,7 +738,7 @@ export function formatDramaDialoguePackageRules(options: {
   return `DRAMA / DIALOGUE package rules (mandatory):
 - Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions stay in English; only the spoken words must match ${lang}.
 - imagePrompt and animationPrompt bodies stay in English. Quote any on-screen overlay text and spoken lines in ${lang} inside those English prompts.
-- Clip density: each scene is ~${clip}s. Fill that duration with enough dialogue exchanges and physical action beats — never one short line plus silence. Target roughly ${minWords}-${maxWords} spoken words of dialogue per ${clip}s scene (conversational pace), with clear action/blocking timed across the full clip in animationPrompt.
+- ${formatDialogueClipDensityRules(clip, options.language)}
 - Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Different speakers can feel different things in the same scene. Do not print the emotion inside the spoken line.
 - animationPrompt must label each spoken line with its emotion: "Dialogue (angry): Name: line".
 - Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for dialogue speaker labels inside animationPrompt where practical.
@@ -1052,7 +1059,7 @@ function audioModeSection(
   if (extras.existingNarration) lines.push(`Narration style notes: ${extras.existingNarration}`);
   if (extras.voiceNotes) lines.push(`Voice / TTS notes: ${extras.voiceNotes}`);
   lines.push(
-    `Keep delivery natural for this audio mode. Align on-screen text with caption rules and write overlay lettering in ${lang}.`,
+    `Keep delivery natural for this audio mode. Align on-screen text with caption rules. ${formatOnScreenTextLanguageRules(language)}`,
   );
   return lines.join('\n');
 }
@@ -1263,7 +1270,7 @@ export function composeChannelStyles(
       '## Operating checklist',
       '- Idea titles follow the title-language rules; idea angle/hook/rationale/topicSummary and story drafts stay English, on-niche, format-fit, hook-first.',
       `- Scripts / narration / dialogue: match audio mode, pacing, and tone; speak ${lang}.`,
-      `- On-screen text: ${lang}. ${formatPublishCopyLanguageRules(language)} Publish titles follow the title-language rules; follow templates and caption style when set.`,
+      `- On-screen text: ${formatOnScreenTextLanguageRules(language)} ${formatPublishCopyLanguageRules(language)} Publish titles follow the title-language rules; follow templates and caption style when set.`,
       '- Image / video / animation prompts: English bodies; quoted overlay/spoken text in the output language; fill Visual prompt DNA per scene.',
       '- Tags: discoverable, niche-relevant, no spam stuffing.',
       '- Thumbnails & animationPrompts: obey visual DNA + animation guideline sections.',
@@ -1348,8 +1355,9 @@ export function formatThumbnailPromptInstructions(
   profile: ChannelStyleFields | null | undefined,
 ): string {
   const ref = profile?.thumbnailReferencePrompt?.trim();
-  const overlayLang = languageDisplayName(profile?.language);
-  const overlayRule = ` If the thumbnail includes on-image lettering, quote that text in ${overlayLang}; keep the rest of the prompt in English.`;
+  const overlayLang = thumbnailOverlayLanguageLabel(profile?.language);
+  const onScreen = formatOnScreenTextLanguageRules(profile?.language);
+  const overlayRule = ` If the thumbnail includes on-image lettering, quote that text in ${overlayLang}; keep the rest of the prompt in English. ${onScreen}`;
   if (ref) {
     return `thumbnailPrompt: Write one detailed, ready-to-paste thumbnail image generation prompt for this specific video. Match the structure, composition language, lighting cues, color grade, text-overlay style, and overall look of the channel thumbnail reference below — adapt subject, title, and story beats to this video only.${overlayRule}
 
