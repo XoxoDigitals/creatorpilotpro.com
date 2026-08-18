@@ -68,6 +68,7 @@ export const ttsPreviewSchema = z.object({
   volume: z.string().max(32).optional(),
   emotion: z.enum(TTS_EMOTIONS).optional(),
   kidsRhyme: z.boolean().optional(),
+  model: z.string().min(1).max(80).optional(),
 });
 export type TtsPreviewDto = z.infer<typeof ttsPreviewSchema>;
 

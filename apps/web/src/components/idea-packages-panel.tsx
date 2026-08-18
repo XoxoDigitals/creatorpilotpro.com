@@ -5,9 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
-import { getIdeaPackage, getIdeasView, ideaTranscriptUrl, ideaVoiceoverUrl, retryIdeaPackage, regenerateIdeaPackage, deleteIdea } from '@/lib/api-data';
+import { getIdeaPackage, getIdeasView, getApiAccount, ideaTranscriptUrl, ideaVoiceoverUrl, retryIdeaPackage, regenerateIdeaPackage, deleteIdea } from '@/lib/api-data';
 import { IdeaFinalUpload } from '@/components/idea-final-upload';
-import { KidsRhymePanel, OwnerVoiceUpload } from '@/components/kids-rhyme-panel';
+import { OwnerVoiceUpload } from '@/components/kids-rhyme-panel';
 import { Button } from '@/components/ui/button';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import type {
@@ -19,7 +19,7 @@ import type {
   SpokenNarrationLine,
   TimedTranscriptSegment,
 } from '@/lib/domain-types';
-import { TTS_EMOTION_LABELS, type TtsEmotion } from '@scp/shared';
+import { TTS_EMOTION_LABELS, isKidsRhymePackage, type TtsEmotion } from '@scp/shared';
 
 const STAGE_ORDER: PackageStage[] = ['SCRIPT', 'VOICE', 'TRANSCRIPT', 'VISUALS', 'READY'];
 
@@ -104,7 +104,33 @@ function comparePackages(a: Idea, b: Idea): number {
   return Date.parse(b.createdAt) - Date.parse(a.createdAt);
 }
 
-function stageProgressLabel(idea: Idea, pkg?: ProductionBrief): string {
+function rhymeText(pkg: ProductionBrief): string {
+  const script = pkg.narrationScript?.trim();
+  if (script) return script;
+  if (pkg.narrationLines?.length) {
+    return pkg.narrationLines.map((line) => line.text).join('\n').trim();
+  }
+  return '';
+}
+
+function isKidsRhymeIdea(pkg: ProductionBrief | undefined, accountKidsRhyme: boolean): boolean {
+  return accountKidsRhyme || pkg?.voiceIdUsed === 'owner:upload';
+}
+
+function waitingForOwnerVoice(
+  idea: Idea,
+  pkg: ProductionBrief | undefined,
+  kidsRhyme: boolean,
+): boolean {
+  if (!kidsRhyme || !pkg) return false;
+  if (!rhymeText(pkg)) return false;
+  if (pkg.voiceoverReady) return false;
+  if (pkg.voiceoverStatus === 'GENERATING') return false;
+  if ((pkg.timedTranscript?.length ?? 0) > 0) return false;
+  return true;
+}
+
+function stageProgressLabel(idea: Idea, pkg?: ProductionBrief, kidsRhyme = false): string {
   if (idea.packageStatus === 'FAILED' || pkg?.packageStage === 'FAILED') {
     return pkg?.packageStageError || idea.packageStageError || 'Package failed';
   }
@@ -115,11 +141,19 @@ function stageProgressLabel(idea: Idea, pkg?: ProductionBrief): string {
   ) {
     return 'Package ready';
   }
+  if (waitingForOwnerVoice(idea, pkg, kidsRhyme)) return 'Upload sound';
   if (idea.packageStatus === 'GENERATING') {
+    if (kidsRhyme) {
+      const stage = pkg?.packageStage ?? idea.packageStage;
+      if (stage === 'SCRIPT') return 'Writing rhyme…';
+      if (stage === 'VOICE') return 'Upload sound';
+      if (stage === 'TRANSCRIPT') return 'Timed transcript…';
+      if (stage === 'VISUALS') return 'Visual prompts…';
+    }
     return (
       pkg?.packageStageLabel ||
       idea.packageStageLabel ||
-      'Writing title/script…'
+      (kidsRhyme ? 'Writing rhyme…' : 'Writing title/script…')
     );
   }
   return idea.packageStatus;
@@ -664,7 +698,13 @@ function TimedTranscriptSection({
   );
 }
 
-function PipelineProgress({ stage }: { stage: PackageStage | null | undefined }) {
+function PipelineProgress({
+  stage,
+  kidsRhyme = false,
+}: {
+  stage: PackageStage | null | undefined;
+  kidsRhyme?: boolean;
+}) {
   const current = stage && STAGE_ORDER.includes(stage) ? stage : null;
   const currentIdx = current ? STAGE_ORDER.indexOf(current) : -1;
   return (
@@ -672,6 +712,8 @@ function PipelineProgress({ stage }: { stage: PackageStage | null | undefined })
       {STAGE_ORDER.filter((s) => s !== 'READY').map((s, idx) => {
         const done = currentIdx > idx || current === 'READY';
         const active = current === s;
+        const voiceLabel = kidsRhyme ? 'Upload sound' : 'Generating voice';
+        const scriptLabel = kidsRhyme ? 'Writing rhyme' : 'Writing title/script';
         return (
           <li
             key={s}
@@ -684,12 +726,12 @@ function PipelineProgress({ stage }: { stage: PackageStage | null | undefined })
             }`}
           >
             {s === 'SCRIPT'
-              ? 'Writing title/script'
+              ? scriptLabel
               : s === 'VOICE'
-                ? 'Generating voice'
+                ? voiceLabel
                 : s === 'TRANSCRIPT'
-                  ? 'Creating transcript'
-                  : 'Image/video prompts'}
+                  ? 'Timed transcript'
+                  : 'Visual prompts'}
           </li>
         );
       })}
@@ -759,6 +801,7 @@ function PackageDetails({
   pkg,
   accountId,
   demo,
+  kidsRhyme,
   copiedKey,
   onCopy,
   onUploaded,
@@ -770,6 +813,7 @@ function PackageDetails({
   pkg: ProductionBrief | undefined;
   accountId: string;
   demo: boolean;
+  kidsRhyme: boolean;
   copiedKey: string | null;
   onCopy: (key: string, value: unknown) => void;
   onUploaded: () => void | Promise<void>;
@@ -782,22 +826,17 @@ function PackageDetails({
   const failed = idea.packageStatus === 'FAILED' || pkg?.packageStage === 'FAILED';
   const canRetry = !demo && failed;
   const canRegen = !demo && !generating && (!!pkg || idea.hasBrief);
-  const waitingForOwnerVoice =
-    !demo &&
-    !!pkg?.narrationScript &&
-    !pkg.voiceoverReady &&
-    pkg.voiceoverStatus !== 'GENERATING' &&
-    (pkg.packageStage === 'SCRIPT' || idea.packageStage === 'SCRIPT');
+  const kids = isKidsRhymeIdea(pkg, kidsRhyme);
+  const waitingVoice = !demo && waitingForOwnerVoice(idea, pkg, kids);
+  const pipelineStage = waitingVoice
+    ? 'VOICE'
+    : (pkg?.packageStage ?? idea.packageStage);
+  const rhyme = pkg ? rhymeText(pkg) : '';
   return (
     <>
-      {generating && !waitingForOwnerVoice && (
-        <PipelineProgress stage={pkg?.packageStage ?? idea.packageStage} />
+      {(generating || waitingVoice) && (
+        <PipelineProgress stage={pipelineStage} kidsRhyme={kids} />
       )}
-      <OwnerVoiceUpload
-        ideaId={idea.id}
-        waiting={waitingForOwnerVoice}
-        onUploaded={onUploaded}
-      />
       {failed && canRetry && !pkg?.packageStageError ? (
         <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
           <p>{idea.packageStageError || 'Package failed'}</p>
@@ -812,7 +851,9 @@ function PackageDetails({
         <div className="space-y-2">
           <p className="text-sm text-zinc-500">
             {generating
-              ? 'Research, script, voice, transcript, and visual prompts are being generated…'
+              ? kids
+                ? 'Writing the rhyme…'
+                : 'Research, script, voice, transcript, and visual prompts are being generated…'
               : failed
                 ? 'No package details available yet — retry to resume from the failed stage.'
                 : 'Package details are loading…'}
@@ -842,14 +883,16 @@ function PackageDetails({
               <Button size="sm" onClick={() => void onRegenerate(idea, 'script')}>
                 Regenerate script
               </Button>
-              <Button
-                size="sm"
-                disabled={!pkg.narrationScript}
-                title={!pkg.narrationScript ? 'Generate a script first' : undefined}
-                onClick={() => void onRegenerate(idea, 'voiceover')}
-              >
-                Regenerate voiceover
-              </Button>
+              {!kids ? (
+                <Button
+                  size="sm"
+                  disabled={!pkg.narrationScript}
+                  title={!pkg.narrationScript ? 'Generate a script first' : undefined}
+                  onClick={() => void onRegenerate(idea, 'voiceover')}
+                >
+                  Regenerate voiceover
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 disabled={!(pkg.timedTranscript?.length ?? 0)}
@@ -864,7 +907,7 @@ function PackageDetails({
             </div>
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            {pkg.voiceIdUsed ? (
+            {pkg.voiceIdUsed && pkg.voiceIdUsed !== 'owner:upload' ? (
               <p className="text-xs text-zinc-500">Voice: {pkg.voiceIdUsed}</p>
             ) : (
               <span />
@@ -920,7 +963,23 @@ function PackageDetails({
             copiedKey={copiedKey}
             onCopy={onCopy}
           />
-          {pkg.narrationLines && pkg.narrationLines.length > 0 ? (
+          {kids && rhyme ? (
+            <div className="space-y-2">
+              <PackageSection
+                title="Rhyme"
+                value={rhyme}
+                copyKey={`${idea.id}:rhyme`}
+                copiedKey={copiedKey}
+                onCopy={onCopy}
+                copyLabel="Copy rhyme"
+              />
+              <OwnerVoiceUpload
+                ideaId={idea.id}
+                waiting={waitingVoice}
+                onUploaded={onUploaded}
+              />
+            </div>
+          ) : pkg.narrationLines && pkg.narrationLines.length > 0 ? (
             <NarrationLinesSection
               lines={pkg.narrationLines}
               ideaId={idea.id}
@@ -953,10 +1012,10 @@ function PackageDetails({
             copiedKey={copiedKey}
             onCopy={onCopy}
           />
-          {(pkg.voiceoverReady || pkg.voiceoverStatus === 'GENERATING') && (
+          {(pkg.voiceoverReady || (!kids && pkg.voiceoverStatus === 'GENERATING')) && (
             <section className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
               <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                Voiceover audio
+                {kids ? 'Rhyme sound' : 'Voiceover audio'}
               </h4>
               {pkg.voiceoverReady ? (
                 <div className="space-y-2">
@@ -966,7 +1025,7 @@ function PackageDetails({
                     download
                     className="inline-flex rounded-md border border-indigo-200 bg-white px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
                   >
-                    Download voiceover
+                    {kids ? 'Download sound' : 'Download voiceover'}
                   </a>
                 </div>
               ) : (
@@ -1091,6 +1150,7 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
   const [packages, setPackages] = useState<Record<string, ProductionBrief>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [demo, setDemo] = useState(false);
+  const [kidsRhyme, setKidsRhyme] = useState(false);
   const [openIds, setOpenIds] = useState<ReadonlySet<string>>(() => new Set<string>());
   // The 5s poll re-runs load(); without this the newest package would re-open
   // itself and fight whatever the user collapsed.
@@ -1119,8 +1179,12 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
 
   const load = useCallback(async () => {
     try {
-      const result = await getIdeasView(accountId);
+      const [result, account] = await Promise.all([
+        getIdeasView(accountId),
+        getApiAccount(accountId).catch(() => null),
+      ]);
       setDemo(result.demo);
+      setKidsRhyme(isKidsRhymePackage(account?.profile?.styleProfile));
       const active = result.ideas
         .filter(
           (idea) =>
@@ -1220,18 +1284,14 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
   if (ideas === null) return <Skeleton className="h-32 w-full rounded-lg" />;
   if (ideas.length === 0) {
     return (
-      <div className="space-y-3">
-        <KidsRhymePanel accountId={accountId} onCreated={load} />
-        <p className="rounded-lg border border-dashed border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500">
-          Start generation from Review to create an AI package.
-        </p>
-      </div>
+      <p className="rounded-lg border border-dashed border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500">
+        Start generation from Review to create an AI package.
+      </p>
     );
   }
 
   return (
     <div className="space-y-3">
-      <KidsRhymePanel accountId={accountId} onCreated={load} />
       {ideas.map((idea) => {
         const pkg = packages[idea.id];
         const open = openIds.has(idea.id);
@@ -1280,7 +1340,7 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
                     )}
                     className="max-w-[220px] truncate"
                   >
-                    {stageProgressLabel(idea, pkg)}
+                    {stageProgressLabel(idea, pkg, isKidsRhymeIdea(pkg, kidsRhyme))}
                   </Badge>
                 </span>
               </button>
@@ -1292,6 +1352,7 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
                   pkg={pkg}
                   accountId={accountId}
                   demo={demo}
+                  kidsRhyme={kidsRhyme}
                   copiedKey={copiedKey}
                   onCopy={(key, value) => void copy(key, value)}
                   onUploaded={load}

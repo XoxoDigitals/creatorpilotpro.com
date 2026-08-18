@@ -11,8 +11,35 @@ export type TtsProviderId = (typeof TTS_PROVIDERS)[number];
 export const EDGE_DEFAULT_VOICE = 'en-US-AriaNeural';
 export const EDGE_DEFAULT_LOCALE = 'en-US';
 
-/** OpenAI Speech API — gpt-4o-mini-tts with `instructions` for emotion. */
+/** OpenAI Speech API — default model (emotions via `instructions`). */
 export const OPENAI_TTS_MODEL = 'gpt-4o-mini-tts';
+export const OPENAI_TTS_MODELS = [
+  'gpt-4o-mini-tts',
+  'gpt-4o-mini-tts-2025-12-15',
+  'tts-1-hd',
+  'tts-1',
+] as const;
+export type OpenAiTtsModel = (typeof OPENAI_TTS_MODELS)[number];
+
+export const OPENAI_TTS_MODEL_LABELS: Record<OpenAiTtsModel, string> = {
+  'gpt-4o-mini-tts': 'GPT-4o mini TTS (emotions — recommended)',
+  'gpt-4o-mini-tts-2025-12-15': 'GPT-4o mini TTS (Dec 2025 snapshot)',
+  'tts-1-hd': 'TTS-1 HD (higher quality, no emotion steering)',
+  'tts-1': 'TTS-1 (faster, no emotion steering)',
+};
+
+export function parseOpenAiTtsModel(raw: unknown): OpenAiTtsModel {
+  if (typeof raw === 'string' && (OPENAI_TTS_MODELS as readonly string[]).includes(raw)) {
+    return raw as OpenAiTtsModel;
+  }
+  return OPENAI_TTS_MODEL;
+}
+
+/** `instructions` only work on gpt-4o-mini-tts (not tts-1 / tts-1-hd). */
+export function openaiTtsSupportsInstructions(model: string): boolean {
+  return model.startsWith('gpt-4o-mini-tts');
+}
+
 export const OPENAI_DEFAULT_VOICE = 'coral';
 export const OPENAI_TTS_VOICES = [
   'alloy',
@@ -30,6 +57,24 @@ export const OPENAI_TTS_VOICES = [
   'cedar',
 ] as const;
 export type OpenAiTtsVoice = (typeof OPENAI_TTS_VOICES)[number];
+
+/** tts-1 / tts-1-hd do not support ballad, verse, marin, cedar. */
+export const OPENAI_TTS_LEGACY_VOICES = [
+  'alloy',
+  'ash',
+  'coral',
+  'echo',
+  'fable',
+  'nova',
+  'onyx',
+  'sage',
+  'shimmer',
+] as const;
+
+export function voicesForOpenAiTtsModel(model: string): readonly OpenAiTtsVoice[] {
+  if (openaiTtsSupportsInstructions(model)) return OPENAI_TTS_VOICES;
+  return OPENAI_TTS_LEGACY_VOICES;
+}
 
 export const OPENAI_TTS_VOICE_LABELS: Record<OpenAiTtsVoice, string> = {
   alloy: 'Alloy',
@@ -289,9 +334,13 @@ export function formatOpenAiTtsInstructions(
   return `${delivery}${kids}${langLine} Do not read stage directions. Do not say the emotion name.`.trim();
 }
 
-export function resolveOpenAiTtsVoice(voiceId?: string | null): OpenAiTtsVoice {
+export function resolveOpenAiTtsVoice(
+  voiceId?: string | null,
+  model?: string | null,
+): OpenAiTtsVoice {
+  const allowed = voicesForOpenAiTtsModel(model ?? OPENAI_TTS_MODEL);
   const trimmed = (voiceId ?? '').trim().toLowerCase();
-  if ((OPENAI_TTS_VOICES as readonly string[]).includes(trimmed)) {
+  if ((allowed as readonly string[]).includes(trimmed)) {
     return trimmed as OpenAiTtsVoice;
   }
   return OPENAI_DEFAULT_VOICE;
@@ -360,6 +409,8 @@ export const voiceSettingsSchema = z.object({
    * with newscast/calm for the whole track.
    */
   emotion: z.enum(TTS_EMOTIONS).optional(),
+  /** OpenAI /audio/speech model. Used for AI package voiceovers. */
+  openaiTtsModel: z.enum(OPENAI_TTS_MODELS).optional(),
   language: z.string().optional(),
   /**
    * Background bed / ambience level for VO mix (1–100%).
@@ -408,6 +459,19 @@ export function defaultVoiceForLanguage(language?: string | null): VoiceSettings
   };
 }
 
+/** AI channels synthesize package voiceovers with OpenAI speech. */
+export function defaultVoiceForAiChannel(language?: string | null): VoiceSettings {
+  const hit = resolveContentLanguage(language);
+  return {
+    provider: 'openai',
+    voiceId: OPENAI_DEFAULT_VOICE,
+    locale: hit.locale,
+    language: hit.code,
+    openaiTtsModel: OPENAI_TTS_MODEL,
+    backgroundBedPercent: DEFAULT_BACKGROUND_BED_PERCENT,
+  };
+}
+
 export function parseVoiceSettings(
   raw: unknown,
   fallbackLanguage?: string | null,
@@ -419,13 +483,14 @@ export function parseVoiceSettings(
     typeof row.provider === 'string' && (TTS_PROVIDERS as readonly string[]).includes(row.provider)
       ? (row.provider as TtsProviderId)
       : base.provider;
+  const openaiTtsModel = parseOpenAiTtsModel(row.openaiTtsModel ?? row.ttsModel);
   const voiceIdRaw =
     typeof row.voiceId === 'string' && row.voiceId.trim()
       ? row.voiceId.trim()
       : undefined;
   const voiceId =
     provider === 'openai'
-      ? resolveOpenAiTtsVoice(voiceIdRaw)
+      ? resolveOpenAiTtsVoice(voiceIdRaw, openaiTtsModel)
       : voiceIdRaw
         ? voiceIdRaw
         : provider === 'edge'
@@ -434,6 +499,7 @@ export function parseVoiceSettings(
   return {
     provider,
     voiceId,
+    openaiTtsModel,
     locale:
       typeof row.locale === 'string' && row.locale.trim()
         ? row.locale.trim()

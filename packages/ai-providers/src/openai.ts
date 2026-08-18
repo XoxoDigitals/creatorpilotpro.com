@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import {
   formatOpenAiTtsInstructions,
-  OPENAI_TTS_MODEL,
+  openaiTtsSupportsInstructions,
+  parseOpenAiTtsModel,
   parseTtsEmotion,
   resolveOpenAiTtsVoice,
   TaskType,
@@ -21,6 +22,7 @@ function parseVoiceCfg(system: string): {
   emotion: TtsEmotion;
   kidsRhyme: boolean;
   language?: string;
+  model: string;
 } {
   try {
     const cfg = JSON.parse(system) as {
@@ -28,17 +30,26 @@ function parseVoiceCfg(system: string): {
       emotion?: string;
       kidsRhyme?: boolean;
       language?: string;
+      openaiTtsModel?: string;
+      model?: string;
     };
+    const model = parseOpenAiTtsModel(cfg.openaiTtsModel ?? cfg.model);
     return {
-      voiceId: resolveOpenAiTtsVoice(cfg.voiceId),
+      voiceId: resolveOpenAiTtsVoice(cfg.voiceId, model),
       emotion: parseTtsEmotion(cfg.emotion),
       kidsRhyme: cfg.kidsRhyme === true,
+      model,
       ...(typeof cfg.language === 'string' && cfg.language.trim()
         ? { language: cfg.language.trim() }
         : {}),
     };
   } catch {
-    return { voiceId: resolveOpenAiTtsVoice(null), emotion: 'default', kidsRhyme: false };
+    return {
+      voiceId: resolveOpenAiTtsVoice(null),
+      emotion: 'default',
+      kidsRhyme: false,
+      model: parseOpenAiTtsModel(null),
+    };
   }
 }
 
@@ -66,29 +77,34 @@ export async function synthesizeWithOpenAiTts(opts: {
   emotion?: TtsEmotion;
   kidsRhyme?: boolean;
   language?: string | null;
+  model?: string | null;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ buffer: Buffer; mimeType: string; model: string }> {
   const text = opts.text.trim();
   if (!text) throw Object.assign(new Error('Empty text for OpenAI TTS'), { status: 400 });
+  const model = parseOpenAiTtsModel(opts.model);
   const url = `${(opts.baseUrl ?? BASE_URL).replace(/\/$/, '')}/audio/speech`;
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const body: Record<string, unknown> = {
+    model,
+    voice: resolveOpenAiTtsVoice(opts.voice, model),
+    input: text.slice(0, 4096),
+    response_format: 'wav',
+  };
+  if (openaiTtsSupportsInstructions(model)) {
+    body.instructions = formatOpenAiTtsInstructions(opts.emotion ?? 'default', {
+      kidsRhyme: opts.kidsRhyme === true,
+      language: opts.language,
+    });
+  }
   const res = await fetchImpl(url, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${opts.apiKey}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({
-      model: OPENAI_TTS_MODEL,
-      voice: resolveOpenAiTtsVoice(opts.voice),
-      input: text.slice(0, 4096),
-      instructions: formatOpenAiTtsInstructions(opts.emotion ?? 'default', {
-        kidsRhyme: opts.kidsRhyme === true,
-        language: opts.language,
-      }),
-      response_format: 'wav',
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const message = await readErrorMessage(res);
@@ -98,7 +114,7 @@ export async function synthesizeWithOpenAiTts(opts: {
   if (buf.length < 44) {
     throw Object.assign(new Error('OpenAI TTS returned empty audio'), { status: 502 });
   }
-  return { buffer: buf, mimeType: 'audio/wav', model: OPENAI_TTS_MODEL };
+  return { buffer: buf, mimeType: 'audio/wav', model };
 }
 
 export interface OpenAiTranscriptSegment {
@@ -176,6 +192,7 @@ export class OpenAIProvider implements AIProvider {
         emotion: cfg.emotion,
         kidsRhyme: cfg.kidsRhyme,
         language: cfg.language,
+        model: parseOpenAiTtsModel(req.model || cfg.model),
         baseUrl: this.config.baseUrl ?? BASE_URL,
         fetchImpl: this.config.fetchImpl,
       });

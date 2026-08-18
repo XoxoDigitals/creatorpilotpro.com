@@ -8,6 +8,7 @@ import {
   parseSpokenNarrationLines,
   parseTtsEmotion,
   parseVoiceSettings,
+  parseOpenAiTtsModel,
   resolveSpokenEmotion,
   serializeSpokenNarrationLines,
   TTS_EMOTIONS,
@@ -119,6 +120,19 @@ describe('OpenAI gpt-4o-mini-tts helpers', () => {
   it('maps unknown voice ids to coral', () => {
     expect(resolveOpenAiTtsVoice('en-US-AriaNeural')).toBe('coral');
     expect(resolveOpenAiTtsVoice('sage')).toBe('sage');
+    expect(resolveOpenAiTtsVoice('verse', 'tts-1')).toBe('coral');
+    expect(resolveOpenAiTtsVoice('verse', 'gpt-4o-mini-tts')).toBe('verse');
+  });
+
+  it('parses saved OpenAI speech models', () => {
+    const parsed = parseVoiceSettings({
+      provider: 'openai',
+      voiceId: 'coral',
+      openaiTtsModel: 'tts-1-hd',
+    });
+    expect(parsed.provider).toBe('openai');
+    expect(parsed.openaiTtsModel).toBe('tts-1-hd');
+    expect(parseOpenAiTtsModel('nope')).toBe('gpt-4o-mini-tts');
   });
 
   it('writes emotion instructions and a kids-rhyme overlay', () => {

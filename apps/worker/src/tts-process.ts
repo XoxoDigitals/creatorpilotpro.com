@@ -17,7 +17,8 @@ import {
   QUEUE,
   DOCUMENTARY_VOICE_EMOTION,
   REPURPOSED_VOICE_EMOTION,
-  OPENAI_TTS_MODEL,
+  parseOpenAiTtsModel,
+  resolveOpenAiTtsVoice,
   isDocumentaryIdeaGeneration,
   isDocumentaryVoiceoverPackage,
   isKidsRhymePackage,
@@ -255,10 +256,10 @@ async function resolveChannelVoice(
   );
 }
 
-function modelForProvider(provider: string): string {
+function modelForProvider(provider: string, voice?: VoiceSettings): string {
   if (provider === 'gemini') return 'gemini-2.5-flash-preview-tts';
   if (provider === 'edge') return 'edge-neural';
-  if (provider === 'openai') return OPENAI_TTS_MODEL;
+  if (provider === 'openai') return parseOpenAiTtsModel(voice?.openaiTtsModel);
   return provider;
 }
 
@@ -299,6 +300,7 @@ function systemForVoice(voice: VoiceSettings, extra?: Record<string, unknown>): 
     ...(voice.pitch ? { pitch: voice.pitch } : {}),
     ...(voice.volume ? { volume: voice.volume } : {}),
     ...(emotion ? { emotion } : {}),
+    ...(voice.openaiTtsModel ? { openaiTtsModel: voice.openaiTtsModel } : {}),
     ...extra,
   });
 }
@@ -454,7 +456,7 @@ async function synthesizeScript(opts: {
     const rawPath = join(voDir, `chunk_${String(i).padStart(3, '0')}.bin`);
     const result = await router.run({
       task: 'TTS' as any,
-      model: modelForProvider(first),
+      model: modelForProvider(first, voice),
       system: systemForVoice(voice, {
         outDir: voDir,
         basename: `chunk_${String(i).padStart(3, '0')}`,
@@ -530,7 +532,7 @@ async function synthesizeViaOpenAi(opts: {
   let offsetMs = 0;
 
   console.log(
-    `[worker:tts] OpenAI gpt-4o-mini-tts start: ${chunks.length} chunk(s), voice=${opts.voice.voiceId}`,
+    `[worker:tts] OpenAI ${parseOpenAiTtsModel(opts.voice.openaiTtsModel)} start: ${chunks.length} chunk(s), voice=${opts.voice.voiceId}`,
   );
 
   for (let i = 0; i < chunks.length; i++) {
@@ -543,6 +545,7 @@ async function synthesizeViaOpenAi(opts: {
       emotion: parseTtsEmotion(chunk.emotion),
       kidsRhyme: opts.kidsRhyme === true,
       language: opts.voice.language ?? opts.voice.locale,
+      model: opts.voice.openaiTtsModel,
     });
     const rawPath = join(opts.voDir, `${base}.bin`);
     await writeFile(rawPath, synth.buffer);
@@ -1182,7 +1185,18 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
     },
   });
 
-  const voice = await resolveChannelVoice(prisma, idea.accountId);
+  let voice = await resolveChannelVoice(prisma, idea.accountId);
+  if (voice.provider !== 'openai') {
+    console.log(
+      `[worker:tts] idea ${ideaId} AI package using OpenAI speech (channel provider was ${voice.provider})`,
+    );
+    voice = {
+      ...voice,
+      provider: 'openai',
+      openaiTtsModel: parseOpenAiTtsModel(voice.openaiTtsModel),
+      voiceId: resolveOpenAiTtsVoice(voice.voiceId, voice.openaiTtsModel),
+    };
+  }
   const styleRow = await prisma.channelProfile.findUnique({
     where: { accountId: idea.accountId },
     select: { styleProfile: true },
@@ -1201,7 +1215,7 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
     return spokenLinesFromUnknown(parseSpokenNarrationLines(extras.narrationLines));
   })();
   console.log(
-    `[worker:tts] idea ${ideaId} VOICE start: chars=${script.length}, words≈${words}, provider=${voice.provider}, voiceId=${voice.voiceId}`,
+    `[worker:tts] idea ${ideaId} VOICE start: chars=${script.length}, words≈${words}, provider=${voice.provider}, model=${parseOpenAiTtsModel(voice.openaiTtsModel)}, voiceId=${voice.voiceId}`,
   );
 
   try {

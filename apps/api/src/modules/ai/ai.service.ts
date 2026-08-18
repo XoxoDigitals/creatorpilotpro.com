@@ -36,6 +36,7 @@ import {
   languageDisplayName,
   formatKidsRhymeScriptRules,
   parseTtsEmotion,
+  parseOpenAiTtsModel,
   resolveOpenAiTtsVoice,
   styleProfileAnswersSchema,
   styleProfileHasAnswers,
@@ -935,7 +936,8 @@ Write as imperative rules. Do not retell the video's plot. Do not mention stock 
       'Hello from Social Creator Pilot. This is a short voice preview.';
     const provider = dto.provider ?? 'edge';
     if (provider === 'openai') {
-      const voiceId = resolveOpenAiTtsVoice(dto.voiceId);
+      const model = parseOpenAiTtsModel(dto.model);
+      const voiceId = resolveOpenAiTtsVoice(dto.voiceId, model);
       try {
         const secret = await this.resolveOpenAiSecret(dto.accountId);
         const synth = await synthesizeWithOpenAiTts({
@@ -944,6 +946,7 @@ Write as imperative rules. Do not retell the video's plot. Do not mention stock 
           voice: voiceId,
           emotion: parseTtsEmotion(dto.emotion),
           kidsRhyme: dto.kidsRhyme === true,
+          model,
         });
         return {
           voiceId,

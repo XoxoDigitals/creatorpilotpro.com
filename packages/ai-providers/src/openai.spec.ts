@@ -34,7 +34,29 @@ describe('OpenAI TTS', () => {
       fetchImpl,
     });
     expect(result.buffer.length).toBeGreaterThan(40);
+    expect(result.model).toBe('gpt-4o-mini-tts');
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('posts tts-1-hd without instructions', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        model: string;
+        instructions?: string;
+      };
+      expect(body.model).toBe('tts-1-hd');
+      expect(body.instructions).toBeUndefined();
+      return new Response(WAV_HEADER, { status: 200, headers: { 'content-type': 'audio/wav' } });
+    }) as unknown as typeof fetch;
+
+    const result = await synthesizeWithOpenAiTts({
+      apiKey: 'sk-test',
+      text: 'Hello.',
+      voice: 'nova',
+      model: 'tts-1-hd',
+      fetchImpl,
+    });
+    expect(result.model).toBe('tts-1-hd');
   });
 
   it('maps 401 to INVALID_KEY', async () => {

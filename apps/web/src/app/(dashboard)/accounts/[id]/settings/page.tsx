@@ -16,10 +16,15 @@ import {
   clampTrimStartMs,
   TTS_EMOTIONS,
   TTS_EMOTION_LABELS,
-  OPENAI_TTS_VOICES,
   OPENAI_TTS_VOICE_LABELS,
-  OPENAI_DEFAULT_VOICE,
+  OPENAI_TTS_MODELS,
+  OPENAI_TTS_MODEL_LABELS,
+  OPENAI_TTS_MODEL,
+  defaultVoiceForAiChannel,
+  parseOpenAiTtsModel,
   parseTtsEmotion,
+  resolveOpenAiTtsVoice,
+  voicesForOpenAiTtsModel,
   type StyleProfileAnswers,
   type LockedCharacter,
   type TtsEmotion,
@@ -139,7 +144,8 @@ export default function AccountSettingsPage() {
   const [showAdvancedStyles, setShowAdvancedStyles] = useState(false);
   const [animationReferencePrompt, setAnimationReferencePrompt] = useState('');
   const [language, setLanguage] = useState('en');
-  const [ttsProvider, setTtsProvider] = useState('edge');
+  const [ttsProvider, setTtsProvider] = useState('openai');
+  const [openaiTtsModel, setOpenaiTtsModel] = useState(OPENAI_TTS_MODEL);
   const [openaiKeyDraft, setOpenaiKeyDraft] = useState('');
   const [openaiKeyLast4, setOpenaiKeyLast4] = useState<string | null>(null);
   const [voice, setVoice] = useState('en-US-AriaNeural');
@@ -220,6 +226,7 @@ export default function AccountSettingsPage() {
   const voiceNotes = useMemo(() => {
     const parts = [
       `provider=${ttsProvider}`,
+      ttsProvider === 'openai' ? `model=${openaiTtsModel}` : '',
       `voice=${voice}`,
       voiceLocale ? `locale=${voiceLocale}` : '',
       voiceRate !== '+0%' ? `rate=${voiceRate}` : '',
@@ -227,7 +234,7 @@ export default function AccountSettingsPage() {
       voiceEmotion !== 'default' ? `emotion=${voiceEmotion}` : '',
     ].filter(Boolean);
     return parts.join(', ');
-  }, [ttsProvider, voice, voiceLocale, voiceRate, voicePitch, voiceEmotion]);
+  }, [ttsProvider, openaiTtsModel, voice, voiceLocale, voiceRate, voicePitch, voiceEmotion]);
 
   const loadVoices = useCallback(async (locale?: string) => {
     setVoicesLoading(true);
@@ -282,11 +289,29 @@ export default function AccountSettingsPage() {
           pitch?: string;
           volume?: string;
           emotion?: string;
+          openaiTtsModel?: string;
+          ttsModel?: string;
           backgroundBedPercent?: number;
         } | null;
-        const defaults = defaultVoiceForLanguage(p.language);
-        setTtsProvider(voiceCfg?.provider || defaults.provider);
-        setVoice(voiceCfg?.voiceId || defaults.voiceId);
+        const aiChannel = apiAccount.contentType === 'AI' || apiAccount.contentType === 'MIXED';
+        const defaults = aiChannel
+          ? defaultVoiceForAiChannel(p.language)
+          : defaultVoiceForLanguage(p.language);
+        const savedProvider = voiceCfg?.provider;
+        const useOpenAi =
+          aiChannel && (!savedProvider || savedProvider === 'edge')
+            ? true
+            : savedProvider === 'openai';
+        const loadedModel = parseOpenAiTtsModel(
+          voiceCfg?.openaiTtsModel ?? voiceCfg?.ttsModel,
+        );
+        setOpenaiTtsModel(loadedModel);
+        setTtsProvider(useOpenAi ? 'openai' : savedProvider || defaults.provider);
+        setVoice(
+          useOpenAi
+            ? resolveOpenAiTtsVoice(voiceCfg?.voiceId, loadedModel)
+            : voiceCfg?.voiceId || defaults.voiceId,
+        );
         setVoiceLocale(voiceCfg?.locale || defaults.locale);
         if (voiceCfg?.rate) setVoiceRate(voiceCfg.rate);
         if (voiceCfg?.pitch) setVoicePitch(voiceCfg.pitch);
@@ -477,6 +502,7 @@ export default function AccountSettingsPage() {
         provider: ttsProvider === 'openai' ? 'openai' : 'edge',
         accountId: id,
         voiceId,
+        model: openaiTtsModel,
         rate: voiceRate,
         pitch: voicePitch,
         volume: voiceVolume,
@@ -522,6 +548,7 @@ export default function AccountSettingsPage() {
         voiceSettings: {
           provider: ttsProvider,
           voiceId: voice,
+          openaiTtsModel,
           locale: voiceLocale,
           rate: voiceRate,
           pitch: voicePitch,
@@ -947,14 +974,22 @@ export default function AccountSettingsPage() {
       <Card>
         <CardHeader
           title="Voice"
-          description="AI channels can use OpenAI gpt-4o-mini-tts with full emotion. Edge Neural remains the fallback."
+          description={
+            contentType === 'AI' || contentType === 'MIXED'
+              ? 'AI packages use your selected OpenAI speech model for Generate / Regenerate voice. Edge Neural is only a fallback for other pipelines.'
+              : 'Choose a TTS engine. OpenAI speech models support emotion steering on GPT-4o mini TTS.'
+          }
         />
         <div className="space-y-4 p-4">
-          {ttsStatus && (
+          {ttsProvider === 'edge' && ttsStatus ? (
             <p className={`text-xs ${ttsStatus.startsWith('Edge TTS ready') ? 'text-emerald-700' : 'text-amber-700'}`}>
               {ttsStatus}
             </p>
-          )}
+          ) : ttsProvider === 'openai' ? (
+            <p className="text-xs text-emerald-700">
+              OpenAI speech: {openaiTtsModel}. Regenerate voice on AI packages uses this model.
+            </p>
+          ) : null}
           <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-medium text-zinc-700">
@@ -988,15 +1023,40 @@ export default function AccountSettingsPage() {
                 onChange={(e) => {
                   const next = e.target.value;
                   setTtsProvider(next);
-                  if (next === 'openai') setVoice(OPENAI_DEFAULT_VOICE);
+                  if (next === 'openai') {
+                    setVoice(resolveOpenAiTtsVoice(voice, openaiTtsModel));
+                  }
                 }}
               >
-                <option value="edge">Edge Neural (default)</option>
-                <option value="openai">OpenAI gpt-4o-mini-tts</option>
+                <option value="openai">
+                  {contentType === 'AI' || contentType === 'MIXED'
+                    ? 'OpenAI (default for AI)'
+                    : 'OpenAI'}
+                </option>
+                <option value="edge">Edge Neural (fallback)</option>
                 <option value="kokoro">Kokoro (self-hosted)</option>
                 <option value="gemini">Gemini TTS</option>
               </Select>
             </Field>
+            {(ttsProvider === 'openai' || contentType === 'AI' || contentType === 'MIXED') && (
+              <Field label="OpenAI speech model">
+                <Select
+                  value={openaiTtsModel}
+                  onChange={(e) => {
+                    const next = parseOpenAiTtsModel(e.target.value);
+                    setOpenaiTtsModel(next);
+                    setVoice(resolveOpenAiTtsVoice(voice, next));
+                    if (ttsProvider !== 'openai') setTtsProvider('openai');
+                  }}
+                >
+                  {OPENAI_TTS_MODELS.map((id) => (
+                    <option key={id} value={id}>
+                      {OPENAI_TTS_MODEL_LABELS[id]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
             {ttsProvider === 'edge' ? (
               <Field label="Voice locale">
                 <Select
@@ -1021,7 +1081,7 @@ export default function AccountSettingsPage() {
             ) : ttsProvider === 'openai' ? (
               <Field label="OpenAI voice">
                 <Select value={voice} onChange={(e) => setVoice(e.target.value)}>
-                  {OPENAI_TTS_VOICES.map((id) => (
+                  {voicesForOpenAiTtsModel(openaiTtsModel).map((id) => (
                     <option key={id} value={id}>
                       {OPENAI_TTS_VOICE_LABELS[id]}
                     </option>
@@ -1174,8 +1234,8 @@ export default function AccountSettingsPage() {
                   }
                 />
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Used for gpt-4o-mini-tts and rhyme voice analysis. Falls back to Settings → AI
-                  OpenAI keys if empty. Saved encrypted. Never shown again.
+                  Used for the selected OpenAI speech model and rhyme voice analysis. Falls back to
+                  Settings → AI OpenAI keys if empty. Saved encrypted. Never shown again.
                 </p>
               </Field>
               <div className="flex flex-wrap items-center gap-2">
@@ -1203,8 +1263,9 @@ export default function AccountSettingsPage() {
                   ))}
                 </Select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  gpt-4o-mini-tts follows this as spoken delivery. Line-level emotions from the
-                  script still win (playful, whisper, excited…).
+                  {openaiTtsModel} follows this as spoken delivery when the model supports
+                  instructions. Line-level emotions from the script still win (playful, whisper,
+                  excited…). TTS-1 / TTS-1 HD ignore this.
                 </p>
               </Field>
             </>
