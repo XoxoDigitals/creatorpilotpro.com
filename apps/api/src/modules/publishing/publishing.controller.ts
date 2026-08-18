@@ -28,7 +28,7 @@ export class PublishingController {
   constructor(private readonly publishing: PublishingService) {}
 
   @Post()
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('publish.create', 'PublishTarget')
   create(@Body(new ZodBody(createPublishSchema)) body: CreatePublishDto): Promise<PublishTargetView[]> {
     return this.publishing.createTargets(body);
@@ -49,7 +49,7 @@ export class PublishingController {
   }
 
   @Patch('target/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('publish.target.update', 'PublishTarget')
   patchTarget(
     @Param('id') id: string,
@@ -60,7 +60,7 @@ export class PublishingController {
 
   /** Delete from CreatorPilot and/or remove the live Facebook video. */
   @Post('target/:id/remove')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('publish.target.remove', 'PublishTarget')
   removeTarget(
     @Param('id') id: string,
@@ -87,7 +87,7 @@ export class PublishingController {
 
   /** Owner marks a manual target as published after uploading it by hand. */
   @Post('target/:id/mark-published')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('publish.target.mark_published', 'PublishTarget')
   markPublished(
     @Param('id') id: string,

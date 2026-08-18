@@ -33,7 +33,7 @@ export class SourcesController {
   // --- Static routes before :id --------------------------------------------
 
   @Post('import')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.import', 'WatchedSource')
   bulkImport(@Body(new ZodBody(bulkImportSchema)) body: BulkImportDto): Promise<WatchedSourceView> {
     return this.sources.bulkImport(body);
@@ -45,14 +45,14 @@ export class SourcesController {
   }
 
   @Post('video/:id/retry-download')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.video.retry_download', 'SourceVideo')
   retryDownload(@Param('id') id: string): Promise<SourceVideoView> {
     return this.sources.retryDownload(id);
   }
 
   @Delete('video/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.video.delete', 'SourceVideo')
   deleteVideo(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
     return this.sources.deleteVideo(id);
@@ -76,7 +76,7 @@ export class SourcesController {
   }
 
   @Post()
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.create', 'WatchedSource')
   create(@Body(new ZodBody(createSourceSchema)) body: CreateSourceDto): Promise<WatchedSourceView> {
     return this.sources.create(body);
@@ -88,7 +88,7 @@ export class SourcesController {
   }
 
   @Patch(':id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.update', 'WatchedSource')
   patch(
     @Param('id') id: string,
@@ -98,14 +98,14 @@ export class SourcesController {
   }
 
   @Post(':id/check')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.check', 'WatchedSource')
   checkNow(@Param('id') id: string): Promise<{ id: string; enqueued: true }> {
     return this.sources.checkNow(id);
   }
 
   @Delete(':id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('source.delete', 'WatchedSource')
   remove(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
     return this.sources.softDelete(id);

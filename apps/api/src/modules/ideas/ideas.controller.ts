@@ -63,7 +63,7 @@ export class IdeasController {
   }
 
   @Post('accounts/:accountId/ideas/generate')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.generate', 'Idea')
   generate(
     @Param('accountId') accountId: string,
@@ -73,7 +73,7 @@ export class IdeasController {
   }
 
   @Post('accounts/:accountId/ideas/rhyme')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.rhyme.create', 'Idea')
   createRhymePackage(
     @Param('accountId') accountId: string,
@@ -97,7 +97,7 @@ export class IdeasController {
   }
 
   @Patch('ideas/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.update', 'Idea')
   patch(
     @Param('id') id: string,
@@ -126,7 +126,7 @@ export class IdeasController {
   }
 
   @Post('ideas/:id/package')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.package.generate', 'Idea')
   generatePackage(
     @Param('id') id: string,
@@ -137,14 +137,14 @@ export class IdeasController {
 
   /** Resume a FAILED package from the failed stage only (keeps prior artifacts). */
   @Post('ideas/:id/package/retry')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.package.retry', 'Idea')
   retryPackage(@Param('id') id: string): Promise<IdeaView> {
     return this.ideas.retryPackage(id);
   }
 
   @Post('ideas/:id/package/regenerate')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.package.regenerate', 'Idea')
   regeneratePackage(
     @Param('id') id: string,
@@ -174,7 +174,7 @@ export class IdeasController {
   }
 
   @Post('ideas/:id/voiceover')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.voiceover.upload', 'Idea')
   async uploadVoiceover(
     @Param('id') id: string,
@@ -226,14 +226,14 @@ export class IdeasController {
   }
 
   @Post('ideas/:id/package/done')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.package.done', 'Idea')
   markPackageDone(@Param('id') id: string): Promise<IdeaView> {
     return this.ideas.markPackageDone(id);
   }
 
   @Post('ideas/:id/upload')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.upload.create', 'Idea')
   createUpload(
     @Param('id') id: string,
@@ -243,7 +243,7 @@ export class IdeasController {
   }
 
   @Post('ideas/:id/mark-uploaded')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.uploaded', 'Idea')
   markUploaded(@Param('id') id: string): Promise<IdeaView> {
     return this.ideas.markUploaded(id);
@@ -255,7 +255,7 @@ export class IdeasController {
   }
 
   @Delete('ideas/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('idea.delete', 'Idea')
   remove(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
     return this.ideas.softDelete(id);

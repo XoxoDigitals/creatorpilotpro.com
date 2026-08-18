@@ -31,7 +31,7 @@ export class CompetitorsController {
   }
 
   @Post('accounts/:accountId/competitors')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('competitor.create', 'CompetitorChannel')
   create(
     @Param('accountId') accountId: string,
@@ -46,7 +46,7 @@ export class CompetitorsController {
   }
 
   @Patch('competitors/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('competitor.update', 'CompetitorChannel')
   patch(
     @Param('id') id: string,
@@ -56,21 +56,21 @@ export class CompetitorsController {
   }
 
   @Delete('competitors/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('competitor.delete', 'CompetitorChannel')
   remove(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
     return this.competitors.softDelete(id);
   }
 
   @Post('competitors/:id/check')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('competitor.check', 'CompetitorChannel')
   checkNow(@Param('id') id: string): Promise<{ id: string; enqueued: true }> {
     return this.competitors.checkNow(id);
   }
 
   @Post('competitors/:id/analyze')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('competitor.analyze', 'CompetitorChannel')
   analyzeNow(@Param('id') id: string): Promise<{ id: string; enqueued: true }> {
     return this.competitors.analyzeNow(id);

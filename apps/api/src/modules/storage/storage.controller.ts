@@ -47,28 +47,28 @@ export class StorageController {
   constructor(private readonly storage: StorageService) {}
 
   @Get('status')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   async status() {
     return this.storage.driveStatus();
   }
 
   /** Local hot-tier video inventory (Workers page). OWNER/ADMIN only. */
   @Get('local-assets')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   listLocalAssets(): Promise<LocalAssetView[]> {
     return this.storage.listLocalAssets();
   }
 
   /** Bulk delete — static path before :id routes. */
   @Post('local-assets/delete-local')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('asset.deleteLocalBulk', 'Asset')
   deleteLocalBulk(@Body(new ZodBody(bulkLocalIdsSchema)) body: BulkLocalIdsDto) {
     return this.storage.deleteLocalAssets(body.assetIds);
   }
 
   @Delete('local-assets/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('asset.deleteLocal', 'Asset')
   async deleteLocal(@Param('id') id: string): Promise<{ ok: true }> {
     await this.storage.deleteLocalAsset(id);
@@ -76,7 +76,7 @@ export class StorageController {
   }
 
   @Post('local-assets/:id/clear-incidents')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('incident.resolveRelated', 'Incident')
   clearIncidents(
     @Param('id') id: string,
@@ -88,7 +88,7 @@ export class StorageController {
   // --- Google Drive OAuth (system-level library) -----------------------------
 
   @Get('gdrive/connect/start')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   async gdriveConnectStart(
     @CurrentUser() actor: SessionUser,
     @Res() reply: FastifyReply,
@@ -119,7 +119,7 @@ export class StorageController {
   }
 
   @Post('gdrive/disconnect')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('storage.gdrive.disconnect', 'SystemSetting')
   async gdriveDisconnect(): Promise<{ disconnected: true }> {
     await this.storage.gdriveDisconnect();
@@ -127,13 +127,13 @@ export class StorageController {
   }
 
   @Get('gdrive/folders')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   async gdriveFolders(@Query('parentId') parentId?: string) {
     return this.storage.listGdriveFolders(parentId);
   }
 
   @Put('gdrive/root-folder')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('storage.gdrive.rootFolder', 'SystemSetting')
   setRootFolder(@Body(new ZodBody(setRootFolderSchema)) body: SetRootFolderDto) {
     return this.storage.setGdriveRootFolder(body.folderId);

@@ -29,7 +29,7 @@ import {
 } from './dto/ai.dto';
 
 @ApiTags('ai')
-@Roles('OWNER', 'ADMIN')
+@Roles('OWNER', 'ADMIN', 'REVIEWER')
 @Controller('ai')
 export class AiController {
   constructor(private readonly ai: AiService) {}
@@ -42,6 +42,7 @@ export class AiController {
   }
 
   @Patch('providers/:id')
+  @Roles('OWNER', 'ADMIN')
   @Audit('ai_provider.set_enabled', 'AiProvider')
   setProviderEnabled(
     @Param('id') id: string,
@@ -53,6 +54,7 @@ export class AiController {
   // ── Keys ────────────────────────────────────────────────────────────────
 
   @Post('providers/:id/keys')
+  @Roles('OWNER', 'ADMIN')
   @Audit('ai_key.create', 'AiKey')
   createKey(
     @Param('id') providerId: string,
@@ -62,6 +64,7 @@ export class AiController {
   }
 
   @Patch('keys/:id/status')
+  @Roles('OWNER', 'ADMIN')
   @Audit('ai_key.set_status', 'AiKey')
   setKeyStatus(
     @Param('id') id: string,
@@ -71,6 +74,7 @@ export class AiController {
   }
 
   @Patch('keys/:id/reorder')
+  @Roles('OWNER', 'ADMIN')
   @Audit('ai_key.reorder', 'AiKey')
   reorderKey(
     @Param('id') id: string,
@@ -80,6 +84,7 @@ export class AiController {
   }
 
   @Delete('keys/:id')
+  @Roles('OWNER', 'ADMIN')
   @Audit('ai_key.delete', 'AiKey')
   deleteKey(@Param('id') id: string): Promise<{ id: string }> {
     return this.ai.deleteKey(id);
@@ -88,6 +93,7 @@ export class AiController {
   // ── Kill switches ─────────────────────────────────────────────────────
 
   @Get('kill-switches')
+  @Roles('OWNER', 'ADMIN')
   getKillSwitches(): Promise<Record<string, boolean>> {
     return this.ai.getKillSwitches();
   }
@@ -108,6 +114,7 @@ export class AiController {
   }
 
   @Post('prompts')
+  @Roles('OWNER', 'ADMIN')
   @Audit('prompt_version.create', 'PromptVersion')
   createPrompt(
     @Body(new ZodBody(createPromptVersionSchema)) body: CreatePromptVersionDto,
@@ -116,6 +123,7 @@ export class AiController {
   }
 
   @Patch('prompts/:id/active')
+  @Roles('OWNER', 'ADMIN')
   @Audit('prompt_version.set_active', 'PromptVersion')
   setPromptActive(
     @Param('id') id: string,
@@ -127,6 +135,7 @@ export class AiController {
   // ── Playground ────────────────────────────────────────────────────────
 
   @Post('playground')
+  @Roles('OWNER', 'ADMIN')
   @Audit('ai.playground', 'AiPlayground')
   runPlayground(@Body(new ZodBody(playgroundSchema)) body: PlaygroundDto) {
     return this.ai.runPlayground(body);

@@ -141,7 +141,7 @@ export class ContentController {
   }
 
   @Delete(':id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.delete', 'ContentItem')
   remove(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
     return this.content.softDelete(id);
@@ -277,7 +277,7 @@ export class ContentController {
   }
 
   @Post(':id/suggestions/generate')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('content.suggestions_generate', 'ContentItem')
   generateSuggestions(@Param('id') id: string): Promise<{ enqueued: true }> {
     return this.content.generateSuggestions(id);

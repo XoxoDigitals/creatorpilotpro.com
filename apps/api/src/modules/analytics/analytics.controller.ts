@@ -65,7 +65,7 @@ export class AnalyticsController {
   }
 
   @Get('system')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   system(): Promise<SystemHealthView> {
     return this.analytics.getSystemHealth();
   }
@@ -86,7 +86,7 @@ export class AnalyticsController {
   }
 
   @Post('accounts/:accountId/sync')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   triggerAccountSync(
     @Param('accountId') accountId: string,
   ): Promise<{ enqueued: true }> {
@@ -94,7 +94,7 @@ export class AnalyticsController {
   }
 
   @Post('posts/:publishTargetId/sync')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   triggerPostSync(
     @Param('publishTargetId') publishTargetId: string,
   ): Promise<{ enqueued: true }> {

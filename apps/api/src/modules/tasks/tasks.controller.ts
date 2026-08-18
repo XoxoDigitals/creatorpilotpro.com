@@ -48,7 +48,7 @@ export class TasksController {
 
   /** Manually create a task and assign to a reviewer/producer. */
   @Post()
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('task.create', 'WorkerTask')
   create(
     @Body(new ZodBody(createTaskSchema)) body: CreateTaskDto,
@@ -58,7 +58,7 @@ export class TasksController {
 
   /** Assign or reassign a task to a different assignee. */
   @Post(':id/assign')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('task.assign', 'WorkerTask')
   assign(
     @Param('id') id: string,

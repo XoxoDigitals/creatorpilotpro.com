@@ -30,7 +30,7 @@ export class DramasController {
   }
 
   @Post('accounts/:accountId/dramas')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('drama.create', 'DramaSeries')
   create(
     @Param('accountId') accountId: string,
@@ -47,7 +47,7 @@ export class DramasController {
   }
 
   @Patch('dramas/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('drama.update', 'DramaSeries')
   patch(
     @Param('id') id: string,
@@ -57,14 +57,14 @@ export class DramasController {
   }
 
   @Delete('dramas/:id')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('drama.delete', 'DramaSeries')
   remove(@Param('id') id: string): Promise<{ id: string; deleted: true }> {
     return this.dramas.softDelete(id);
   }
 
   @Post('dramas/:id/regenerate-bible')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('drama.regenerate', 'DramaSeries')
   regenerateBible(@Param('id') id: string): Promise<DramaSeriesView> {
     return this.dramas.regenerateBible(id);
@@ -86,7 +86,7 @@ export class DramasController {
   }
 
   @Post('dramas/:id/episodes/:number/generate')
-  @Roles('OWNER', 'ADMIN')
+  @Roles('OWNER', 'ADMIN', 'REVIEWER')
   @Audit('drama.episode.generate', 'DramaEpisode')
   generateEpisode(
     @Param('id') id: string,
