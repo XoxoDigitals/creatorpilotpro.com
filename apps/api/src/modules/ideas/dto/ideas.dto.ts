@@ -56,3 +56,12 @@ export const regeneratePackageSchema = z.object({
   stage: z.enum(['script', 'voiceover', 'visuals']),
 });
 export type RegeneratePackageDto = z.infer<typeof regeneratePackageSchema>;
+
+/** Create a kids-rhyme package: generate or paste lyrics, then wait for owner voice. */
+export const createRhymePackageSchema = z.object({
+  topic: z.string().max(500).optional(),
+  rhyme: z.string().max(8000).optional(),
+  videoDurationSec: z.number().int().min(15).max(180).default(60),
+  clipDurationSec: z.union([z.literal(8), z.literal(10), z.literal(15), z.literal(30)]).default(10),
+});
+export type CreateRhymePackageDto = z.infer<typeof createRhymePackageSchema>;

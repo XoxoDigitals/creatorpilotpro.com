@@ -172,6 +172,16 @@ export class AccountsService {
       approvalPolicy: dto.approvalPolicy as Prisma.InputJsonValue | undefined,
       schedulingPrefs: dto.schedulingPrefs as Prisma.InputJsonValue | undefined,
     };
+    if (dto.openaiApiKey !== undefined) {
+      const raw = dto.openaiApiKey.trim();
+      if (!raw) {
+        data.openaiApiKeyEnc = null;
+        data.openaiApiKeyLast4 = null;
+      } else {
+        data.openaiApiKeyEnc = this.crypto.encrypt(raw);
+        data.openaiApiKeyLast4 = this.crypto.last4(raw);
+      }
+    }
     await this.prisma.client.channelProfile.update({ where: { accountId: id }, data });
     const row = await this.loadActive(id);
     const metrics = await this.listCardMetrics([row]);

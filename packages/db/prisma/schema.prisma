@@ -234,6 +234,9 @@ model ChannelProfile {
   styleProfile        Json     @default("{}")
   language            String   @default("en")
   voiceSettings       Json     @default("{}")
+  /// Optional per-account OpenAI key (encrypted). Used for gpt-4o-mini-tts / Whisper.
+  openaiApiKeyEnc     String?
+  openaiApiKeyLast4   String?
   titleTemplate       String   @default("")
   descriptionTemplate String   @default("")
   /// Owner-authored thumbnail style/template; package generation matches this.

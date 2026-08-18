@@ -9,11 +9,13 @@ import type {
   GeneratePackageDto,
   PatchIdeaDto,
   UploadIdeaVideoDto,
+  CreateRhymePackageDto,
 } from './dto/ideas.dto';
 import type { ContentItemView } from '../content/content.view';
 import { toContentItemView } from '../content/content.view';
 import { parseStyleProfile } from '@scp/shared';
 import { resolvePackageResumeStage } from './package-resume';
+import { AiService } from '../ai/ai.service';
 
 const GENERATION_STALE_MS = 5 * 60 * 1000;
 
@@ -59,6 +61,7 @@ export class IdeasService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queue: QueueProducer,
+    private readonly ai: AiService,
   ) {}
 
   private async assertAccount(accountId: string): Promise<void> {
@@ -211,6 +214,132 @@ export class IdeasService {
       throw error;
     }
     return { accountId, enqueued: true, count, runId: run.id };
+  }
+
+  /**
+   * Kids rhyme package: generate or store lyrics, then wait for the owner to
+   * upload the sung voice. Transcript + visual prompts run after that upload.
+   */
+  async createRhymePackage(accountId: string, dto: CreateRhymePackageDto): Promise<IdeaView> {
+    await this.assertAccount(accountId);
+    const blocker = await this.findBlockingActiveIdea(accountId);
+    if (blocker) {
+      throw new BadRequestException(
+        `Finish the current AI idea first — upload final video and thumbnail for "${blocker.title}" before starting another rhyme.`,
+      );
+    }
+    const profile = await this.prisma.client.channelProfile.findUnique({
+      where: { accountId },
+      select: { language: true, styleProfile: true },
+    });
+    const language = profile?.language ?? 'en';
+    const niche = parseStyleProfile(profile?.styleProfile).answers.niche;
+    const durationSec = dto.videoDurationSec ?? 60;
+    const clipDurationSec = dto.clipDurationSec ?? 10;
+    const pasted = dto.rhyme?.trim() ?? '';
+    let title: string;
+    let rhyme: string;
+    let hook: string;
+    let topicSummary: string;
+    if (pasted) {
+      rhyme = pasted;
+      const firstLine = pasted.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? 'Kids rhyme';
+      title = (dto.topic?.trim() || firstLine).slice(0, 120);
+      hook = pasted
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .slice(0, 2)
+        .join(' / ')
+        .slice(0, 400);
+      topicSummary = dto.topic?.trim() || 'Owner-provided kids nursery rhyme.';
+    } else {
+      const generated = await this.ai.generateKidsRhyme({
+        topic: dto.topic,
+        language,
+        durationSec,
+        niche,
+      });
+      title = generated.title.slice(0, 120);
+      rhyme = generated.rhyme;
+      hook = generated.hook.slice(0, 400);
+      topicSummary = generated.topicSummary;
+    }
+
+    const idea = await this.prisma.client.idea.create({
+      data: {
+        accountId,
+        title,
+        angle: 'Kids nursery rhyme',
+        hook,
+        topicSummary,
+        status: 'IN_PRODUCTION',
+        packageStatus: 'GENERATING',
+        requestedVideoDurationSec: durationSec,
+        requestedClipDurationSec: clipDurationSec,
+      },
+    });
+    await this.prisma.client.productionBrief.create({
+      data: {
+        ideaId: idea.id,
+        researchSummary: topicSummary,
+        script: rhyme,
+        videoTitle: title,
+        videoDescription: '',
+        packageStage: 'SCRIPT',
+        voiceoverStatus: 'NONE',
+        targetDurationSec: durationSec,
+      },
+    });
+    return this.get(idea.id);
+  }
+
+  async saveOwnerVoiceover(
+    id: string,
+    opts: { filePath: string; mimeType: string; filename: string },
+  ): Promise<IdeaView> {
+    const idea = await this.findIdeaOrThrow(id);
+    if (!idea.brief) {
+      throw new BadRequestException('Generate the rhyme/script before uploading a voice.');
+    }
+    const root = process.env.STORAGE_ROOT?.trim();
+    if (!root) throw new BadRequestException('STORAGE_ROOT is not configured on the API host.');
+    const { mkdir, copyFile, unlink } = await import('node:fs/promises');
+    const { extname, join } = await import('node:path');
+    const ext = (() => {
+      const fromName = extname(opts.filename).toLowerCase();
+      if (['.wav', '.mp3', '.m4a', '.aac', '.ogg', '.webm', '.flac'].includes(fromName)) return fromName;
+      const mime = (opts.mimeType || '').toLowerCase();
+      if (mime.includes('wav')) return '.wav';
+      if (mime.includes('mpeg') || mime.includes('mp3')) return '.mp3';
+      if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) return '.m4a';
+      if (mime.includes('ogg')) return '.ogg';
+      if (mime.includes('webm')) return '.webm';
+      return '.wav';
+    })();
+    const dir = join(root, 'ideas', id, 'tts');
+    await mkdir(dir, { recursive: true });
+    const dest = join(dir, `owner-voice${ext}`);
+    await copyFile(opts.filePath, dest);
+    await unlink(opts.filePath).catch(() => undefined);
+
+    await this.prisma.client.productionBrief.update({
+      where: { ideaId: id },
+      data: {
+        voiceoverStatus: 'READY',
+        voiceoverLocalPath: dest,
+        voiceIdUsed: 'owner:upload',
+        packageStage: 'VOICE',
+        packageStageError: null,
+        timedTranscript: [],
+      },
+    });
+    await this.prisma.client.idea.update({
+      where: { id },
+      data: { packageStatus: 'GENERATING', status: 'IN_PRODUCTION' },
+    });
+    await this.queue.enqueueIdeaTranscript(id);
+    return this.get(id);
   }
 
   async generationStatus(accountId: string): Promise<IdeaGenerationStatusView> {

@@ -24,8 +24,8 @@ const DEFAULT_PROVIDERS: Array<{
   },
   {
     name: 'openai',
-    kind: AiProviderKind.TEXT,
-    baseConfig: { baseUrl: 'https://api.openai.com/v1', needsKey: true },
+    kind: AiProviderKind.MULTIMODAL,
+    baseConfig: { baseUrl: 'https://api.openai.com/v1', needsKey: true, ttsModel: 'gpt-4o-mini-tts' },
   },
   {
     name: 'kokoro',

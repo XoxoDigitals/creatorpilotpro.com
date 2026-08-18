@@ -146,6 +146,7 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
       { value: 'news_commentary', label: 'News / commentary' },
       { value: 'motivation', label: 'Motivation' },
       { value: 'howto', label: 'How-to / tutorials' },
+      { value: 'kids_rhymes', label: 'Kids rhymes / nursery' },
     ],
   },
   {
@@ -179,6 +180,7 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
       { value: 'mythbusting', label: 'Myth-busting' },
       { value: 'news_roundup', label: 'News roundup' },
       { value: 'reaction', label: 'Reaction' },
+      { value: 'nursery_rhyme', label: 'Kids nursery rhyme' },
     ],
   },
   {
@@ -431,6 +433,40 @@ export function isUltraRealisticPackage(styleProfile: unknown): boolean {
   return parsed.lockedCharacters.some(
     (character) => character.look === 'ultra_realistic' && character.name.trim(),
   );
+}
+
+/** Kids nursery-rhyme channel: generate a rhyme, owner uploads voice, then visual prompts. */
+export function isKidsRhymePackage(styleProfile: unknown): boolean {
+  const answers = parseStyleProfile(styleProfile).answers;
+  return answers.nicheTags.includes('kids_rhymes') || answers.formats.includes('nursery_rhyme');
+}
+
+export function formatKidsRhymeScriptRules(videoDurationSec: number, language: string): string {
+  const words = Math.round(videoDurationSec * 2.2);
+  return `KIDS NURSERY RHYME (mandatory):
+- narrationScript is a singable children's rhyme in ${languageDisplayName(language)}, about ${words} spoken words for ~${videoDurationSec}s.
+- Real rhyme scheme (AABB or ABAB). Short lines. Concrete images a child can picture (animals, colors, weather, bedtime, counting).
+- narrationLines: one sung/spoken line per item with emotion from: playful, whisper, cheerful, excited, calm, empathetic. Never angry or newscast.
+- Open with a hooky first couplet. End with a warm closer or giggle beat.
+- Safe for ages 2–8. No horror, violence, romance, or sarcasm.
+- videoTitle is a catchy kids-rhyme title. topic/storySummary describes the rhyme in English.
+- Do not invent scene image/video prompts yet — visuals come after the owner uploads the sung voice.`;
+}
+
+export function formatKidsRhymeVisualRules(): string {
+  return `KIDS RHYME VISUALS:
+- Match the sung lyrics beat-for-beat. Each scene illustrates THAT line of the rhyme, not a different story.
+- Bright, friendly, child-safe: 2D/3D cartoon or playful graphics unless Brand lock says otherwise.
+- Big readable shapes, happy faces, bounce and squash on rhyming words, sparkle hits on reveals.
+- No text-on-screen lyrics unless Brand asks. No scary shadows, weapons, or realistic gore.
+- animationPrompt should include timed motion that lands on the rhyme words (hop, spin, peekaboo, twinkle).`;
+}
+
+export function formatKidsRhymeIdeaRules(): string {
+  return `KIDS NURSERY RHYME IDEAS:
+- Each idea is a NEW original children's rhyme topic (animals, counting, bedtime, weather, kindness, vehicles).
+- title is a short kids-song title. hook is the opening couplet energy. topicSummary describes the rhyme plot in English.
+- Safe for ages 2–8. Never copy a copyrighted nursery rhyme word-for-word as the title.`;
 }
 
 /** Drop bare cartoon/anime tokens from a comma-separated negative list. */

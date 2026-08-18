@@ -61,6 +61,7 @@ export interface ApiChannelProfile {
   aiLabelDefault: boolean;
   approvalPolicy: unknown;
   schedulingPrefs: unknown;
+  openaiApiKeyLast4?: string | null;
 }
 
 /** Publish defaults stored on channel_profiles.schedulingPrefs. */

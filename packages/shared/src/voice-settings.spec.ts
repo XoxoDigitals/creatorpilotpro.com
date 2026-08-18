@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatNarrationEmotionBlock,
+  formatOpenAiTtsInstructions,
   inferTtsEmotionFromSituation,
+  resolveOpenAiTtsVoice,
   mergeEmotionProsody,
   parseSpokenNarrationLines,
   parseTtsEmotion,
@@ -110,5 +112,19 @@ describe('resolveSpokenEmotion', () => {
 
   it('uses the channel fallback when nothing else matches', () => {
     expect(resolveSpokenEmotion(undefined, 'newscast', 'the next morning')).toBe('newscast');
+  });
+});
+
+describe('OpenAI gpt-4o-mini-tts helpers', () => {
+  it('maps unknown voice ids to coral', () => {
+    expect(resolveOpenAiTtsVoice('en-US-AriaNeural')).toBe('coral');
+    expect(resolveOpenAiTtsVoice('sage')).toBe('sage');
+  });
+
+  it('writes emotion instructions and a kids-rhyme overlay', () => {
+    const kids = formatOpenAiTtsInstructions('playful', { kidsRhyme: true });
+    expect(kids.toLowerCase()).toContain('playful');
+    expect(kids.toLowerCase()).toContain('nursery');
+    expect(kids.toLowerCase()).not.toContain('angry');
   });
 });

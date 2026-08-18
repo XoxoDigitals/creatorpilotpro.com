@@ -15,6 +15,7 @@ import {
   usageStatsQuerySchema,
   ttsPreviewSchema,
   composeMasterPromptSchema,
+  generateKidsRhymeSchema,
   type CreateKeyDto,
   type CreatePromptVersionDto,
   type PlaygroundDto,
@@ -24,6 +25,7 @@ import {
   type SetProviderEnabledDto,
   type TtsPreviewDto,
   type ComposeMasterPromptDto,
+  type GenerateKidsRhymeDto,
 } from './dto/ai.dto';
 
 @ApiTags('ai')
@@ -201,5 +203,11 @@ export class AiController {
   @Audit('ai.tts.preview', 'TtsPreview')
   previewTts(@Body(new ZodBody(ttsPreviewSchema)) body: TtsPreviewDto) {
     return this.ai.previewTts(body);
+  }
+
+  @Post('generate-kids-rhyme')
+  @Audit('ai.generate_kids_rhyme', 'AiKidsRhyme')
+  generateKidsRhyme(@Body(new ZodBody(generateKidsRhymeSchema)) body: GenerateKidsRhymeDto) {
+    return this.ai.generateKidsRhyme(body);
   }
 }

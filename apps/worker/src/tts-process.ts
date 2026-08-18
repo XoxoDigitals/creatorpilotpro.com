@@ -17,13 +17,16 @@ import {
   QUEUE,
   DOCUMENTARY_VOICE_EMOTION,
   REPURPOSED_VOICE_EMOTION,
+  OPENAI_TTS_MODEL,
   isDocumentaryIdeaGeneration,
   isDocumentaryVoiceoverPackage,
+  isKidsRhymePackage,
   parseSpokenNarrationLines,
   parseVoiceSettings,
   splitProductionBriefEditingExtras,
   ttsEmotionFromVoiceSettings,
   resolveSpokenEmotion,
+  parseTtsEmotion,
   type TtsEmotion,
   type VoiceSettings,
 } from '@scp/shared';
@@ -37,6 +40,7 @@ import {
   WhisperProvider,
   EdgeTtsProvider,
   synthesizeWithEdgeTts,
+  synthesizeWithOpenAiTts,
   offsetTimings,
   segmentsToSrt,
   segmentsToVtt,
@@ -254,7 +258,35 @@ async function resolveChannelVoice(
 function modelForProvider(provider: string): string {
   if (provider === 'gemini') return 'gemini-2.5-flash-preview-tts';
   if (provider === 'edge') return 'edge-neural';
+  if (provider === 'openai') return OPENAI_TTS_MODEL;
   return provider;
+}
+
+async function resolveOpenAiSecret(
+  prisma: PrismaClient,
+  masterKey: Buffer,
+  accountId?: string | null,
+): Promise<{ secret: string; keyId: string } | null> {
+  if (accountId) {
+    const profile = await prisma.channelProfile.findUnique({
+      where: { accountId },
+      select: { openaiApiKeyEnc: true },
+    });
+    if (profile?.openaiApiKeyEnc) {
+      return {
+        secret: decryptSecret(profile.openaiApiKeyEnc, masterKey),
+        keyId: `account:${accountId}`,
+      };
+    }
+  }
+  const store = buildKeyStore(prisma, masterKey);
+  const pool = new KeyPool(store);
+  try {
+    const key = await pool.checkout('openai');
+    return { secret: key.secret, keyId: key.id };
+  } catch {
+    return null;
+  }
 }
 
 function systemForVoice(voice: VoiceSettings, extra?: Record<string, unknown>): string {
@@ -356,6 +388,8 @@ async function synthesizeScript(opts: {
   voice: VoiceSettings;
   voDir: string;
   contentItemId?: string;
+  accountId?: string | null;
+  kidsRhyme?: boolean;
   lines?: TimedNarrationLine[];
   forceEmotion?: TtsEmotion;
 }): Promise<SynthBundle> {
@@ -368,6 +402,20 @@ async function synthesizeScript(opts: {
   const preferred = voice.provider ?? 'edge';
   const chain = buildTtsChain(preferred);
   const first = chain[0] ?? 'edge';
+
+  if (first === 'openai') {
+    return await synthesizeViaOpenAi({
+      prisma,
+      masterKey,
+      script,
+      voice,
+      voDir,
+      accountId: opts.accountId,
+      kidsRhyme: opts.kidsRhyme === true,
+      lines,
+      forceEmotion,
+    });
+  }
 
   // Product default: Edge Neural is the synthesizer. Settings preview already
   // uses synthesizeWithEdgeTts. Do not swallow Edge failures into Gemini Flash
@@ -411,6 +459,7 @@ async function synthesizeScript(opts: {
         outDir: voDir,
         basename: `chunk_${String(i).padStart(3, '0')}`,
         emotion: chunk.emotion,
+        kidsRhyme: opts.kidsRhyme === true,
       }),
       input: { kind: 'text', text: chunk.text },
       ...(contentItemId ? { contentItemId } : {}),
@@ -451,6 +500,74 @@ async function synthesizeScript(opts: {
 function estimateDurationFromTimings(timings: TimedSegment[]): number {
   if (timings.length === 0) return 0;
   return Math.max(...timings.map((t) => t.endMs));
+}
+
+async function synthesizeViaOpenAi(opts: {
+  prisma: PrismaClient;
+  masterKey: Buffer;
+  script: string;
+  voice: VoiceSettings;
+  voDir: string;
+  accountId?: string | null;
+  kidsRhyme?: boolean;
+  lines?: TimedNarrationLine[];
+  forceEmotion?: TtsEmotion;
+}): Promise<SynthBundle> {
+  const key = await resolveOpenAiSecret(opts.prisma, opts.masterKey, opts.accountId);
+  if (!key) {
+    throw Object.assign(
+      new Error(
+        'No OpenAI API key. Add one in this account’s Voice settings, or in Settings → AI.',
+      ),
+      { code: 'OPENAI_TTS_NO_KEY' },
+    );
+  }
+  const chunks = spokenChunks(opts.script, opts.voice, opts.lines, opts.forceEmotion);
+  const ffmpeg = new Ffmpeg();
+  const ffmpegAvail = await ffmpeg.available();
+  const chunkWavs: string[] = [];
+  const allTimings: TimedSegment[] = [];
+  let offsetMs = 0;
+
+  console.log(
+    `[worker:tts] OpenAI gpt-4o-mini-tts start: ${chunks.length} chunk(s), voice=${opts.voice.voiceId}`,
+  );
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const base = `chunk_${String(i).padStart(3, '0')}`;
+    const synth = await synthesizeWithOpenAiTts({
+      apiKey: key.secret,
+      text: chunk.text,
+      voice: opts.voice.voiceId,
+      emotion: parseTtsEmotion(chunk.emotion),
+      kidsRhyme: opts.kidsRhyme === true,
+      language: opts.voice.language ?? opts.voice.locale,
+    });
+    const rawPath = join(opts.voDir, `${base}.bin`);
+    await writeFile(rawPath, synth.buffer);
+    const wavChunk = join(opts.voDir, `${base}.wav`);
+    await ensureWav(ffmpeg, ffmpegAvail, rawPath, wavChunk);
+    if (rawPath !== wavChunk) await unlink(rawPath).catch(() => {});
+    chunkWavs.push(wavChunk);
+    const dur = await probeDurationMs(ffmpeg, wavChunk);
+    const endMs = offsetMs + (dur > 0 ? dur : Math.max(800, chunk.text.split(/\s+/).length * 350));
+    allTimings.push({ startMs: offsetMs, endMs, text: chunk.text });
+    offsetMs = endMs;
+    if (i < chunks.length - 1) offsetMs += Math.round(INTER_SEGMENT_GAP_SEC * 1000);
+  }
+
+  const finalPath = join(opts.voDir, 'voiceover.wav');
+  await concatNormalize(ffmpeg, ffmpegAvail, chunkWavs, opts.voDir, finalPath);
+  for (const cp of chunkWavs) {
+    if (cp && cp !== finalPath) await unlink(cp).catch(() => {});
+  }
+  return {
+    finalWavPath: finalPath,
+    timings: allTimings,
+    providerUsed: 'openai',
+    voiceId: opts.voice.voiceId,
+  };
 }
 
 async function synthesizeViaEdge(
@@ -1073,6 +1190,7 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
   const documentaryVo =
     isDocumentaryVoiceoverPackage(styleRow?.styleProfile) ||
     isDocumentaryIdeaGeneration(styleRow?.styleProfile);
+  const kidsRhyme = isKidsRhymePackage(styleRow?.styleProfile);
   const forceEmotion = documentaryVo ? DOCUMENTARY_VOICE_EMOTION : undefined;
   const voDir = join(STORAGE_ROOT, 'ideas', ideaId, 'tts');
   const words = script.split(/\s+/).filter(Boolean).length;
@@ -1093,6 +1211,8 @@ export async function runIdeaTts(ideaId: string, boss?: PgBoss): Promise<void> {
       script,
       voice,
       voDir,
+      accountId: idea.accountId,
+      kidsRhyme,
       lines: storedLines,
       ...(forceEmotion ? { forceEmotion } : {}),
     });

@@ -8,8 +8,10 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   StreamableFile,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { createReadStream } from 'node:fs';
@@ -30,12 +32,14 @@ import {
   regeneratePackageSchema,
   rejectIdeaSchema,
   uploadIdeaVideoSchema,
+  createRhymePackageSchema,
   type GenerateIdeasDto,
   type GeneratePackageDto,
   type PatchIdeaDto,
   type RegeneratePackageDto,
   type RejectIdeaDto,
   type UploadIdeaVideoDto,
+  type CreateRhymePackageDto,
 } from './dto/ideas.dto';
 
 /**
@@ -66,6 +70,16 @@ export class IdeasController {
     @Body(new ZodBody(generateIdeasSchema)) body: GenerateIdeasDto,
   ): Promise<{ accountId: string; enqueued: true; count: number; runId: string }> {
     return this.ideas.generate(accountId, body);
+  }
+
+  @Post('accounts/:accountId/ideas/rhyme')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('idea.rhyme.create', 'Idea')
+  createRhymePackage(
+    @Param('accountId') accountId: string,
+    @Body(new ZodBody(createRhymePackageSchema)) body: CreateRhymePackageDto,
+  ): Promise<IdeaView> {
+    return this.ideas.createRhymePackage(accountId, body);
   }
 
   @Get('accounts/:accountId/ideas/generation-status')
@@ -157,6 +171,44 @@ export class IdeasController {
     );
     void reply.header('content-type', info.mimeType);
     return new StreamableFile(createReadStream(info.path));
+  }
+
+  @Post('ideas/:id/voiceover')
+  @Roles('OWNER', 'ADMIN')
+  @Audit('idea.voiceover.upload', 'Idea')
+  async uploadVoiceover(
+    @Param('id') id: string,
+    @Req() req: import('fastify').FastifyRequest,
+  ): Promise<IdeaView> {
+    if (!req.isMultipart()) {
+      throw new BadRequestException('Expected a multipart/form-data audio upload.');
+    }
+    const data = await req.file();
+    if (!data) throw new BadRequestException('No audio file found in the upload.');
+    const mime = (data.mimetype || '').toLowerCase();
+    if (!mime.startsWith('audio/') && !mime.startsWith('video/')) {
+      throw new BadRequestException('Upload an audio file (mp3, wav, m4a) of the sung rhyme.');
+    }
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { createWriteStream } = await import('node:fs');
+    const { pipeline } = await import('node:stream/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'scp-vo-'));
+    const dest = join(dir, data.filename?.replace(/[^\w.\-]+/g, '_') || 'owner-voice.mp3');
+    try {
+      await pipeline(data.file, createWriteStream(dest));
+      if (data.file.truncated) {
+        throw new BadRequestException('Upload was truncated. Use a smaller audio file (under 80 MB).');
+      }
+      return await this.ideas.saveOwnerVoiceover(id, {
+        filePath: dest,
+        mimeType: data.mimetype || 'audio/mpeg',
+        filename: data.filename || 'owner-voice.mp3',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   @Get('ideas/:id/transcript')

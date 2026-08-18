@@ -59,12 +59,15 @@ export type UsageStatsQueryDto = z.infer<typeof usageStatsQuerySchema>;
 // ── Edge Neural TTS voices ──────────────────────────────────────────────────
 
 export const ttsPreviewSchema = z.object({
+  provider: z.enum(['edge', 'openai']).default('edge'),
+  accountId: z.string().min(1).max(40).optional(),
   voiceId: z.string().min(1).max(120).default('en-US-AriaNeural'),
   text: z.string().min(1).max(500).optional(),
   rate: z.string().max(32).optional(),
   pitch: z.string().max(32).optional(),
   volume: z.string().max(32).optional(),
   emotion: z.enum(TTS_EMOTIONS).optional(),
+  kidsRhyme: z.boolean().optional(),
 });
 export type TtsPreviewDto = z.infer<typeof ttsPreviewSchema>;
 
@@ -87,3 +90,11 @@ export const composeMasterPromptSchema = z.object({
   localOnly: z.boolean().optional(),
 });
 export type ComposeMasterPromptDto = z.infer<typeof composeMasterPromptSchema>;
+
+export const generateKidsRhymeSchema = z.object({
+  topic: z.string().max(500).optional(),
+  language: z.string().min(2).max(16).default('en'),
+  durationSec: z.number().int().min(15).max(180).default(60),
+  niche: z.string().max(500).optional(),
+});
+export type GenerateKidsRhymeDto = z.infer<typeof generateKidsRhymeSchema>;

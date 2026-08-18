@@ -21,6 +21,7 @@ export interface ChannelProfileView {
   aiLabelDefault: boolean;
   approvalPolicy: unknown;
   schedulingPrefs: unknown;
+  openaiApiKeyLast4: string | null;
 }
 
 export interface AccountView {
@@ -65,6 +66,7 @@ export function toProfileView(p: ChannelProfile): ChannelProfileView {
     aiLabelDefault: p.aiLabelDefault,
     approvalPolicy: p.approvalPolicy,
     schedulingPrefs: p.schedulingPrefs,
+    openaiApiKeyLast4: p.openaiApiKeyLast4 ?? null,
   };
 }
 

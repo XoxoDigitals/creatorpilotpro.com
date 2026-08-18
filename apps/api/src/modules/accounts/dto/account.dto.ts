@@ -59,6 +59,8 @@ export const patchProfileSchema = z
     aiLabelDefault: z.boolean().optional(),
     approvalPolicy: z.record(z.string(), z.unknown()).optional(),
     schedulingPrefs: schedulingPrefsSchema.optional(),
+    /** Write-only OpenAI key for this channel (gpt-4o-mini-tts). Empty string clears. */
+    openaiApiKey: z.string().max(4000).optional(),
   })
   .strict();
 export type PatchProfileDto = z.infer<typeof patchProfileSchema>;

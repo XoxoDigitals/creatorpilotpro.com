@@ -11,11 +11,47 @@ export type TtsProviderId = (typeof TTS_PROVIDERS)[number];
 export const EDGE_DEFAULT_VOICE = 'en-US-AriaNeural';
 export const EDGE_DEFAULT_LOCALE = 'en-US';
 
+/** OpenAI Speech API — gpt-4o-mini-tts with `instructions` for emotion. */
+export const OPENAI_TTS_MODEL = 'gpt-4o-mini-tts';
+export const OPENAI_DEFAULT_VOICE = 'coral';
+export const OPENAI_TTS_VOICES = [
+  'alloy',
+  'ash',
+  'ballad',
+  'coral',
+  'echo',
+  'fable',
+  'nova',
+  'onyx',
+  'sage',
+  'shimmer',
+  'verse',
+  'marin',
+  'cedar',
+] as const;
+export type OpenAiTtsVoice = (typeof OPENAI_TTS_VOICES)[number];
+
+export const OPENAI_TTS_VOICE_LABELS: Record<OpenAiTtsVoice, string> = {
+  alloy: 'Alloy',
+  ash: 'Ash',
+  ballad: 'Ballad',
+  coral: 'Coral (warm — kids / stories)',
+  echo: 'Echo',
+  fable: 'Fable',
+  nova: 'Nova',
+  onyx: 'Onyx',
+  sage: 'Sage',
+  shimmer: 'Shimmer',
+  verse: 'Verse',
+  marin: 'Marin',
+  cedar: 'Cedar',
+};
+
 /**
  * Pipeline voice delivery. Documentary = newscast, repurposed = calm.
  * Folded into AI cache keys via SPEECH_EMOTION_RULES_REV.
  */
-export const SPEECH_EMOTION_RULES_REV = 3;
+export const SPEECH_EMOTION_RULES_REV = 4;
 
 export const TTS_EMOTIONS = [
   'default',
@@ -26,6 +62,8 @@ export const TTS_EMOTIONS = [
   'sad',
   'angry',
   'newscast',
+  'playful',
+  'whisper',
 ] as const;
 export type TtsEmotion = (typeof TTS_EMOTIONS)[number];
 
@@ -43,6 +81,8 @@ export const TTS_EMOTION_LABELS: Record<TtsEmotion, string> = {
   sad: 'Sad',
   angry: 'Angry',
   newscast: 'Newscast',
+  playful: 'Playful',
+  whisper: 'Whisper',
 };
 
 /** How the LLM should write spoken scripts for each emotion. */
@@ -60,6 +100,10 @@ export const TTS_EMOTION_NARRATION_HINTS: Record<TtsEmotion, string> = {
   angry: 'Tight, clipped, intense. Controlled heat — do not shout every line.',
   newscast:
     'Crisp, authoritative, even pacing. Report the facts; let stakes live in the wording.',
+  playful:
+    'Bouncy kids-story energy. Smile in the voice, land rhyme words, giggle on jokes — never shout or scare.',
+  whisper:
+    'Soft secret-sharing whisper. Close to the mic, slow and conspiratorial, then open up on the last beat.',
 };
 
 /** Prosody offsets merged with the channel rate/pitch/speed at synth time. */
@@ -75,6 +119,8 @@ export const TTS_EMOTION_PROSODY: Record<
   sad: { ratePercent: -12, pitchHz: -8, speedMul: 0.9 },
   angry: { ratePercent: 10, pitchHz: 6, speedMul: 1.08 },
   newscast: { ratePercent: 6, pitchHz: 0, speedMul: 1.04 },
+  playful: { ratePercent: 14, pitchHz: 12, speedMul: 1.1 },
+  whisper: { ratePercent: -16, pitchHz: -6, speedMul: 0.88 },
 };
 
 export function parseTtsEmotion(raw: unknown): TtsEmotion {
@@ -95,6 +141,12 @@ export function inferTtsEmotionFromSituation(
 ): TtsEmotion {
   const t = parts.filter(Boolean).join(' ').toLowerCase();
   if (!t.trim()) return 'default';
+  if (/\b(whisper|secret|shh|quietly|bedtime hush)\b/.test(t)) {
+    return 'whisper';
+  }
+  if (/\b(giggle|silly|bounce|rhyme|nursery|peekaboo|tickle)\b/.test(t)) {
+    return 'playful';
+  }
   if (/\b(furious|enraged|rage|yell|shout|scream|argument|fight|insult|betray|how dare)\b/.test(t)) {
     return 'angry';
   }
@@ -224,6 +276,50 @@ export function mergeEmotionProsody(
   };
 }
 
+export function formatOpenAiTtsInstructions(
+  emotion: TtsEmotion = 'default',
+  opts?: { kidsRhyme?: boolean; language?: string | null },
+): string {
+  const delivery = OPENAI_TTS_INSTRUCTIONS[parseTtsEmotion(emotion)];
+  const lang = opts?.language?.trim();
+  const langLine = lang && lang !== 'en' ? ` Speak in ${lang}.` : '';
+  const kids = opts?.kidsRhyme
+    ? ' This is a children\'s nursery rhyme: sing-song cadence, bounce on rhyming words, warm smile, gentle giggle on jokes, gasp on surprises, never scary or sarcastic. Kids audience.'
+    : '';
+  return `${delivery}${kids}${langLine} Do not read stage directions. Do not say the emotion name.`.trim();
+}
+
+export function resolveOpenAiTtsVoice(voiceId?: string | null): OpenAiTtsVoice {
+  const trimmed = (voiceId ?? '').trim().toLowerCase();
+  if ((OPENAI_TTS_VOICES as readonly string[]).includes(trimmed)) {
+    return trimmed as OpenAiTtsVoice;
+  }
+  return OPENAI_DEFAULT_VOICE;
+}
+
+const OPENAI_TTS_INSTRUCTIONS: Record<TtsEmotion, string> = {
+  default:
+    'Speak as a warm, expressive storyteller. Natural melody, clear diction, lively but not cartoonish. Vary pitch on key words.',
+  cheerful:
+    'Speak cheerfully and brightly, with a real smile in the voice. Light bounce, upbeat pacing, genuine warmth — not sarcastic.',
+  excited:
+    'Speak with high energy and urgency, as if this just happened. Punchy short phrases, rising pitch on reveals, never shout.',
+  calm:
+    'Speak slowly, softly, and reassuringly. Longer pauses at commas. Even, soothing tone.',
+  empathetic:
+    'Speak gently and close to the listener, as if comforting a friend. Soft edges, caring, no melodrama.',
+  sad:
+    'Speak with lower energy and weight on key words. Slow cadence, respectful, not theatrical weeping.',
+  angry:
+    'Speak with controlled intensity: tight, clipped, heated — do not scream every line.',
+  newscast:
+    'Speak as a crisp newsreader: even pacing, authority, clean diction. Let the wording carry the stakes.',
+  playful:
+    'Speak playfully for children: bouncy rhythm, grin in the voice, land rhyme words, tiny giggle on jokes. Never scary.',
+  whisper:
+    'Speak in a close, conspiratorial whisper, then open up slightly on the last words. Intimate, not inaudible.',
+};
+
 /** Documentary narrator: one newscast delivery for the whole VO. */
 export function formatDocumentaryVoiceEmotionRules(): string {
   return `Voice delivery: newscast for the entire documentary voiceover (${TTS_EMOTION_NARRATION_HINTS.newscast}) Tag every narrationLines[].emotion as "${DOCUMENTARY_VOICE_EMOTION}". Do not change emotion line by line. Do not name the emotion or put stage directions in spoken words.`;
@@ -242,6 +338,7 @@ export function formatNarrationEmotionBlock(_fallback?: TtsEmotion | null): stri
 - Documentary voiceover uses ${DOCUMENTARY_VOICE_EMOTION} for the whole track — crisp, even, news-reader. Do not vary narrator emotion line by line.
 - Repurposed voiceover uses ${REPURPOSED_VOICE_EMOTION} for the whole track — steady and unhurried. Do not vary narrator emotion line by line.
 - Drama character dialogue may use a fitting emotion per spoken line when it helps; this is optional, not required.
+- Kids nursery rhymes should vary emotion per line (playful, whisper, cheerful, excited) and never use angry or newscast.
 - Never write the emotion name, stage directions, or brackets in spoken words.`;
 }
 
@@ -322,12 +419,18 @@ export function parseVoiceSettings(
     typeof row.provider === 'string' && (TTS_PROVIDERS as readonly string[]).includes(row.provider)
       ? (row.provider as TtsProviderId)
       : base.provider;
-  const voiceId =
+  const voiceIdRaw =
     typeof row.voiceId === 'string' && row.voiceId.trim()
       ? row.voiceId.trim()
-      : provider === 'edge'
-        ? base.voiceId
-        : 'default';
+      : undefined;
+  const voiceId =
+    provider === 'openai'
+      ? resolveOpenAiTtsVoice(voiceIdRaw)
+      : voiceIdRaw
+        ? voiceIdRaw
+        : provider === 'edge'
+          ? base.voiceId
+          : 'default';
   return {
     provider,
     voiceId,

@@ -18,6 +18,7 @@ import {
   formatLockedCharactersPrompt,
   isCartoonPackage,
   isUltraRealisticPackage,
+  isKidsRhymePackage,
   isDramaOrDialoguePackage,
   isNarrationVoiceoverPackage,
   presentationNeedsVoiceover,
@@ -363,5 +364,26 @@ describe('brand questionnaire & master prompt', () => {
     ]);
     expect(lock).toContain('Ayaan');
     expect(lock).toContain('Ultra realistic');
+  });
+
+  it('detects kids rhyme niche or nursery format', () => {
+    expect(
+      isKidsRhymePackage({
+        version: 1,
+        answers: { nicheTags: ['kids_rhymes'], presentation: 'voiceover' },
+      }),
+    ).toBe(true);
+    expect(
+      isKidsRhymePackage({
+        version: 1,
+        answers: { formats: ['nursery_rhyme'], presentation: 'voiceover' },
+      }),
+    ).toBe(true);
+    expect(
+      isKidsRhymePackage({
+        version: 1,
+        answers: { nicheTags: ['history'], formats: ['documentary'] },
+      }),
+    ).toBe(false);
   });
 });

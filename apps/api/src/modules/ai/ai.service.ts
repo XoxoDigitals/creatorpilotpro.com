@@ -13,6 +13,7 @@ import {
   diagnoseEdgeTts,
   listEdgeVoices,
   synthesizeWithEdgeTts,
+  synthesizeWithOpenAiTts,
   cacheKeyFor,
   hashText,
   uploadGeminiFile,
@@ -33,6 +34,9 @@ import {
   composeChannelStyles,
   formatOutputLanguagePolicy,
   languageDisplayName,
+  formatKidsRhymeScriptRules,
+  parseTtsEmotion,
+  resolveOpenAiTtsVoice,
   styleProfileAnswersSchema,
   styleProfileHasAnswers,
   needsEnglishVoiceoverSummary,
@@ -929,6 +933,30 @@ Write as imperative rules. Do not retell the video's plot. Do not mention stock 
     const text =
       dto.text?.trim() ||
       'Hello from Social Creator Pilot. This is a short voice preview.';
+    const provider = dto.provider ?? 'edge';
+    if (provider === 'openai') {
+      const voiceId = resolveOpenAiTtsVoice(dto.voiceId);
+      try {
+        const secret = await this.resolveOpenAiSecret(dto.accountId);
+        const synth = await synthesizeWithOpenAiTts({
+          apiKey: secret,
+          text,
+          voice: voiceId,
+          emotion: parseTtsEmotion(dto.emotion),
+          kidsRhyme: dto.kidsRhyme === true,
+        });
+        return {
+          voiceId,
+          mimeType: synth.mimeType,
+          audioBase64: synth.buffer.toString('base64'),
+          timings: [],
+        };
+      } catch (err) {
+        throw new BadRequestException(
+          err instanceof Error ? err.message : 'OpenAI TTS preview failed',
+        );
+      }
+    }
     try {
       const synth = await synthesizeWithEdgeTts(text, {
         voice: dto.voiceId,
@@ -939,7 +967,6 @@ Write as imperative rules. Do not retell the video's plot. Do not mention stock 
         writeSubtitles: true,
       });
       const buf = await readFile(synth.mediaPath);
-      // Clean temp dir owned by synthesizeWithEdgeTts when outDir was default.
       await rm(dirname(synth.mediaPath), { recursive: true, force: true }).catch(() => {});
       return {
         voiceId: dto.voiceId,
@@ -950,6 +977,86 @@ Write as imperative rules. Do not retell the video's plot. Do not mention stock 
     } catch (err) {
       throw new BadRequestException(
         err instanceof Error ? err.message : 'Edge TTS preview failed',
+      );
+    }
+  }
+
+  async generateKidsRhyme(opts: {
+    topic?: string;
+    language: string;
+    durationSec: number;
+    niche?: string;
+  }): Promise<{ title: string; rhyme: string; hook: string; topicSummary: string }> {
+    const task = TaskType.BRIEF_GENERATION;
+    await this.assertNotKilled(task);
+    const schema = z.object({
+      title: z.string().min(3),
+      rhyme: z.string().min(20),
+      hook: z.string().min(3),
+      topicSummary: z.string().min(10),
+    });
+    const registry = this.buildRegistry();
+    const keyStore = new PrismaKeyStore(this.prisma.client, this.crypto);
+    const noopCache: CacheStore = {
+      lookup: async () => null,
+      save: async () => {},
+      recordHit: async () => {},
+    };
+    const memLogger: UsageLogger = { log: async () => {} };
+    const router = new AIRouter({
+      cache: noopCache,
+      logger: memLogger,
+      keyPool: new KeyPool(keyStore),
+      registry,
+    });
+    const result = await router.run({
+      task,
+      model: '',
+      system: `You write original children's nursery rhymes for short-form video.
+Return JSON only: { "title": string, "rhyme": string, "hook": string, "topicSummary": string }.
+${formatKidsRhymeScriptRules(opts.durationSec, opts.language)}
+- rhyme is the full spoken/sung lyric (this becomes narrationScript).
+- hook is the opening couplet.
+- topicSummary is 2–4 English sentences describing the rhyme.
+- Never copy a copyrighted nursery rhyme word-for-word.`,
+      input: {
+        kind: 'text',
+        text: JSON.stringify({
+          language: opts.language,
+          durationSec: opts.durationSec,
+          topic: opts.topic?.trim() || null,
+          niche: opts.niche?.trim() || null,
+        }),
+      },
+      schema,
+    });
+    const parsed = schema.safeParse(result.output);
+    if (parsed.success) {
+      return {
+        title: parsed.data.title.trim(),
+        rhyme: parsed.data.rhyme.trim(),
+        hook: parsed.data.hook.trim(),
+        topicSummary: parsed.data.topicSummary.trim(),
+      };
+    }
+    throw new BadRequestException('Could not generate a rhyme. Try a clearer topic.');
+  }
+
+  private async resolveOpenAiSecret(accountId?: string): Promise<string> {
+    if (accountId) {
+      const profile = await this.prisma.client.channelProfile.findUnique({
+        where: { accountId },
+        select: { openaiApiKeyEnc: true },
+      });
+      if (profile?.openaiApiKeyEnc) return this.crypto.decrypt(profile.openaiApiKeyEnc);
+    }
+    const pool = new KeyPool(new PrismaKeyStore(this.prisma.client, this.crypto));
+    try {
+      const key = await pool.checkout('openai');
+      return key.secret;
+    } catch {
+      throw new BadRequestException(
+        'No OpenAI API key. Add one in this account’s Voice settings, or in Settings → AI.',
       );
     }
   }

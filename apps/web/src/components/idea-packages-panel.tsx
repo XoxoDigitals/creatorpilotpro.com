@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { getIdeaPackage, getIdeasView, ideaTranscriptUrl, ideaVoiceoverUrl, retryIdeaPackage, regenerateIdeaPackage, deleteIdea } from '@/lib/api-data';
 import { IdeaFinalUpload } from '@/components/idea-final-upload';
+import { KidsRhymePanel, OwnerVoiceUpload } from '@/components/kids-rhyme-panel';
 import { Button } from '@/components/ui/button';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import type {
@@ -781,9 +782,22 @@ function PackageDetails({
   const failed = idea.packageStatus === 'FAILED' || pkg?.packageStage === 'FAILED';
   const canRetry = !demo && failed;
   const canRegen = !demo && !generating && (!!pkg || idea.hasBrief);
+  const waitingForOwnerVoice =
+    !demo &&
+    !!pkg?.narrationScript &&
+    !pkg.voiceoverReady &&
+    pkg.voiceoverStatus !== 'GENERATING' &&
+    (pkg.packageStage === 'SCRIPT' || idea.packageStage === 'SCRIPT');
   return (
     <>
-      {generating && <PipelineProgress stage={pkg?.packageStage ?? idea.packageStage} />}
+      {generating && !waitingForOwnerVoice && (
+        <PipelineProgress stage={pkg?.packageStage ?? idea.packageStage} />
+      )}
+      <OwnerVoiceUpload
+        ideaId={idea.id}
+        waiting={waitingForOwnerVoice}
+        onUploaded={onUploaded}
+      />
       {failed && canRetry && !pkg?.packageStageError ? (
         <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
           <p>{idea.packageStageError || 'Package failed'}</p>
@@ -1206,14 +1220,18 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
   if (ideas === null) return <Skeleton className="h-32 w-full rounded-lg" />;
   if (ideas.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500">
-        Start generation from Review to create an AI package.
-      </p>
+      <div className="space-y-3">
+        <KidsRhymePanel accountId={accountId} onCreated={load} />
+        <p className="rounded-lg border border-dashed border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500">
+          Start generation from Review to create an AI package.
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      <KidsRhymePanel accountId={accountId} onCreated={load} />
       {ideas.map((idea) => {
         const pkg = packages[idea.id];
         const open = openIds.has(idea.id);

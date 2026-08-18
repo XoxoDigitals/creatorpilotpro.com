@@ -16,6 +16,9 @@ import {
   clampTrimStartMs,
   TTS_EMOTIONS,
   TTS_EMOTION_LABELS,
+  OPENAI_TTS_VOICES,
+  OPENAI_TTS_VOICE_LABELS,
+  OPENAI_DEFAULT_VOICE,
   parseTtsEmotion,
   type StyleProfileAnswers,
   type LockedCharacter,
@@ -137,6 +140,8 @@ export default function AccountSettingsPage() {
   const [animationReferencePrompt, setAnimationReferencePrompt] = useState('');
   const [language, setLanguage] = useState('en');
   const [ttsProvider, setTtsProvider] = useState('edge');
+  const [openaiKeyDraft, setOpenaiKeyDraft] = useState('');
+  const [openaiKeyLast4, setOpenaiKeyLast4] = useState<string | null>(null);
   const [voice, setVoice] = useState('en-US-AriaNeural');
   const [voiceLocale, setVoiceLocale] = useState('en-US');
   const [voiceRate, setVoiceRate] = useState('+0%');
@@ -287,6 +292,8 @@ export default function AccountSettingsPage() {
         if (voiceCfg?.pitch) setVoicePitch(voiceCfg.pitch);
         if (voiceCfg?.volume) setVoiceVolume(voiceCfg.volume);
         setVoiceEmotion(parseTtsEmotion(voiceCfg?.emotion));
+        setOpenaiKeyLast4(p.openaiApiKeyLast4 ?? null);
+        setOpenaiKeyDraft('');
         setBackgroundBedPercent(
           clampBackgroundBedPercent(
             voiceCfg?.backgroundBedPercent ?? DEFAULT_BACKGROUND_BED_PERCENT,
@@ -464,18 +471,17 @@ export default function AccountSettingsPage() {
   }
 
   async function previewVoice(voiceId: string) {
-    if (ttsProvider !== 'edge') {
-      toast('Preview is available for Edge Neural voices', 'info');
-      return;
-    }
     setPreviewingVoiceId(voiceId);
     try {
       const res = await api.post<{ mimeType: string; audioBase64: string }>('/ai/tts/preview', {
+        provider: ttsProvider === 'openai' ? 'openai' : 'edge',
+        accountId: id,
         voiceId,
         rate: voiceRate,
         pitch: voicePitch,
         volume: voiceVolume,
         emotion: voiceEmotion,
+        kidsRhyme: styleAnswers.nicheTags.includes('kids_rhymes') || styleAnswers.formats.includes('nursery_rhyme'),
       });
       const audio = new Audio(`data:${res.mimeType};base64,${res.audioBase64}`);
       await audio.play();
@@ -612,6 +618,7 @@ export default function AccountSettingsPage() {
           defaultLanguage: defaultPublishLanguage || undefined,
           defaultRecordingCountry: defaultRecordingCountry.trim() || undefined,
         },
+        ...(openaiKeyDraft.trim() ? { openaiApiKey: openaiKeyDraft.trim() } : {}),
       });
       toast('Channel profile saved', 'success');
       await load();
@@ -940,7 +947,7 @@ export default function AccountSettingsPage() {
       <Card>
         <CardHeader
           title="Voice"
-          description="Default Edge Neural TTS voice (falls back to Kokoro → Gemini → OpenAI)"
+          description="AI channels can use OpenAI gpt-4o-mini-tts with full emotion. Edge Neural remains the fallback."
         />
         <div className="space-y-4 p-4">
           {ttsStatus && (
@@ -976,11 +983,18 @@ export default function AccountSettingsPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="TTS provider">
-              <Select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)}>
+              <Select
+                value={ttsProvider}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setTtsProvider(next);
+                  if (next === 'openai') setVoice(OPENAI_DEFAULT_VOICE);
+                }}
+              >
                 <option value="edge">Edge Neural (default)</option>
+                <option value="openai">OpenAI gpt-4o-mini-tts</option>
                 <option value="kokoro">Kokoro (self-hosted)</option>
                 <option value="gemini">Gemini TTS</option>
-                <option value="openai">OpenAI TTS</option>
               </Select>
             </Field>
             {ttsProvider === 'edge' ? (
@@ -1002,6 +1016,16 @@ export default function AccountSettingsPage() {
                       </option>
                     ))
                   )}
+                </Select>
+              </Field>
+            ) : ttsProvider === 'openai' ? (
+              <Field label="OpenAI voice">
+                <Select value={voice} onChange={(e) => setVoice(e.target.value)}>
+                  {OPENAI_TTS_VOICES.map((id) => (
+                    <option key={id} value={id}>
+                      {OPENAI_TTS_VOICE_LABELS[id]}
+                    </option>
+                  ))}
                 </Select>
               </Field>
             ) : (
@@ -1133,6 +1157,54 @@ export default function AccountSettingsPage() {
                   Used when a spoken line has no situation tag. Scripts pick emotion per beat
                   (sad on loss, excited on a reveal, angry on conflict). Preview uses this
                   fallback.
+                </p>
+              </Field>
+            </>
+          )}
+          {ttsProvider === 'openai' && (
+            <>
+              <Field label="OpenAI API key (this account)">
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={openaiKeyDraft}
+                  onChange={(e) => setOpenaiKeyDraft(e.target.value)}
+                  placeholder={
+                    openaiKeyLast4 ? `Saved · last 4 ${openaiKeyLast4}` : 'sk-… paste to replace'
+                  }
+                />
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  Used for gpt-4o-mini-tts and rhyme voice analysis. Falls back to Settings → AI
+                  OpenAI keys if empty. Saved encrypted. Never shown again.
+                </p>
+              </Field>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={previewingVoiceId !== null}
+                  onClick={() => void previewVoice(voice)}
+                >
+                  {previewingVoiceId === voice ? 'Playing…' : 'Preview emotion'}
+                </Button>
+                <span className="text-[11px] text-zinc-500">
+                  Speaks a short line with the selected voice + fallback emotion.
+                </span>
+              </div>
+              <Field label="Fallback emotion">
+                <Select
+                  value={voiceEmotion}
+                  onChange={(e) => setVoiceEmotion(parseTtsEmotion(e.target.value))}
+                >
+                  {TTS_EMOTIONS.map((em) => (
+                    <option key={em} value={em}>
+                      {TTS_EMOTION_LABELS[em]}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  gpt-4o-mini-tts follows this as spoken delivery. Line-level emotions from the
+                  script still win (playful, whisper, excited…).
                 </p>
               </Field>
             </>

@@ -13,7 +13,7 @@ export {
   type GeminiUploadedFile,
   type UploadGeminiFileOptions,
 } from './gemini-files.js';
-export { OpenAIProvider } from './openai.js';
+export { OpenAIProvider, synthesizeWithOpenAiTts, transcribeWithOpenAi } from './openai.js';
 export { KokoroProvider } from './kokoro.js';
 export { WhisperProvider } from './whisper.js';
 export {

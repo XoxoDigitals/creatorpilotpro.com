@@ -32,6 +32,10 @@ import {
   isNarrationVoiceoverPackage,
   isCartoonPackage,
   isUltraRealisticPackage,
+  isKidsRhymePackage,
+  formatKidsRhymeScriptRules,
+  formatKidsRhymeVisualRules,
+  formatKidsRhymeIdeaRules,
   stripCartoonAnimeNegatives,
   languageDisplayName,
   formatIdeaTitleLanguageRules,
@@ -82,6 +86,7 @@ import {
   DEFAULT_GEMINI_TEXT_MODEL,
   segmentsToSrt,
   segmentsToVtt,
+  transcribeWithOpenAi,
   type CacheStore,
   type UsageLogger,
   type ProviderRegistry,
@@ -280,6 +285,28 @@ function buildRouter(prisma: PrismaClient, masterKey: Buffer) {
 function loadMasterKeyOrNull(): Buffer | null {
   const raw = process.env.MASTER_KEY;
   return raw ? loadMasterKey(raw) : null;
+}
+
+async function resolveOpenAiSecret(
+  prisma: PrismaClient,
+  masterKey: Buffer,
+  accountId?: string | null,
+): Promise<string | null> {
+  if (accountId) {
+    const profile = await prisma.channelProfile.findUnique({
+      where: { accountId },
+      select: { openaiApiKeyEnc: true },
+    });
+    if (profile?.openaiApiKeyEnc) return decryptSecret(profile.openaiApiKeyEnc, masterKey);
+  }
+  const store = buildKeyStore(prisma, masterKey);
+  const pool = new KeyPool(store);
+  try {
+    const key = await pool.checkout('openai');
+    return key.secret;
+  } catch {
+    return null;
+  }
 }
 
 async function loadChannelStyle(
@@ -658,6 +685,9 @@ export async function runIdeaGeneration(
 - Never use em dashes (—) in titles or any other field. Use commas, colons, parentheses, or plain hyphens instead.
 - ${formatIdeaTitleLanguageRules(channelStyle?.language)}`;
   const documentaryIdeaRules = documentaryIdeas ? `\n${formatDocumentaryIdeaRules()}` : '';
+  const kidsRhymeIdeaRules = isKidsRhymePackage(channelStyle?.styleProfile)
+    ? `\n${formatKidsRhymeIdeaRules()}`
+    : '';
   const refChannelNames = refChannels.map((ch) => ch.name).filter(Boolean);
   const referenceBlock = [
     refChannelNames.length > 0
@@ -672,6 +702,7 @@ export async function runIdeaGeneration(
 
 ${ideaOutputContract}
 ${documentaryIdeaRules}
+${kidsRhymeIdeaRules}
 Aim for a mix across the three categories. Every idea must fit OUR CHANNEL about/niche/brand; use reference channels for format and performance patterns only.${seedBlock}${ourChannelBlock ? `\n\n${ourChannelBlock}` : ''}${referenceBlock ? `\n\n${referenceBlock}` : ''}`,
     channelStyle,
   );
@@ -1241,6 +1272,7 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
     documentaryVo || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
   const channelLanguage = channelStyle?.language ?? 'en';
   const documentaryIdeas = isDocumentaryIdeaGeneration(channelStyle?.styleProfile);
+  const kidsRhyme = isKidsRhymePackage(channelStyle?.styleProfile);
   const youtubeDescriptionRules = youtubeAi
     ? formatYoutubeAiDescriptionRules({
         documentary: documentaryCollage || documentaryIdeas,
@@ -1394,6 +1426,9 @@ ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
   const topicSummaryInstruction = topicSummary
     ? `- This topicSummary is the ground truth of what the video is about. The narration/script must cover this summary; do not drift to a different topic.`
     : '';
+  const kidsRhymeRules = kidsRhyme
+    ? `\n${formatKidsRhymeScriptRules(videoDurationSec, channelLanguage)}`
+    : '';
 
   const systemPrompt = withChannelStyle(
     `${prompt?.template ?? 'You are a creative package writer for short-form video. The owner will produce the video externally (no in-app render).'}
@@ -1408,6 +1443,7 @@ ${youtubeDescriptionRules}
 - imagePrompt, animationPrompt, and thumbnailPrompt stay in English except quoted on-screen text and spoken lines, which must follow the spoken-language rules above.
 ${lockedCastPrompt ? `${lockedCastPrompt}\n` : ''}Define every recurring person once in characters with a stable name, appearance, wardrobe, age, personality, and invariant consistency details. If CHARACTER LOCK is set, those people are required in characters[].
 ${presentationInstructions}
+${kidsRhymeRules}
 ${dramaRules}
 ${documentaryVisualRules}
 ${
@@ -1564,6 +1600,24 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     });
 
     if (audioFirst && needsVo && scriptText.trim()) {
+      if (kidsRhyme) {
+        await prisma.idea.update({
+          where: { id: ideaId },
+          data: { status: 'IN_PRODUCTION', packageStatus: 'GENERATING' },
+        });
+        await prisma.productionBrief.update({
+          where: { ideaId },
+          data: {
+            voiceoverStatus: 'NONE',
+            packageStage: 'SCRIPT',
+            packageStageError: null,
+          },
+        });
+        console.log(
+          `[worker:ai-p4] kids rhyme script ready for idea ${ideaId} — waiting for owner voice upload`,
+        );
+        return;
+      }
       // Stay GENERATING until visuals finish.
       await prisma.idea.update({
         where: { id: ideaId },
@@ -1672,6 +1726,35 @@ export async function runIdeaTranscript(ideaId: string, boss: PgBoss): Promise<v
   try {
     let timings = parseTimedTranscript(idea.brief.timedTranscript);
     const script = idea.brief.script?.trim() ?? '';
+    const voPath = idea.brief.voiceoverLocalPath;
+
+    if (timings.length === 0 && voPath) {
+      const masterKey = loadMasterKeyOrNull();
+      if (masterKey) {
+        const secret = await resolveOpenAiSecret(prisma, masterKey, idea.accountId);
+        if (secret) {
+          try {
+            const transcribed = await transcribeWithOpenAi({
+              apiKey: secret,
+              filePath: voPath,
+              filename: voPath.split(/[/\\]/).pop(),
+            });
+            if (transcribed.segments.length) {
+              timings = transcribed.segments;
+              console.log(
+                `[worker:ai-p4] transcribed owner/OpenAI voice for idea ${ideaId} (${timings.length} segments)`,
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `[worker:ai-p4] OpenAI transcribe failed for idea ${ideaId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+      }
+    }
 
     if (timings.length === 0 && script) {
       const targetMs = (idea.brief.targetDurationSec ?? idea.requestedVideoDurationSec ?? 60) * 1000;
@@ -1809,6 +1892,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
   const lockedCharacters = parseStyleProfile(channelStyle?.styleProfile).lockedCharacters;
   const documentaryVo = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
   const documentaryCollage = isDocumentaryCollagePackage(channelStyle?.styleProfile);
+  const kidsRhyme = isKidsRhymePackage(channelStyle?.styleProfile);
   const narrationVoiceover =
     documentaryVo || isNarrationVoiceoverPackage(channelStyle?.styleProfile);
   const sceneCount = documentaryCollage
@@ -1834,6 +1918,7 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
         clipDurationSec,
       })}`
     : '';
+  const kidsRhymeVisualRules = kidsRhyme ? `\n${formatKidsRhymeVisualRules()}` : '';
   const thumbnailInstructions = documentaryCollage
     ? formatDocumentaryThumbnailInstructions(channelStyle?.thumbnailReferencePrompt)
     : formatThumbnailPromptInstructions(channelStyle);
@@ -1898,6 +1983,7 @@ ${
         cartoonPackage,
       })
 }
+${kidsRhymeVisualRules}
 ${dramaRules}
 ${thumbnailInstructions}
 ${
