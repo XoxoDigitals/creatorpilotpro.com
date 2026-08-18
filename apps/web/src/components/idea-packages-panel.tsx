@@ -118,7 +118,6 @@ function isKidsRhymeIdea(pkg: ProductionBrief | undefined, accountKidsRhyme: boo
 }
 
 function waitingForOwnerVoice(
-  idea: Idea,
   pkg: ProductionBrief | undefined,
   kidsRhyme: boolean,
 ): boolean {
@@ -141,7 +140,7 @@ function stageProgressLabel(idea: Idea, pkg?: ProductionBrief, kidsRhyme = false
   ) {
     return 'Package ready';
   }
-  if (waitingForOwnerVoice(idea, pkg, kidsRhyme)) return 'Upload sound';
+  if (waitingForOwnerVoice(pkg, kidsRhyme)) return 'Upload sound';
   if (idea.packageStatus === 'GENERATING') {
     if (kidsRhyme) {
       const stage = pkg?.packageStage ?? idea.packageStage;
@@ -827,7 +826,7 @@ function PackageDetails({
   const canRetry = !demo && failed;
   const canRegen = !demo && !generating && (!!pkg || idea.hasBrief);
   const kids = isKidsRhymeIdea(pkg, kidsRhyme);
-  const waitingVoice = !demo && waitingForOwnerVoice(idea, pkg, kids);
+  const waitingVoice = !demo && waitingForOwnerVoice(pkg, kids);
   const pipelineStage = waitingVoice
     ? 'VOICE'
     : (pkg?.packageStage ?? idea.packageStage);
