@@ -14,7 +14,7 @@ const ACCOUNT_ID_SUFFIX = /__([A-Za-z0-9_-]+)$/;
 export function sanitizeDriveFolderSegment(raw: string): string {
   const cleaned = raw
     .trim()
-    .replace(/[\\/:\*\?"<>\|]/g, '_')
+    .replace(/[\\/:*?"<>|]/g, '_')
     .replace(/\s+/g, ' ')
     .replace(/\.+$/g, '')
     .slice(0, 120)
