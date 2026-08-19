@@ -344,7 +344,10 @@ function AccountAccessDialog({
   onSaved: () => void;
   onError: (m: string) => void;
 }) {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(user.accountIds));
+  const liveIds = new Set(accounts.map((a) => a.id));
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(user.accountIds.filter((id) => liveIds.has(id))),
+  );
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {

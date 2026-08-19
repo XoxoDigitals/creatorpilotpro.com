@@ -27,7 +27,7 @@ export class AccountAccessService {
   async accessibleAccountIds(user: SessionUser): Promise<string[] | null> {
     if (this.isUnrestricted(user.role)) return null;
     const rows = await this.prisma.client.accountAccess.findMany({
-      where: { userId: user.id },
+      where: { userId: user.id, account: { deletedAt: null } },
       select: { accountId: true },
     });
     return rows.map((r) => r.accountId);
@@ -44,8 +44,8 @@ export class AccountAccessService {
 
   async canAccess(user: SessionUser, accountId: string): Promise<boolean> {
     if (this.isUnrestricted(user.role)) return true;
-    const grant = await this.prisma.client.accountAccess.findUnique({
-      where: { userId_accountId: { userId: user.id, accountId } },
+    const grant = await this.prisma.client.accountAccess.findFirst({
+      where: { userId: user.id, accountId, account: { deletedAt: null } },
       select: { id: true },
     });
     return Boolean(grant);
@@ -65,7 +65,7 @@ export class AccountAccessService {
 
   async listAccountIdsForUser(userId: string): Promise<string[]> {
     const rows = await this.prisma.client.accountAccess.findMany({
-      where: { userId },
+      where: { userId, account: { deletedAt: null } },
       select: { accountId: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -73,30 +73,30 @@ export class AccountAccessService {
   }
 
   /**
-   * Replace the full grant set for a user. Invalid / soft-deleted account ids
-   * are rejected. Empty array clears all grants.
+   * Replace the full grant set for a user. Soft-deleted / missing account ids
+   * are dropped so saving after an account was deleted still succeeds.
+   * Empty array clears all grants.
    */
   async replaceGrants(userId: string, accountIds: string[]): Promise<string[]> {
     const unique = [...new Set(accountIds)];
-    if (unique.length > 0) {
-      const found = await this.prisma.client.socialAccount.findMany({
-        where: { id: { in: unique }, deletedAt: null },
-        select: { id: true },
-      });
-      if (found.length !== unique.length) {
-        throw new NotFoundException('One or more accounts were not found');
-      }
-    }
+    const live = unique.length
+      ? await this.prisma.client.socialAccount.findMany({
+          where: { id: { in: unique }, deletedAt: null },
+          select: { id: true },
+        })
+      : [];
+    const liveSet = new Set(live.map((a) => a.id));
+    const liveIds = unique.filter((id) => liveSet.has(id));
 
     await this.prisma.client.$transaction(async (tx) => {
       await tx.accountAccess.deleteMany({ where: { userId } });
-      if (unique.length > 0) {
+      if (liveIds.length > 0) {
         await tx.accountAccess.createMany({
-          data: unique.map((accountId) => ({ userId, accountId })),
+          data: liveIds.map((accountId) => ({ userId, accountId })),
         });
       }
     });
 
-    return unique;
+    return liveIds;
   }
 }
