@@ -195,7 +195,7 @@ export class IdeasController {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const dir = await mkdtemp(join(tmpdir(), 'scp-vo-'));
-    const dest = join(dir, data.filename?.replace(/[^\w.\-]+/g, '_') || 'owner-voice.mp3');
+    const dest = join(dir, data.filename?.replace(/[^\w.-]+/g, '_') || 'owner-voice.mp3');
     try {
       await pipeline(data.file, createWriteStream(dest));
       if (data.file.truncated) {

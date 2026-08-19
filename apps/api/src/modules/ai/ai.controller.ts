@@ -165,7 +165,7 @@ export class AiController {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const dir = await mkdtemp(join(tmpdir(), 'scp-style-'));
-    const dest = join(dir, data.filename?.replace(/[^\w.\-]+/g, '_') || 'reference.mp4');
+    const dest = join(dir, data.filename?.replace(/[^\w.-]+/g, '_') || 'reference.mp4');
     try {
       await pipeline(data.file, createWriteStream(dest));
       if (data.file.truncated) {
