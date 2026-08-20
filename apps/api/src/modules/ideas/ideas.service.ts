@@ -596,7 +596,7 @@ export class IdeasService {
    */
   async regeneratePackageStage(
     id: string,
-    stage: 'script' | 'voiceover' | 'visuals',
+    stage: 'script' | 'voiceover' | 'visuals' | 'animations',
   ): Promise<IdeaView> {
     const idea = await this.findIdeaOrThrow(id);
     if (idea.status === 'REJECTED') {
@@ -639,6 +639,7 @@ export class IdeasService {
         voiceoverStatus: true,
         voiceoverLocalPath: true,
         timedTranscript: true,
+        sceneBreakdown: true,
       },
     });
     if (!brief) {
@@ -674,11 +675,32 @@ export class IdeasService {
         },
       });
       await this.queue.enqueueIdeaTts(id);
+    } else if (stage === 'animations') {
+      const scenes = Array.isArray(brief.sceneBreakdown) ? brief.sceneBreakdown : [];
+      if (scenes.length === 0) {
+        throw new BadRequestException(
+          'No scenes yet — generate or regenerate visuals first before animation prompts.',
+        );
+      }
+      await this.prisma.client.idea.update({
+        where: { id },
+        data: {
+          packageStatus: 'GENERATING',
+          status: idea.status === 'UPLOADED' ? 'UPLOADED' : 'APPROVED',
+        },
+      });
+      await this.prisma.client.productionBrief.update({
+        where: { ideaId: id },
+        data: { packageStage: 'VISUALS', packageStageError: null },
+      });
+      await this.queue.enqueueIdeaVisuals(id, { animationOnly: true });
     } else {
       const timings = Array.isArray(brief.timedTranscript) ? brief.timedTranscript : [];
-      if (timings.length === 0) {
+      const scenes = Array.isArray(brief.sceneBreakdown) ? brief.sceneBreakdown : [];
+      // Dialogue / background packages often have scenes without a VO transcript.
+      if (timings.length === 0 && scenes.length === 0) {
         throw new BadRequestException(
-          'No timed transcript yet — wait for voiceover (or regenerate it) before visuals.',
+          'No timed transcript or scenes yet — wait for voiceover (or regenerate the script) before visuals.',
         );
       }
       await this.prisma.client.idea.update({

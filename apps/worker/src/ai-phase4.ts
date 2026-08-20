@@ -1914,11 +1914,27 @@ const visualPromptsOutputSchema = z.object({
   editingInstructions: z.string().optional(),
 });
 
+const animationPromptsOutputSchema = z.object({
+  sceneBreakdown: z.array(
+    z.object({
+      sceneIndex: z.number().int().positive(),
+      animationPrompt: z.string(),
+      animationNegativePrompt: z.string().optional(),
+      videoNegativePrompt: z.string().optional(),
+    }),
+  ),
+});
+
 /**
  * Visual prompts stage: feed narration + timed transcript back to AI to produce
  * scene-aligned image and video prompts. Marks package READY when done.
+ * Pass `animationOnly` to rewrite only animationPrompt / animationNegativePrompt.
  */
-export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<void> {
+export async function runIdeaVisuals(
+  ideaId: string,
+  _boss: PgBoss,
+  options?: { animationOnly?: boolean; regenerateNonce?: number },
+): Promise<void> {
   const prisma = getPrisma();
   const task = TaskType.BRIEF_GENERATION;
 
@@ -1958,6 +1974,11 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
     where: { ideaId },
     data: { packageStage: 'VISUALS', packageStageError: null },
   });
+
+  if (options?.animationOnly) {
+    await runIdeaAnimationPromptsOnly(ideaId, idea as typeof idea & { brief: NonNullable<typeof idea.brief> }, prisma, masterKey, options.regenerateNonce);
+    return;
+  }
 
   const videoDurationSec =
     idea.requestedVideoDurationSec ?? idea.brief.targetDurationSec ?? 60;
@@ -2251,6 +2272,299 @@ ${
     await raiseIncident(prisma, {
       kind: err instanceof AllProvidersExhaustedError ? 'RATE_LIMIT' : 'SYSTEM',
       title: `Idea visuals failed: ${errMsg.slice(0, 200)}`,
+      detail: { ideaId, error: errMsg },
+    });
+  }
+}
+
+/**
+ * Rewrite only animation prompts for an existing scene breakdown.
+ * Keeps imagePrompt, dialogue, timings, thumbnail, and script intact.
+ */
+async function runIdeaAnimationPromptsOnly(
+  ideaId: string,
+  idea: {
+    id: string;
+    title: string;
+    accountId: string;
+    requestedVideoDurationSec: number | null;
+    requestedClipDurationSec: number | null;
+    brief: {
+      targetDurationSec: number | null;
+      videoTitle: string | null;
+      videoDescription: string | null;
+      researchSummary: string | null;
+      script: string | null;
+      characterPrompts: unknown;
+      sceneBreakdown: unknown;
+      editingInstructions: string | null;
+      thumbnailPrompt: string | null;
+      timedTranscript: unknown;
+    };
+  },
+  prisma: PrismaClient,
+  masterKey: Buffer,
+  regenerateNonce?: number,
+): Promise<void> {
+  const existingScenes = Array.isArray(idea.brief.sceneBreakdown)
+    ? (idea.brief.sceneBreakdown as Array<Record<string, unknown>>)
+    : [];
+  if (existingScenes.length === 0) {
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        packageStage: 'FAILED',
+        packageStageError: 'No scenes to regenerate animation prompts for.',
+      },
+    });
+    await prisma.idea.update({
+      where: { id: ideaId },
+      data: { packageStatus: 'FAILED', status: 'APPROVED' },
+    });
+    return;
+  }
+
+  const videoDurationSec =
+    idea.requestedVideoDurationSec ?? idea.brief.targetDurationSec ?? 60;
+  const clipDurationSec = idea.requestedClipDurationSec ?? 10;
+  const channelStyle = await loadChannelStyle(prisma, idea.accountId);
+  const styleProfile = channelStyle?.styleProfile;
+  const presentation = normalizedPresentation(
+    parseStyleProfile(styleProfile).answers.presentation,
+  );
+  const dramaOrDialogue = isDramaOrDialoguePackage(styleProfile);
+  const cartoonPackage = isCartoonPackage(styleProfile);
+  const ultraRealistic = isUltraRealisticPackage(styleProfile);
+  const lockedCharacters = parseStyleProfile(styleProfile).lockedCharacters;
+  const documentaryCollage = isDocumentaryCollagePackage(styleProfile);
+  const kidsRhyme = isKidsRhymePackage(styleProfile);
+  const narrationVoiceover =
+    isDocumentaryVoiceoverPackage(styleProfile) ||
+    isNarrationVoiceoverPackage(styleProfile);
+  const channelLanguage = channelStyle?.language ?? 'en';
+  const dramaVideoNeg = cartoonPackage
+    ? stripCartoonAnimeNegatives(DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT)
+    : DEFAULT_DRAMA_VIDEO_NEGATIVE_PROMPT;
+
+  const characters = mergeLockedCharactersIntoCast(
+    Array.isArray(idea.brief.characterPrompts)
+      ? (idea.brief.characterPrompts as CharacterReferenceInput[])
+      : [],
+    lockedCharacters,
+  ).filter((character) => Boolean(character.name?.trim()));
+
+  const sceneSeed = existingScenes.map((row, index) => ({
+    sceneIndex:
+      typeof row.sceneIndex === 'number' && Number.isFinite(row.sceneIndex)
+        ? Math.max(1, Math.round(row.sceneIndex))
+        : index + 1,
+    durationSec:
+      typeof row.durationSec === 'number' && row.durationSec > 0
+        ? row.durationSec
+        : clipDurationSec,
+    startMs: typeof row.startMs === 'number' ? row.startMs : undefined,
+    endMs: typeof row.endMs === 'number' ? row.endMs : undefined,
+    audioMode: row.audioMode,
+    narrationSegment: typeof row.narrationSegment === 'string' ? row.narrationSegment : '',
+    imagePrompt: typeof row.imagePrompt === 'string' ? row.imagePrompt : '',
+    dialogue: row.dialogue ?? [],
+  }));
+
+  const dramaRules =
+    dramaOrDialogue || presentation === 'dialogue' || presentation === 'mixed'
+      ? `\n${formatDramaDialoguePackageRules({
+          clipDurationSec,
+          language: channelLanguage,
+          includeNegativePrompts: true,
+          cartoonPackage,
+        })}`
+      : '';
+  const kidsRhymeVisualRules = kidsRhyme ? `\n${formatKidsRhymeVisualRules()}` : '';
+  const languageRules = formatOutputLanguagePolicy(channelLanguage);
+
+  const systemPrompt = withChannelStyle(
+    `You rewrite ONLY animation / video generation prompts for an existing short-form package.
+Keep scene count, sceneIndex, imagePrompt, dialogue, timings, and story fixed — do not invent new scenes.
+Return JSON only:
+{
+  "sceneBreakdown": [{
+    "sceneIndex": number,
+    "animationPrompt": string,
+    "animationNegativePrompt": string
+  }]
+}
+Rules:
+${languageRules}
+${formatLockedCharactersPrompt(lockedCharacters)}
+- Return exactly ${sceneSeed.length} scenes, one per provided sceneIndex.
+- animationPrompt bodies stay in English; quote spoken lines in the output language.
+- Do NOT change or return imagePrompt. Do NOT invent new dialogue lines — reuse the provided dialogue verbatim.
+- For dialogue / talking scenes: embed spoken lines as "Dialogue: Speaker: line" with NO tone/emotion labels, and require accurate mouth lip-sync.
+- For narration / background-audio scenes: no spoken character speech; include music/SFX/ambience (or kids cheering beds when Background Audio).
+- Return a distinct animationNegativePrompt per scene (video/motion avoids). Embed it into animationPrompt as needed by the channel rules.
+${formatSceneVisualPromptRulesWithChannel(sceneSeed.length, channelStyle, {
+  dramaOrDialogue,
+  clipDurationSec,
+  narrationVoiceover,
+  mixedPresentation: presentation === 'mixed',
+  cartoonPackage,
+})}
+${kidsRhymeVisualRules}
+${dramaRules}
+${
+  documentaryCollage
+    ? `\n${formatDocumentaryCollageVisualRules({
+        sceneCount: sceneSeed.length,
+        videoDurationSec,
+        clipDurationSec,
+      })}`
+    : ''
+}`,
+    channelStyle,
+  );
+
+  const inputText = JSON.stringify({
+    videoTitle: idea.brief.videoTitle,
+    storySummary: idea.brief.researchSummary,
+    narrationScript: idea.brief.script,
+    characters: idea.brief.characterPrompts,
+    scenes: sceneSeed,
+    clipDurationSec,
+    videoDurationSec,
+    presentation,
+    language: channelLanguage,
+    regenerateNonce: regenerateNonce ?? Date.now(),
+  });
+
+  const router = buildRouter(prisma, masterKey);
+
+  try {
+    const result = await router.run({
+      task: TaskType.BRIEF_GENERATION as any,
+      model: DEFAULT_GEMINI_TEXT_MODEL,
+      system: systemPrompt,
+      input: { kind: 'text', text: inputText },
+      schema: animationPromptsOutputSchema,
+      cacheKey: cacheKeyFor({
+        task: TaskType.BRIEF_GENERATION as any,
+        model: DEFAULT_GEMINI_TEXT_MODEL,
+        promptVersion: 1,
+        styleVersion: styleVersionFromProfile(channelStyle),
+        inputContentHash: hashText(
+          `animation-prompts-v1:${presentation}:${channelLanguage}:${ideaId}:${regenerateNonce ?? Date.now()}:${hashText(inputText)}`,
+        ),
+      }),
+    });
+
+    const parsed = parseAiJsonObject(result.output) ?? {};
+    const rawUpdates = Array.isArray((parsed as { sceneBreakdown?: unknown }).sceneBreakdown)
+      ? ((parsed as { sceneBreakdown: unknown[] }).sceneBreakdown ?? [])
+      : [];
+    const updates = new Map<number, { animationPrompt: string; animationNegativePrompt: string }>();
+    for (const entry of rawUpdates) {
+      const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+      const sceneIndex =
+        typeof row.sceneIndex === 'number' && Number.isFinite(row.sceneIndex)
+          ? Math.max(1, Math.round(row.sceneIndex))
+          : 0;
+      const animationPrompt = text(row.animationPrompt);
+      if (!sceneIndex || !animationPrompt) continue;
+      updates.set(sceneIndex, {
+        animationPrompt,
+        animationNegativePrompt: text(
+          row.animationNegativePrompt ?? row.videoNegativePrompt,
+        ),
+      });
+    }
+
+    const mergedScenes = existingScenes.map((row, index) => {
+      const sceneIndex =
+        typeof row.sceneIndex === 'number' && Number.isFinite(row.sceneIndex)
+          ? Math.max(1, Math.round(row.sceneIndex))
+          : index + 1;
+      const update = updates.get(sceneIndex);
+      const dialogue = normalizeDialogue(row.dialogue);
+      let animationPrompt = update?.animationPrompt ?? text(row.animationPrompt);
+      let animationNegativePrompt =
+        update?.animationNegativePrompt ||
+        text(row.animationNegativePrompt ?? row.videoNegativePrompt) ||
+        (dramaOrDialogue || dialogue.length > 0
+          ? dramaVideoNeg
+          : narrationVoiceover
+            ? DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT
+            : text(row.negativePrompt));
+
+      if (dialogue.length > 0 && (dramaOrDialogue || presentation === 'dialogue' || presentation === 'mixed')) {
+        const renderedDialogue = dialogueBlock(dialogue, characters, true);
+        if (
+          renderedDialogue &&
+          !animationPrompt.includes(renderedDialogue) &&
+          !dialogue.every((line) => animationPrompt.includes(line.line))
+        ) {
+          animationPrompt = `${animationPrompt}${animationPrompt ? '\n\n' : ''}Dialogue:\n${renderedDialogue}`;
+        }
+        animationPrompt = stripDialogueToneLabels(animationPrompt);
+        animationPrompt = ensureDialogueLipSync(animationPrompt);
+      }
+
+      if (characters.length) {
+        animationPrompt = expandCharacterReferencesInText(animationPrompt, characters);
+      }
+      if ((dramaOrDialogue && !cartoonPackage) || ultraRealistic) {
+        animationPrompt = ensureUltraRealistic(animationPrompt);
+      }
+      if (documentaryCollage) {
+        animationPrompt = ensureDocumentaryUniversalVideoPrompt(
+          animationPrompt,
+          clipDurationSec,
+        );
+      } else if (animationNegativePrompt) {
+        animationPrompt = embedNegativeGuidanceInPrompt(
+          animationPrompt,
+          animationNegativePrompt,
+        );
+      }
+
+      return {
+        ...row,
+        sceneIndex,
+        animationPrompt,
+        animationNegativePrompt,
+      };
+    });
+
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        sceneBreakdown: mergedScenes as any,
+        packageStage: 'READY',
+        packageStageError: null,
+      },
+    });
+    await prisma.idea.update({
+      where: { id: ideaId },
+      data: { packageStatus: 'READY', status: 'IN_PRODUCTION' },
+    });
+    console.log(
+      `[worker:ai-p4] animation prompts regenerated — package READY for idea ${ideaId}`,
+    );
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[worker:ai-p4] animation prompts failed for idea ${ideaId}:`, errMsg);
+    await prisma.productionBrief.update({
+      where: { ideaId },
+      data: {
+        packageStage: 'FAILED',
+        packageStageError: `Animation prompts failed: ${errMsg.slice(0, 400)}`,
+      },
+    });
+    await prisma.idea.update({
+      where: { id: ideaId },
+      data: { packageStatus: 'FAILED', status: 'APPROVED' },
+    });
+    await raiseIncident(prisma, {
+      kind: err instanceof AllProvidersExhaustedError ? 'RATE_LIMIT' : 'SYSTEM',
+      title: `Idea animation prompts failed: ${errMsg.slice(0, 200)}`,
       detail: { ideaId, error: errMsg },
     });
   }

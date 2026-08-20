@@ -132,7 +132,12 @@ const aiProcessor: Processor = async (jobs: Job[]) => {
     }
     else if (isBriefGenerationJob(data)) await runBriefGeneration(data.ideaId, boss);
     else if (isIdeaTranscriptJob(data)) await runIdeaTranscript(data.ideaId, boss);
-    else if (isIdeaVisualsJob(data)) await runIdeaVisuals(data.ideaId, boss);
+    else if (isIdeaVisualsJob(data)) {
+      await runIdeaVisuals(data.ideaId, boss, {
+        animationOnly: data.animationOnly === true,
+        regenerateNonce: data.regenerateNonce,
+      });
+    }
     else if (isDramaBibleJob(data)) await runDramaBible(data.seriesId, boss);
     else if (isDramaEpisodeJob(data)) await runDramaEpisode(data.episodeId, boss);
     else if (isAbSuggestionsJob(data)) await runAbSuggestions(data.contentItemId, boss);

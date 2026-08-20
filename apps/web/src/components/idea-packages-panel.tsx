@@ -816,7 +816,7 @@ function PackageDetails({
   onCopy: (key: string, value: unknown) => void;
   onUploaded: () => void | Promise<void>;
   onRetry: (idea: Idea) => void | Promise<void>;
-  onRegenerate: (idea: Idea, stage: 'script' | 'voiceover' | 'visuals') => void | Promise<void>;
+  onRegenerate: (idea: Idea, stage: 'script' | 'voiceover' | 'visuals' | 'animations') => void | Promise<void>;
   onDelete: (idea: Idea) => void | Promise<void>;
 }) {
   const finished = packageFinished(idea, pkg);
@@ -826,6 +826,8 @@ function PackageDetails({
   const canRegen = !demo && !generating && (!!pkg || idea.hasBrief);
   const kids = isKidsRhymeIdea(pkg, kidsRhyme);
   const waitingVoice = !demo && waitingForOwnerVoice(pkg, kids);
+  const hasScenes = (pkg?.sceneBreakdown?.length ?? 0) > 0;
+  const hasTranscript = (pkg?.timedTranscript?.length ?? 0) > 0;
   const pipelineStage = waitingVoice
     ? 'VOICE'
     : (pkg?.packageStage ?? idea.packageStage);
@@ -893,11 +895,23 @@ function PackageDetails({
               ) : null}
               <Button
                 size="sm"
-                disabled={!(pkg.timedTranscript?.length ?? 0)}
-                title={!(pkg.timedTranscript?.length ?? 0) ? 'Voiceover/transcript needed first' : undefined}
+                disabled={!hasTranscript && !hasScenes}
+                title={
+                  !hasTranscript && !hasScenes
+                    ? 'Voiceover/transcript or scenes needed first'
+                    : undefined
+                }
                 onClick={() => void onRegenerate(idea, 'visuals')}
               >
                 Regenerate visuals
+              </Button>
+              <Button
+                size="sm"
+                disabled={!hasScenes}
+                title={!hasScenes ? 'Generate visuals/scenes first' : undefined}
+                onClick={() => void onRegenerate(idea, 'animations')}
+              >
+                Regenerate animation prompts
               </Button>
               <Button size="sm" variant="danger" onClick={() => void onDelete(idea)}>
                 Delete
@@ -1236,9 +1250,15 @@ export function IdeaPackagesPanel({ accountId }: { accountId: string }) {
   );
 
   const regenerateIdea = useCallback(
-    async (idea: Idea, stage: 'script' | 'voiceover' | 'visuals') => {
+    async (idea: Idea, stage: 'script' | 'voiceover' | 'visuals' | 'animations') => {
       const label =
-        stage === 'script' ? 'script' : stage === 'voiceover' ? 'voiceover' : 'visuals';
+        stage === 'script'
+          ? 'script'
+          : stage === 'voiceover'
+            ? 'voiceover'
+            : stage === 'animations'
+              ? 'animation prompts'
+              : 'visuals';
       if (!confirm(`Regenerate ${label} for “${idea.title}”?`)) return;
       try {
         await regenerateIdeaPackage(idea.id, stage);

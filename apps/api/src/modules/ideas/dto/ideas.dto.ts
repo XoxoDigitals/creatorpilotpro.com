@@ -56,9 +56,9 @@ export const uploadIdeaVideoSchema = z.object({
 });
 export type UploadIdeaVideoDto = z.infer<typeof uploadIdeaVideoSchema>;
 
-/** Re-run one creative-package stage (script / voiceover / visuals). */
+/** Re-run one creative-package stage (script / voiceover / visuals / animations). */
 export const regeneratePackageSchema = z.object({
-  stage: z.enum(['script', 'voiceover', 'visuals']),
+  stage: z.enum(['script', 'voiceover', 'visuals', 'animations']),
 });
 export type RegeneratePackageDto = z.infer<typeof regeneratePackageSchema>;
 

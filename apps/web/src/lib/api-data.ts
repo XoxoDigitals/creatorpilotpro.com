@@ -1490,7 +1490,7 @@ export async function retryIdeaPackage(ideaId: string): Promise<void> {
 
 export async function regenerateIdeaPackage(
   ideaId: string,
-  stage: 'script' | 'voiceover' | 'visuals',
+  stage: 'script' | 'voiceover' | 'visuals' | 'animations',
 ): Promise<void> {
   await api.post(`/ideas/${encodeURIComponent(ideaId)}/package/regenerate`, { stage });
 }

@@ -263,20 +263,30 @@ export class QueueProducer implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Enqueue visual-prompt generation (resume from VISUALS stage). */
-  async enqueueIdeaVisuals(ideaId: string): Promise<void> {
+  async enqueueIdeaVisuals(
+    ideaId: string,
+    options?: { animationOnly?: boolean },
+  ): Promise<void> {
     if (!this.boss) {
       throw new ServiceUnavailableException(
         'The job queue is not available. Please try again shortly.',
       );
     }
+    const animationOnly = options?.animationOnly === true;
     const jobId = await this.boss.send(
       QUEUE.AI,
-      { kind: 'idea_visuals', ideaId },
-      { singletonKey: `idea-visuals-${ideaId}` },
+      {
+        kind: 'idea_visuals',
+        ideaId,
+        ...(animationOnly ? { animationOnly: true, regenerateNonce: Date.now() } : {}),
+      },
+      { singletonKey: animationOnly ? `idea-animations-${ideaId}` : `idea-visuals-${ideaId}` },
     );
     if (!jobId) {
       throw new ServiceUnavailableException(
-        'Idea visuals for this package is already queued or active.',
+        animationOnly
+          ? 'Idea animation prompts for this package are already queued or active.'
+          : 'Idea visuals for this package is already queued or active.',
       );
     }
   }

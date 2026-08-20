@@ -85,6 +85,10 @@ export interface IdeaTranscriptJob {
 export interface IdeaVisualsJob {
   kind: 'idea_visuals';
   ideaId: string;
+  /** When true, only rewrite animationPrompt / animationNegativePrompt. */
+  animationOnly?: boolean;
+  /** Busts AI cache when regenerating animation prompts. */
+  regenerateNonce?: number;
 }
 
 export interface DramaBibleJob {
