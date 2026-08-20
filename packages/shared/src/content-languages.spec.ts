@@ -153,8 +153,13 @@ describe('content languages', () => {
       '60',
     );
     expect(formatDialogueClipDensityRules(8, 'ur', { targetWords: 60, ownerOverride: true })).toMatch(
-      /Owner setting/i,
+      /OWNER DIALOGUE WORD TARGET/i,
     );
+    expect(formatDialogueClipDensityRules(8, 'ur', { targetWords: 30, ownerOverride: true })).toMatch(
+      /HARD FAIL if a scene has fewer than/i,
+    );
+    expect(dialogueExchangesForClip(8, 'ur', { targetWords: 30 })).toBeLessThanOrEqual(3);
+    expect(dialogueExchangesForClip(8, 'ur')).toBeGreaterThan(dialogueExchangesForClip(8, 'en'));
     expect(dialogueWordsTargetForClip(8, 'en', { '8': 40 })).toBe(40);
     expect(dialogueWordsTargetForClip(9, 'en', { '8': 40, '10': 50 })).toBe(50);
     expect(countSpokenWords('اتنی صبح صبح کون آ سکتا ہے؟')).toBeGreaterThanOrEqual(5);

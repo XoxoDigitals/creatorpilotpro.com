@@ -69,9 +69,16 @@ export const styleProfileAnswersSchema = z.object({
    * Optional owner targets for spoken dialogue words per clip length.
    * Keys: "8" | "10" | "15" | "30". Empty/0 = use language default density.
    */
-  dialogueWordsByClipSec: z
-    .record(z.string(), z.number().int().min(0).max(800))
-    .default({}),
+  dialogueWordsByClipSec: z.preprocess((val) => {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) return {};
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(val as Record<string, unknown>)) {
+      const n = typeof value === 'number' ? value : Number(value);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      out[String(key)] = Math.max(0, Math.min(800, Math.round(n)));
+    }
+    return out;
+  }, z.record(z.string(), z.number().int().min(0).max(800)).default({})),
 });
 export type StyleProfileAnswers = z.infer<typeof styleProfileAnswersSchema>;
 
@@ -1049,12 +1056,24 @@ function audioModeSection(
     formatSpokenLanguageRules(language),
   ];
   if (mode === 'dialogue') {
+    const customWords = answers.dialogueWordsByClipSec ?? {};
+    const ownerTargetParts = (['8', '10', '15', '30'] as const)
+      .map((k) => {
+        const n = customWords[k];
+        return typeof n === 'number' && n > 0 ? `${k}s→${n} words` : null;
+      })
+      .filter((part): part is string => Boolean(part));
     lines.push(
       'Dialogues only — NO TTS voiceover. Leave narrationScript empty.',
       'Every spoken line lives in scene.dialogue[] AND as quoted Dialogue lines inside animationPrompt (and in imagePrompt when a talking still is shown).',
       'Label spoken lines as "Dialogue: Speaker: line" — NEVER put tone/emotion words (excited, angry, cheerful, etc.) into imagePrompt or animationPrompt.',
       'Fill each talking clip with enough dialogue for the full duration (multiple exchanges, full sentences) — never one short line then silence. Paste every line into animationPrompt in full.',
-      'Hindi/Urdu dialogue: write about 2× English word volume and keep speaking across the whole clip — one ~3–4s line in an 8s scene is a hard fail.',
+      'Hindi/Urdu dialogue: write about 2× English word volume and keep speaking across the whole clip — one ~3–4s line in an 8s scene is a hard fail — unless Content pipeline Dialogue words per clip is set; then obey that exact owner target.',
+      ...(ownerTargetParts.length
+        ? [
+            `OWNER DIALOGUE WORD TARGETS (Content pipeline): ${ownerTargetParts.join(', ')}. Every talking scene MUST hit the target for its clip length (HARD).`,
+          ]
+        : []),
       'Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync to the spoken lines.',
       `Spoken lines in ${lang}. Visual prompt bodies stay English.`,
     );

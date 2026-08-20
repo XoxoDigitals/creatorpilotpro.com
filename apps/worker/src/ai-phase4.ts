@@ -31,6 +31,7 @@ import {
   formatDialogueClipDensityRules,
   dialogueWordsTargetForClip,
   nearestDialogueClipDuration,
+  formatOwnerDialogueWordTargetBlock,
   formatOutputLanguagePolicy,
   formatSpokenLanguageRules,
   formatCharacterReference,
@@ -967,6 +968,26 @@ function channelDialogueDensityRules(
   });
 }
 
+function channelDialogueWordTargetMeta(
+  clipDurationSec: number,
+  language: string,
+  styleProfile: unknown,
+): {
+  dialogueWordsTargetPerClip: number;
+  dialogueWordsByClipSec: Record<string, number>;
+  ownerDialogueWordsOverride: boolean;
+} {
+  const custom = parseStyleProfile(styleProfile).answers.dialogueWordsByClipSec ?? {};
+  const bucket = String(nearestDialogueClipDuration(clipDurationSec));
+  const ownerRaw = custom[bucket];
+  const ownerDialogueWordsOverride = typeof ownerRaw === 'number' && ownerRaw > 0;
+  return {
+    dialogueWordsTargetPerClip: dialogueWordsTargetForClip(clipDurationSec, language, custom),
+    dialogueWordsByClipSec: custom,
+    ownerDialogueWordsOverride,
+  };
+}
+
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
 }
@@ -1325,6 +1346,11 @@ export async function runBriefGeneration(ideaId: string, boss: PgBoss): Promise<
   const youtubeAi = (account?.platform ?? '').toUpperCase() === 'YOUTUBE';
   const styleAnswers = parseStyleProfile(channelStyle?.styleProfile).answers;
   const presentation = normalizedPresentation(styleAnswers.presentation);
+  const dialogueWordMeta = channelDialogueWordTargetMeta(
+    clipDurationSec,
+    channelStyle?.language ?? 'en',
+    channelStyle?.styleProfile,
+  );
   const dramaOrDialogue = isDramaOrDialoguePackage(channelStyle?.styleProfile);
   const documentaryVo = isDocumentaryVoiceoverPackage(channelStyle?.styleProfile);
   const documentaryCollage = isDocumentaryCollagePackage(channelStyle?.styleProfile);
@@ -1513,7 +1539,11 @@ ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.st
 
   const systemPrompt = withChannelStyle(
     `${prompt?.template ?? 'You are a creative package writer for short-form video. The owner will produce the video externally (no in-app render).'}
-
+${
+  dialogueWordMeta.ownerDialogueWordsOverride
+    ? `\n${formatOwnerDialogueWordTargetBlock(clipDurationSec, dialogueWordMeta.dialogueWordsTargetPerClip)}\n`
+    : ''
+}
 ${packageOutputContract}
 ${languageRules}
 ${topicSummaryInstruction}
@@ -1572,6 +1602,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     narrationVoiceover,
     cartoonPackage,
     language: channelLanguage,
+    ...dialogueWordMeta,
     thumbnailReferencePrompt: channelStyle?.thumbnailReferencePrompt?.trim() || undefined,
   });
 
@@ -1581,7 +1612,7 @@ Match the channel brand & style for tone, presentation, visuals, and captions.`,
     promptVersion,
     styleVersion: styleVersionFromProfile(channelStyle),
     inputContentHash: hashText(
-      `creative-package-v13:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : documentaryVo ? 'doc-vo' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : ultraRealistic ? 'ultra' : 'live'}:${youtubeAi ? 'yt' : 'other'}:${channelLanguage}:${inputText}`,
+      `creative-package-v14:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : documentaryVo ? 'doc-vo' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : ultraRealistic ? 'ultra' : 'live'}:${youtubeAi ? 'yt' : 'other'}:${channelLanguage}:dlgWords${dialogueWordMeta.dialogueWordsTargetPerClip}:${inputText}`,
     ),
   });
 
@@ -2020,6 +2051,11 @@ export async function runIdeaVisuals(
     ? documentaryBeatSceneCount(videoDurationSec, clipDurationSec)
     : Math.max(1, Math.round(videoDurationSec / clipDurationSec));
   const channelLanguage = channelStyle?.language ?? 'en';
+  const dialogueWordMeta = channelDialogueWordTargetMeta(
+    clipDurationSec,
+    channelLanguage,
+    channelStyle?.styleProfile,
+  );
   const timings = parseTimedTranscript(idea.brief.timedTranscript);
   const priorEditing = splitProductionBriefEditingExtras(idea.brief.editingInstructions ?? '');
 
@@ -2071,6 +2107,11 @@ export async function runIdeaVisuals(
             ? ' with background audio beds only (cheering / kids SFX, no TTS or dialogue)'
             : ' whose voiceover already exists'
     }.
+${
+  dialogueWordMeta.ownerDialogueWordsOverride
+    ? `\n${formatOwnerDialogueWordTargetBlock(clipDurationSec, dialogueWordMeta.dialogueWordsTargetPerClip)}\n`
+    : ''
+}
 Return JSON only:
 {
   "thumbnailPrompt": string,
@@ -2155,6 +2196,7 @@ ${
     narrationVoiceover,
     cartoonPackage,
     language: channelLanguage,
+    ...dialogueWordMeta,
     thumbnailReferencePrompt: channelStyle?.thumbnailReferencePrompt?.trim() || undefined,
     universalVideoPrompt: documentaryCollage
       ? documentaryUniversalVideoPrompt(clipDurationSec)
@@ -2175,7 +2217,7 @@ ${
         promptVersion: 1,
         styleVersion: styleVersionFromProfile(channelStyle),
         inputContentHash: hashText(
-          `visual-prompts-v8:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : documentaryVo ? 'doc-vo' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : ultraRealistic ? 'ultra' : 'live'}:${channelLanguage}:${ideaId}:${hashText(inputText)}`,
+          `visual-prompts-v9:${presentation}:${dramaOrDialogue ? 'drama' : documentaryCollage ? 'doc-collage' : documentaryVo ? 'doc-vo' : narrationVoiceover ? 'narration' : 'std'}:${cartoonPackage ? 'cartoon' : ultraRealistic ? 'ultra' : 'live'}:${channelLanguage}:dlgWords${dialogueWordMeta.dialogueWordsTargetPerClip}:${ideaId}:${hashText(inputText)}`,
         ),
       }),
     });

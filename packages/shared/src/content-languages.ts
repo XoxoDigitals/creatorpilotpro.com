@@ -140,11 +140,21 @@ export function spokenWordsForDuration(
 export function dialogueExchangesForClip(
   clipDurationSec: number,
   language?: string | null,
+  options?: { targetWords?: number | null },
 ): number {
   const clip = Math.max(1, Math.round(clipDurationSec));
   // Roughly one exchange every ~2.5s; at least three for an 8s English clip.
   const base = Math.max(3, Math.round(clip / 2.5));
-  // Hindi/Urdu: ~2× exchanges so native-script talk fills the full clip.
+  const ownerTarget =
+    typeof options?.targetWords === 'number' && options.targetWords > 0
+      ? Math.round(options.targetWords)
+      : null;
+  // Owner word budget wins — do not force Indic 2× exchanges that blow past the target.
+  if (ownerTarget != null) {
+    const maxFromBudget = Math.max(2, Math.floor(ownerTarget / 10));
+    return Math.min(base, maxFromBudget);
+  }
+  // Hindi/Urdu default: ~2× exchanges so native-script talk fills the full clip.
   if (isIndicContentLanguage(language)) {
     return Math.max(base * 2, Math.round(clip / 1.25));
   }
@@ -188,11 +198,32 @@ export function dialogueWordsTargetForClip(
   customByClipSec?: Record<string, number> | null,
 ): number {
   const bucket = nearestDialogueClipDuration(clipDurationSec);
-  const raw = customByClipSec?.[String(bucket)];
+  const map = customByClipSec ?? {};
+  const raw = map[String(bucket)] ?? map[bucket as unknown as string];
   if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
     return Math.min(800, Math.round(raw));
   }
+  const asNum = Number(raw);
+  if (Number.isFinite(asNum) && asNum > 0) {
+    return Math.min(800, Math.round(asNum));
+  }
   return spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language)).target;
+}
+
+/** Loud owner/channel dialogue word banner for system prompts. */
+export function formatOwnerDialogueWordTargetBlock(
+  clipDurationSec: number,
+  targetWords: number,
+): string {
+  const clip = Math.max(1, Math.round(clipDurationSec));
+  const target = Math.max(1, Math.round(targetWords));
+  const min = Math.max(1, Math.round(target * 0.85));
+  const max = target;
+  return `## OWNER DIALOGUE WORD TARGET (HARD — from Content pipeline settings)
+- This channel requires about ${target} spoken words in dialogue[] for EVERY talking scene of ~${clip}s (acceptable ${min}-${max}; do not exceed ${max}).
+- Count whitespace-separated words across ALL dialogue[].line strings in that scene.
+- HARD FAIL if a scene has fewer than ${min} words (e.g. only 10–12 words is wrong). Aim for ${target} words; do not stop at one short sentence.
+- animationPrompt must paste every line in full. Fill the full ${clip}s with talk — no long silent gaps.`;
 }
 
 export function formatDialogueClipDensityRules(
@@ -202,28 +233,37 @@ export function formatDialogueClipDensityRules(
 ): string {
   const fill = dialogueFillMultiplierForLanguage(language);
   const auto = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language));
+  const ownerOverride = options?.ownerOverride === true;
   const target =
     typeof options?.targetWords === 'number' && options.targetWords > 0
       ? Math.round(options.targetWords)
       : auto.target;
-  const min = Math.max(1, Math.round(target * 0.9));
-  const max = Math.max(target + 1, Math.round(target * 1.1));
+  const min = Math.max(1, Math.round(target * (ownerOverride ? 0.85 : 0.9)));
+  const max = ownerOverride ? target : Math.max(target + 1, Math.round(target * 1.1));
   const wpm = Math.max(60, Math.round((target / Math.max(1, auto.durationSec)) * 60));
-  const exchanges = dialogueExchangesForClip(clipDurationSec, language);
+  // Only pass targetWords when the owner set Content pipeline overrides — otherwise
+  // Indic languages keep the 2× exchange default (passing target always would cap that away).
+  const exchanges = dialogueExchangesForClip(
+    clipDurationSec,
+    language,
+    ownerOverride ? { targetWords: target } : undefined,
+  );
   const minLines = exchanges * 2;
-  const minWordsPerLine = Math.max(6, Math.round(min / minLines));
-  const ownerNote =
-    options?.ownerOverride === true
-      ? ` Owner setting for this channel: about ${target} spoken words per ~${auto.durationSec}s clip.`
-      : '';
+  const minWordsPerLine = Math.max(
+    ownerOverride ? 4 : 6,
+    Math.round(min / Math.max(1, minLines)),
+  );
+  const ownerBanner = ownerOverride
+    ? `${formatOwnerDialogueWordTargetBlock(auto.durationSec, target)}\n`
+    : '';
   const indicNote =
-    fill > 1 && options?.ownerOverride !== true
+    fill > 1 && !ownerOverride
       ? ` Hindi/Urdu MUST write about ${fill}× an English clip (≈${target} words / ${minLines}+ lines for ${auto.durationSec}s). One short line (~3–4s) then silence is a HARD FAIL — keep speaking across the full ${auto.durationSec}s in native script.`
       : '';
-  return `Clip dialogue density (mandatory for every dialogue / character scene of ~${auto.durationSec}s):
-- Pace: ~${wpm} words per minute (≈ ${(wpm / 60).toFixed(2)} words/sec). Target ≈ ${target} words for ${auto.durationSec}s.${ownerNote}${indicNote}
-- Spoken words in dialogue[] for THIS scene: about ${target} (acceptable ${min}-${max}). HARD FAIL if under ${min} words or if the clip has long silent gaps with no talk.
-- At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the FULL ${auto.durationSec}s — talk from start to end, not one short beat then silence.
+  return `${ownerBanner}Clip dialogue density (mandatory for every dialogue / character scene of ~${auto.durationSec}s):
+- Pace: ~${wpm} words per minute (≈ ${(wpm / 60).toFixed(2)} words/sec). Target ${target} words for ${auto.durationSec}s (acceptable ${min}-${max}).${indicNote}
+- Spoken words in dialogue[] for THIS scene MUST be ${min}-${max} (aim ${target}). HARD FAIL if under ${min} words or if the clip has long silent gaps with no talk.
+- About ${exchanges} dialogue exchanges (about ${minLines} spoken lines alternating speakers) timed across the FULL ${auto.durationSec}s — talk from start to end, not one short beat then silence.
 - Each spoken line must be a real sentence (about ${minWordsPerLine}+ words), not a 2–3 word stub ("Haan", "Kya?", "Wait.", "اتنی صبح؟").
 - animationPrompt MUST paste EVERY dialogue[].line in full as "Dialogue: Speaker: line" — never shorten, paraphrase, or drop lines. ImagePrompt may quote the same lines when a talking still is shown.
 - Keep the clip feeling lively and full of talk — not sparse. Match action/blocking in animationPrompt to the same ${auto.durationSec}s.`;
