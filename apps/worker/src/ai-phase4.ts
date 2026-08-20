@@ -934,10 +934,20 @@ export const productionBriefOutputSchema = z.object({
   targetDurationSec: z.number().positive(),
 });
 
-export type PackagePresentation = 'voiceover' | 'dialogue' | 'mixed' | 'other';
+export type PackagePresentation =
+  | 'voiceover'
+  | 'dialogue'
+  | 'mixed'
+  | 'background_audio'
+  | 'other';
 
 function normalizedPresentation(value: unknown): PackagePresentation {
-  return value === 'voiceover' || value === 'dialogue' || value === 'mixed' ? value : 'other';
+  return value === 'voiceover' ||
+    value === 'dialogue' ||
+    value === 'mixed' ||
+    value === 'background_audio'
+    ? value
+    : 'other';
 }
 
 function text(value: unknown): string {
@@ -993,18 +1003,32 @@ function dialogueBlock(
 ): string {
   return lines
     .map((line) => {
-      const emotion = parseTtsEmotion(line.emotion);
       const speaker = line.speaker || 'Speaker';
       if (!expandSpeakers || !characters?.length) {
-        return `Dialogue (${emotion}): ${speaker}: ${line.line}`;
+        return `Dialogue: ${speaker}: ${line.line}`;
       }
       const match = characters.find(
         (character) => (character.name ?? '').toLowerCase() === speaker.toLowerCase(),
       );
       const label = match ? formatCharacterReference(match) : speaker;
-      return `Dialogue (${emotion}): ${label}: ${line.line}`;
+      return `Dialogue: ${label}: ${line.line}`;
     })
     .join('\n');
+}
+
+const DIALOGUE_LIPSYNC_CUE =
+  'Accurate mouth lip-sync to spoken dialogue; clear mouth shapes matching each word; natural jaw and lip motion; no frozen or mismatched mouths.';
+
+/** Strip "Dialogue (excited):" → "Dialogue:" so tone never lands in video prompts. */
+function stripDialogueToneLabels(prompt: string): string {
+  return prompt.replace(/\bDialogue\s*\([^)]+\)\s*:/gi, 'Dialogue:');
+}
+
+function ensureDialogueLipSync(prompt: string): string {
+  const trimmed = prompt.trim();
+  if (!trimmed) return trimmed;
+  if (/\blip[- ]?sync\b/i.test(trimmed)) return trimmed;
+  return `${trimmed}\nLip-sync: ${DIALOGUE_LIPSYNC_CUE}`;
 }
 
 function ensureUltraRealistic(prompt: string): string {
@@ -1105,6 +1129,12 @@ export function normalizeProductionBriefOutput(
       !dialogue.every((line) => animationPrompt.includes(line.line))
     ) {
       animationPrompt = `${animationPrompt}${animationPrompt ? '\n\n' : ''}Dialogue:\n${renderedDialogue}`;
+    }
+    if (dialogue.length > 0 && (drama || options.presentation === 'dialogue' || options.presentation === 'mixed')) {
+      imagePrompt = stripDialogueToneLabels(imagePrompt);
+      animationPrompt = stripDialogueToneLabels(animationPrompt);
+      if (imagePrompt) imagePrompt = ensureDialogueLipSync(imagePrompt);
+      if (animationPrompt) animationPrompt = ensureDialogueLipSync(animationPrompt);
     }
     if (characters.length) {
       imagePrompt = expandCharacterReferencesInText(imagePrompt, characters);
@@ -1387,10 +1417,19 @@ ${formatNarrationDurationDensityRules(videoDurationSec, channelLanguage)}
 - narrationScript must be an empty string.
 - ${hookRetentionReminder}
 ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
-- Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion on dialogue is optional (use a fitting value when it helps). The line must ALSO appear, labeled "Dialogue (emotion): Speaker: line" when emotion is set, inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
-- animationPrompt must combine camera, motion, timed beats, action, and exact dialogue so it can be pasted directly into a video-generation tool.
+- Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion is metadata only — do NOT put tone/emotion words into prompts.
+- The line must ALSO appear labeled "Dialogue: Speaker: line" (never "Dialogue (excited): …") inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
+- Every talking imagePrompt and animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines.
+- animationPrompt must combine camera, motion, timed beats, action, lip-sync, and exact dialogue so it can be pasted directly into a video-generation tool.
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".
 - Dialogue language: ALL spoken lines MUST be in ${languageDisplayName(channelLanguage)}.`
+        : presentation === 'background_audio'
+          ? `Presentation mode is BACKGROUND AUDIO — no TTS and no character dialogue.
+- narrationScript must be an empty string. dialogue[] must be empty for every scene.
+- ${hookRetentionReminder}
+- Do not invent spoken speech, lip-sync talking, or character lines in imagePrompt/animationPrompt.
+- Every animationPrompt MUST include kids-channel style background beds: crowd cheering, applause, playful whoops, soft music beds, and reaction SFX synced to the action.
+- Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s).`
         : presentation === 'mixed'
           ? documentaryVo
             ? `Presentation mode is MIXED with DOCUMENTARY NARRATOR portions (audio-first for narrator).
@@ -1973,14 +2012,22 @@ export async function runIdeaVisuals(ideaId: string, _boss: PgBoss): Promise<voi
       ? `- Mixed narration + dialogues: cover the FULL ${videoDurationSec}s video, not only the VO transcript. Follow any VO LAYUP TIMELINE in the provided editingInstructions.
 - Tag each scene with audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
 - NARRATION scenes: narrationSegment = exact VO text for that window; dialogue[] empty; visual prompts MUST NOT invent speech; use narration (no-talking) negatives; AUDIO-IN-PROMPT is SFX/music/ambience only.
-- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue (emotion): Speaker: line" (expanded character references). Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)} Do NOT add "no dialogue" negatives on these scenes.
+- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker: line" with NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)} Do NOT add "no dialogue" negatives on these scenes.
 - Keep/update the VO LAYUP TIMELINE in editingInstructions: Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE.`
-      : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';
+      : presentation === 'dialogue'
+        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker: line" with NO tone/emotion labels. Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken lines in ${languageDisplayName(channelLanguage)}. ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}`
+        : presentation === 'background_audio'
+          ? `- Background Audio: dialogue[] must be [] for every scene. No spoken speech or lip-sync talking. Every animationPrompt MUST include kids-channel background beds (crowd cheering, applause, playful whoops, soft music beds, reaction SFX) synced to the action.`
+          : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';
   const systemPrompt = withChannelStyle(
     `You generate production visual prompts for a short-form video${
       presentation === 'mixed'
         ? ' that mixes generated narrator VO with dialogue-only clips'
-        : ' whose voiceover already exists'
+        : presentation === 'dialogue'
+          ? ' with dialogues only (speech in prompts, no TTS)'
+          : presentation === 'background_audio'
+            ? ' with background audio beds only (cheering / kids SFX, no TTS or dialogue)'
+            : ' whose voiceover already exists'
     }.
 Return JSON only:
 {

@@ -173,7 +173,10 @@ describe('creative package normalization', () => {
     );
     expect(normalized.scenes[0]?.negativePrompt).not.toMatch(/\bno dialogue\b/i);
     expect(normalized.scenes[0]?.animationNegativePrompt).not.toMatch(/\bno dialogue\b/i);
-    expect(normalized.scenes[0]?.animationPrompt).toContain('Dialogue (calm):');
+    expect(normalized.scenes[0]?.animationPrompt).toContain('Dialogue:');
+    expect(normalized.scenes[0]?.animationPrompt).not.toMatch(/Dialogue\s*\(/i);
+    expect(normalized.scenes[0]?.animationPrompt).toMatch(/lip[- ]?sync/i);
+    expect(normalized.scenes[0]?.imagePrompt).toMatch(/lip[- ]?sync/i);
     expect(normalized.scenes[0]?.dialogue).toEqual([
       { speaker: 'Maya', line: 'We leave before midnight.', emotion: 'calm' },
     ]);

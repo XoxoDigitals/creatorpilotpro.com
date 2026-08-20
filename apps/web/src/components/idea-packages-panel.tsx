@@ -293,14 +293,13 @@ function PackageSection({
 }
 
 function sceneVideoPrompt(scene: ProductionScene, presentationMode = ''): string {
-  if (presentationMode === 'voiceover') return scene.animationPrompt;
+  if (presentationMode === 'voiceover' || presentationMode === 'background_audio') {
+    return scene.animationPrompt;
+  }
   const lines = scene.dialogue
     .map((dialogue) => {
       const speaker = dialogue.speaker || 'Speaker';
-      const emotion = dialogue.emotion && dialogue.emotion !== 'default' ? dialogue.emotion : '';
-      return emotion
-        ? `Dialogue (${emotion}): ${speaker}: ${dialogue.line}`
-        : `${speaker}: ${dialogue.line}`;
+      return `Dialogue: ${speaker}: ${dialogue.line}`;
     })
     .filter(Boolean);
   if (lines.length === 0) return scene.animationPrompt;

@@ -119,7 +119,7 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
   {
     id: 'presentation',
     label: 'Audio mode',
-    help: 'First production decision. Narration: the system generates TTS voiceover; visual prompts must not invent spoken speech. Dialogues only: no TTS — spoken lines live in image/animation prompts and scene.dialogue[]. Narration + Dialogues: TTS only on narrator time windows; talking clips keep speech in prompts. After Generate, mixed packages include a VO LAYUP TIMELINE with exact mm:ss windows.',
+    help: 'First production decision. Narration: the system generates TTS voiceover; visual prompts must not invent spoken speech. Dialogues only: no TTS — spoken lines live in image/animation prompts and scene.dialogue[] (no tone words in prompts; require lip-sync). Background Audio: no TTS or dialogue — kids-channel cheering / crowd beds in prompts. Narration + Dialogues: TTS only on narrator time windows; talking clips keep speech in prompts. After Generate, mixed packages include a VO LAYUP TIMELINE with exact mm:ss windows.',
     type: 'single',
     required: true,
     options: [
@@ -128,6 +128,10 @@ export const STYLE_QUESTIONS: StyleQuestion[] = [
       {
         value: 'mixed',
         label: 'Narration + Dialogues — VO on narrator windows, speech in prompts for talking scenes',
+      },
+      {
+        value: 'background_audio',
+        label: 'Background Audio — cheering / kids bed SFX in prompts, no TTS or dialogue',
       },
       { value: 'on_camera', label: 'On-camera host' },
       { value: 'text_only', label: 'Text-on-screen only (no VO)' },
@@ -384,7 +388,7 @@ export const STYLE_QUESTION_SECTIONS: StyleQuestionSection[] = [
   {
     id: 'audio',
     title: 'Audio mode',
-    help: 'Choose how speech is produced before anything else. This drives TTS vs prompt-speech vs mixed VO layup.',
+    help: 'Choose how speech/audio is produced before anything else. This drives TTS vs prompt-speech vs background beds vs mixed VO layup.',
     questionIds: ['presentation'],
   },
   {
@@ -739,8 +743,9 @@ export function formatDramaDialoguePackageRules(options: {
 - Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions stay in English; only the spoken words must match ${lang}.
 - imagePrompt and animationPrompt bodies stay in English. Quote any on-screen overlay text and spoken lines in ${lang} inside those English prompts.
 - ${formatDialogueClipDensityRules(clip, options.language)}
-- Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Different speakers can feel different things in the same scene. Do not print the emotion inside the spoken line.
-- animationPrompt must label each spoken line with its emotion: "Dialogue (angry): Name: line".
+- Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Emotion is metadata only — NEVER put tone/emotion words (excited, angry, cheerful, calm, sad, whisper, playful, etc.) into imagePrompt or animationPrompt, and do not print the emotion inside the spoken line.
+- animationPrompt must embed each spoken line as: "Dialogue: Name: line" (no emotion/tone label in parentheses).
+- Lip-sync (mandatory on every talking scene): imagePrompt AND animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines — clear mouth shapes matching each word, natural jaw and lip motion, no frozen or mismatched mouths.
 - Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for dialogue speaker labels inside animationPrompt where practical.
 ${qualityLine}
 ${
@@ -921,10 +926,13 @@ function styleBlockForAnswers(answers: StyleProfileAnswers): string {
 
 function audioInPromptRule(presentation: string): string {
   if (presentation === 'dialogue') {
-    return 'quoted spoken Dialogue lines in the output language + SFX/music under them. No TTS voiceover.';
+    return 'quoted spoken Dialogue lines in the output language (no tone/emotion labels) + accurate mouth lip-sync + SFX/music under them. No TTS voiceover.';
   }
   if (presentation === 'mixed') {
-    return 'NARRATION scenes: SFX/music/ambience only (VO is external). DIALOGUE scenes: quoted spoken lines in the output language + SFX/music; no VO on those clips.';
+    return 'NARRATION scenes: SFX/music/ambience only (VO is external). DIALOGUE scenes: quoted spoken lines in the output language (no tone/emotion labels) + accurate mouth lip-sync + SFX/music; no VO on those clips.';
+  }
+  if (presentation === 'background_audio') {
+    return 'Background Audio only: kids-channel bed SFX — crowd cheering, applause, playful whoops, soft music beds, reaction beds under the action. NO spoken narration, NO character dialogue, NO lip-sync speech.';
   }
   if (presentation === 'text_only') {
     return 'SFX/music/ambience only. No spoken speech.';
@@ -1029,14 +1037,23 @@ function audioModeSection(
     lines.push(
       'Dialogues only — NO TTS voiceover. Leave narrationScript empty.',
       'Every spoken line lives in scene.dialogue[] AND as quoted Dialogue lines inside animationPrompt (and in imagePrompt when a talking still is shown).',
+      'Label spoken lines as "Dialogue: Speaker: line" — NEVER put tone/emotion words (excited, angry, cheerful, etc.) into imagePrompt or animationPrompt.',
+      'Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync to the spoken lines.',
       `Spoken lines in ${lang}. Visual prompt bodies stay English.`,
     );
   } else if (mode === 'mixed') {
     lines.push(
       'Narration + Dialogues in the SAME video.',
       'TTS voiceover is generated ONLY for narrator windows. narrationScript / narrationLines cover those narrator windows only — not dialogue-only clips and not the full runtime as one lecture.',
-      `Talking scenes: no VO on those clips; spoken lines go in dialogue[] and quoted in animationPrompt, in ${lang}.`,
+      `Talking scenes: no VO on those clips; spoken lines go in dialogue[] and quoted in animationPrompt as "Dialogue: Speaker: line" (no tone/emotion labels), in ${lang}.`,
+      'Talking scenes: every imagePrompt and animationPrompt MUST require accurate mouth lip-sync to the spoken lines.',
       'See section 5 for the VO LAYUP TIMELINE the editor uses to place generated VO vs dialogue clips.',
+    );
+  } else if (mode === 'background_audio') {
+    lines.push(
+      'Background Audio — NO TTS voiceover and NO character dialogue. Leave narrationScript empty and dialogue[] empty.',
+      'Visual prompts MUST NOT invent spoken speech, lip-sync talking, or character lines.',
+      'animationPrompt (and AUDIO-IN-PROMPT) MUST include kids-channel style background beds: crowd cheering, applause, playful whoops, soft music beds, and reaction SFX synced to the action — not spoken words.',
     );
   } else if (mode === 'on_camera') {
     lines.push(
@@ -1460,7 +1477,8 @@ ${dna}`
       ? '- Always use expanded character references (never bare names alone). Keep the cartoon/CGI look; do NOT require "ultra realistic"; do NOT forbid cartoon or anime.'
       : '- Always use expanded character references (never bare names alone) and include the quality phrase "ultra realistic" in imagePrompt and animationPrompt.';
     return `${base}${dnaBlock}
-- Drama/dialogue detail: imagePrompt and animationPrompt must be especially specific about faces, wardrobe continuity, blocking, emotional beats, and prop interaction${clip ? ` across the full ~${clip}s clip` : ''}.
+- Drama/dialogue detail: imagePrompt and animationPrompt must be especially specific about faces, wardrobe continuity, blocking, and prop interaction${clip ? ` across the full ~${clip}s clip` : ''}. Do NOT write tone/emotion words (excited, angry, cheerful, etc.) into the prompts — keep spoken lines as "Dialogue: Name: line" only.
+- Lip-sync (mandatory): every talking imagePrompt and animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines (clear mouth shapes matching each word; no frozen or mismatched mouths).
 ${quality}
 - Include distinct negativePrompt (image) and animationNegativePrompt (video) per scene; embed each into its own prompt only. Dialogue is allowed — do NOT add "no dialogue" negatives.
 - Where appropriate, animationPrompt should also call for dramatic production audio under/around dialogue (impact hits, whooshes, tension risers, ambient beds) without replacing spoken lines.`;

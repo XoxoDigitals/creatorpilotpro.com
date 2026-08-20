@@ -194,13 +194,33 @@ describe('brand questionnaire & master prompt', () => {
     const voiceover = { version: 1 as const, answers: { presentation: 'voiceover' } };
     const dialogue = { version: 1 as const, answers: { presentation: 'dialogue' } };
     const mixed = { version: 1 as const, answers: { presentation: 'mixed' } };
+    const background = { version: 1 as const, answers: { presentation: 'background_audio' } };
     expect(isNarrationVoiceoverPackage(voiceover)).toBe(true);
     expect(isNarrationVoiceoverPackage(dialogue)).toBe(false);
     expect(isNarrationVoiceoverPackage(mixed)).toBe(false);
+    expect(isNarrationVoiceoverPackage(background)).toBe(false);
     expect(presentationNeedsVoiceover(voiceover)).toBe(true);
     expect(presentationNeedsVoiceover(dialogue)).toBe(false);
     expect(presentationNeedsVoiceover(mixed)).toBe(true);
+    expect(presentationNeedsVoiceover(background)).toBe(false);
     expect(isDramaOrDialoguePackage(mixed)).toBe(false);
+    expect(isDramaOrDialoguePackage(background)).toBe(false);
+  });
+
+  it('offers Background Audio and keeps dialogue prompts free of tone words', () => {
+    const presentation = STYLE_QUESTIONS.find((q) => q.id === 'presentation');
+    expect(presentation?.options?.some((o) => o.value === 'background_audio')).toBe(true);
+    const rules = formatDramaDialoguePackageRules({ clipDurationSec: 8, language: 'en' });
+    expect(rules).toContain('Dialogue: Name: line');
+    expect(rules).toMatch(/lip-sync/i);
+    expect(rules).not.toContain('Dialogue (angry):');
+    const composed = composeChannelStyles(
+      { presentation: 'background_audio', niche: 'kids rhymes' },
+      'en',
+    );
+    expect(composed.masterPrompt).toMatch(/Background Audio/i);
+    expect(composed.masterPrompt).toMatch(/cheering/i);
+    expect(composed.masterPrompt).not.toMatch(/generates TTS/i);
   });
 
   it('parses old profiles without retentionStyle', () => {
