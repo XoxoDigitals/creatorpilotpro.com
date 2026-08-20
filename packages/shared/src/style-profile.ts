@@ -1038,6 +1038,7 @@ function audioModeSection(
       'Dialogues only — NO TTS voiceover. Leave narrationScript empty.',
       'Every spoken line lives in scene.dialogue[] AND as quoted Dialogue lines inside animationPrompt (and in imagePrompt when a talking still is shown).',
       'Label spoken lines as "Dialogue: Speaker: line" — NEVER put tone/emotion words (excited, angry, cheerful, etc.) into imagePrompt or animationPrompt.',
+      'Fill each talking clip with enough dialogue for the full duration (multiple exchanges, full sentences) — never one short line then silence. Paste every line into animationPrompt in full.',
       'Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync to the spoken lines.',
       `Spoken lines in ${lang}. Visual prompt bodies stay English.`,
     );

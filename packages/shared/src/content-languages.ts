@@ -56,13 +56,13 @@ const BY_CODE = new Map(ALL_LANGUAGES.map((lang) => [lang.code, lang]));
 export const DEFAULT_CONTENT_LANGUAGE = 'en';
 
 /** Bump when language-split prompt rules change so AI cache keys move. */
-export const OUTPUT_LANGUAGE_POLICY_REV = 6;
+export const OUTPUT_LANGUAGE_POLICY_REV = 7;
 
 /**
- * Conversational dialogue pace (words per minute). Keeps character clips full
- * without sounding rushed — ~2.67 words/sec at 1.0× TTS.
+ * Conversational dialogue pace (words per minute). Keeps character clips talk-dense
+ * for baked-in video speech — ~3 words/sec at 1.0× (full clip, not sparse beats).
  */
-export const DIALOGUE_SPEAKING_WPM = 160;
+export const DIALOGUE_SPEAKING_WPM = 180;
 
 /**
  * Narration / voiceover pace (words per minute) — ~2.5 words/sec at 1.0× TTS.
@@ -123,8 +123,8 @@ export function spokenWordsForDuration(
 /** How many back-and-forth dialogue exchanges should fill one clip. */
 export function dialogueExchangesForClip(clipDurationSec: number): number {
   const clip = Math.max(1, Math.round(clipDurationSec));
-  // Roughly one exchange every ~3.5s; at least two for an 8s clip.
-  return Math.max(2, Math.round(clip / 3.5));
+  // Roughly one exchange every ~2.5s; at least three for an 8s clip.
+  return Math.max(3, Math.round(clip / 2.5));
 }
 
 export function formatDialogueClipDensityRules(
@@ -135,15 +135,18 @@ export function formatDialogueClipDensityRules(
   const words = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language, speed));
   const exchanges = dialogueExchangesForClip(clipDurationSec);
   const minLines = exchanges * 2;
+  const minWordsPerLine = Math.max(6, Math.round(words.min / minLines));
   const speedNote =
     speed > 1
       ? ` TTS for this language plays at ${speed}×, so write ~${speed}× more words than a 1.0× English read to fill the same ${words.durationSec}s.`
       : '';
   return `Clip dialogue density (mandatory for every dialogue / character scene of ~${words.durationSec}s):
 - Pace: ${words.wpm} words per minute (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × clipSeconds).${speedNote}
-- Spoken words in dialogue[] for THIS scene: about ${words.target} (acceptable ${words.min}-${words.max}). Never one short line then silence.
-- At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the full ${words.durationSec}s.
-- Keep the clip feeling lively and full of talk — not sparse, not a breathless dump. Match action/blocking in animationPrompt to the same ${words.durationSec}s.`;
+- Spoken words in dialogue[] for THIS scene: about ${words.target} (acceptable ${words.min}-${words.max}). HARD FAIL if under ${words.min} words or if the clip has long silent gaps with no talk.
+- At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the FULL ${words.durationSec}s — talk from start to end, not one short beat then silence.
+- Each spoken line must be a real sentence (about ${minWordsPerLine}+ words), not a 2–3 word stub ("Haan", "Kya?", "Wait.").
+- animationPrompt MUST paste EVERY dialogue[].line in full as "Dialogue: Speaker: line" — never shorten, paraphrase, or drop lines. ImagePrompt may quote the same lines when a talking still is shown.
+- Keep the clip feeling lively and full of talk — not sparse. Match action/blocking in animationPrompt to the same ${words.durationSec}s.`;
 }
 
 export function formatNarrationDurationDensityRules(

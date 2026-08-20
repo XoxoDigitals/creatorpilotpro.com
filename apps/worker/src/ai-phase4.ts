@@ -1418,7 +1418,8 @@ ${formatNarrationDurationDensityRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
 - Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion is metadata only — do NOT put tone/emotion words into prompts.
-- The line must ALSO appear labeled "Dialogue: Speaker: line" (never "Dialogue (excited): …") inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt).
+- The line must ALSO appear labeled "Dialogue: Speaker: line" (never "Dialogue (excited): …") inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt). Paste EVERY line in full — never shorten dialogue in the prompt.
+- Fill each ~${clipDurationSec}s talking clip with enough dialogue for the full duration (multiple exchanges, full sentences). HARD FAIL if a scene has only one short line then silence.
 - Every talking imagePrompt and animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines.
 - animationPrompt must combine camera, motion, timed beats, action, lip-sync, and exact dialogue so it can be pasted directly into a video-generation tool.
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".

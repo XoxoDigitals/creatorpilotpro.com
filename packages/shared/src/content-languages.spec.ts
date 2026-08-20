@@ -127,12 +127,14 @@ describe('content languages', () => {
 
   it('uses WPM formula for dialogue and narration density', () => {
     const dialogue = spokenWordsForDuration(8, DIALOGUE_SPEAKING_WPM);
-    expect(dialogue.target).toBe(Math.round((160 / 60) * 8));
+    expect(dialogue.target).toBe(Math.round((180 / 60) * 8));
     expect(dialogue.min).toBeLessThanOrEqual(dialogue.target);
     expect(dialogue.max).toBeGreaterThanOrEqual(dialogue.target);
-    expect(dialogueExchangesForClip(8)).toBeGreaterThanOrEqual(2);
-    expect(formatDialogueClipDensityRules(8)).toContain('160');
+    expect(dialogueExchangesForClip(8)).toBeGreaterThanOrEqual(3);
+    expect(formatDialogueClipDensityRules(8)).toContain('180');
     expect(formatDialogueClipDensityRules(8)).toContain(String(dialogue.target));
+    expect(formatDialogueClipDensityRules(8)).toMatch(/paste EVERY dialogue/i);
+    expect(formatDialogueClipDensityRules(8, 'en')).toMatch(/real sentence/i);
 
     const narration = spokenWordsForDuration(60, NARRATION_SPEAKING_WPM);
     expect(narration.target).toBe(150);
