@@ -4,6 +4,8 @@ import {
   contentLanguageOptionLabel,
   contentLanguageSelectOptions,
   dialogueExchangesForClip,
+  dialogueFillMultiplierForLanguage,
+  dialogueWpmForLanguage,
   formatDialogueClipDensityRules,
   formatIdeaTitleLanguageRules,
   formatNarrationDurationDensityRules,
@@ -135,6 +137,17 @@ describe('content languages', () => {
     expect(formatDialogueClipDensityRules(8)).toContain(String(dialogue.target));
     expect(formatDialogueClipDensityRules(8)).toMatch(/paste EVERY dialogue/i);
     expect(formatDialogueClipDensityRules(8, 'en')).toMatch(/real sentence/i);
+
+    // Hindi/Urdu dialogue-in-prompt needs ~2× English fill (not the 1.5× TTS speed).
+    expect(dialogueFillMultiplierForLanguage('ur')).toBe(2);
+    expect(dialogueFillMultiplierForLanguage('hi')).toBe(2);
+    expect(dialogueFillMultiplierForLanguage('en')).toBe(1);
+    const urduDialogue = spokenWordsForDuration(8, dialogueWpmForLanguage('ur'));
+    expect(urduDialogue.target).toBe(dialogue.target * 2);
+    expect(dialogueExchangesForClip(8, 'ur')).toBeGreaterThanOrEqual(dialogueExchangesForClip(8) * 2);
+    expect(formatDialogueClipDensityRules(8, 'ur')).toContain(String(urduDialogue.target));
+    expect(formatDialogueClipDensityRules(8, 'ur')).toMatch(/2×/i);
+    expect(formatDialogueClipDensityRules(8, 'hi')).toMatch(/HARD FAIL/i);
 
     const narration = spokenWordsForDuration(60, NARRATION_SPEAKING_WPM);
     expect(narration.target).toBe(150);

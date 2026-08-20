@@ -56,13 +56,19 @@ const BY_CODE = new Map(ALL_LANGUAGES.map((lang) => [lang.code, lang]));
 export const DEFAULT_CONTENT_LANGUAGE = 'en';
 
 /** Bump when language-split prompt rules change so AI cache keys move. */
-export const OUTPUT_LANGUAGE_POLICY_REV = 7;
+export const OUTPUT_LANGUAGE_POLICY_REV = 8;
 
 /**
  * Conversational dialogue pace (words per minute). Keeps character clips talk-dense
  * for baked-in video speech — ~3 words/sec at 1.0× (full clip, not sparse beats).
  */
 export const DIALOGUE_SPEAKING_WPM = 180;
+
+/**
+ * Hindi/Urdu dialogue-in-prompt fill vs English. Video models under-write native-script
+ * speech (~half a clip); require ~2× English word volume so talk fills the full duration.
+ */
+export const DIALOGUE_INDIC_FILL_MULTIPLIER = 2;
 
 /**
  * Narration / voiceover pace (words per minute) — ~2.5 words/sec at 1.0× TTS.
@@ -98,10 +104,20 @@ export function narrationWpmForLanguage(language?: string | null, speed?: number
   return Math.max(60, Math.round(NARRATION_SPEAKING_WPM * s));
 }
 
-/** Effective dialogue WPM when TTS will play at `speed`. */
+/** Effective dialogue WPM for baked-in video speech (not TTS wall-clock). */
 export function dialogueWpmForLanguage(language?: string | null, speed?: number | null): number {
-  const s = clampOpenAiTtsSpeed(speed ?? openAiTtsSpeedForLanguage(language));
-  return Math.max(60, Math.round(DIALOGUE_SPEAKING_WPM * s));
+  // Explicit speed override (legacy / tests) still honors a custom multiplier.
+  if (typeof speed === 'number' && Number.isFinite(speed) && speed > 0) {
+    const s = clampOpenAiTtsSpeed(speed);
+    return Math.max(60, Math.round(DIALOGUE_SPEAKING_WPM * s));
+  }
+  const fill = dialogueFillMultiplierForLanguage(language);
+  return Math.max(60, Math.round(DIALOGUE_SPEAKING_WPM * fill));
+}
+
+/** Extra dialogue volume for Hindi/Urdu prompt speech (1 for other languages). */
+export function dialogueFillMultiplierForLanguage(language?: string | null): number {
+  return isIndicContentLanguage(language) ? DIALOGUE_INDIC_FILL_MULTIPLIER : 1;
 }
 
 export function spokenWordsForDuration(
@@ -121,30 +137,38 @@ export function spokenWordsForDuration(
 }
 
 /** How many back-and-forth dialogue exchanges should fill one clip. */
-export function dialogueExchangesForClip(clipDurationSec: number): number {
+export function dialogueExchangesForClip(
+  clipDurationSec: number,
+  language?: string | null,
+): number {
   const clip = Math.max(1, Math.round(clipDurationSec));
-  // Roughly one exchange every ~2.5s; at least three for an 8s clip.
-  return Math.max(3, Math.round(clip / 2.5));
+  // Roughly one exchange every ~2.5s; at least three for an 8s English clip.
+  const base = Math.max(3, Math.round(clip / 2.5));
+  // Hindi/Urdu: ~2× exchanges so native-script talk fills the full clip.
+  if (isIndicContentLanguage(language)) {
+    return Math.max(base * 2, Math.round(clip / 1.25));
+  }
+  return base;
 }
 
 export function formatDialogueClipDensityRules(
   clipDurationSec: number,
   language?: string | null,
 ): string {
-  const speed = openAiTtsSpeedForLanguage(language);
-  const words = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language, speed));
-  const exchanges = dialogueExchangesForClip(clipDurationSec);
+  const fill = dialogueFillMultiplierForLanguage(language);
+  const words = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language));
+  const exchanges = dialogueExchangesForClip(clipDurationSec, language);
   const minLines = exchanges * 2;
   const minWordsPerLine = Math.max(6, Math.round(words.min / minLines));
-  const speedNote =
-    speed > 1
-      ? ` TTS for this language plays at ${speed}×, so write ~${speed}× more words than a 1.0× English read to fill the same ${words.durationSec}s.`
+  const indicNote =
+    fill > 1
+      ? ` Hindi/Urdu MUST write about ${fill}× an English clip (≈${words.target} words / ${minLines}+ lines for ${words.durationSec}s). One short line (~3–4s) then silence is a HARD FAIL — keep speaking across the full ${words.durationSec}s in native script.`
       : '';
   return `Clip dialogue density (mandatory for every dialogue / character scene of ~${words.durationSec}s):
-- Pace: ${words.wpm} words per minute (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × clipSeconds).${speedNote}
+- Pace: ${words.wpm} words per minute (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × clipSeconds).${indicNote}
 - Spoken words in dialogue[] for THIS scene: about ${words.target} (acceptable ${words.min}-${words.max}). HARD FAIL if under ${words.min} words or if the clip has long silent gaps with no talk.
 - At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the FULL ${words.durationSec}s — talk from start to end, not one short beat then silence.
-- Each spoken line must be a real sentence (about ${minWordsPerLine}+ words), not a 2–3 word stub ("Haan", "Kya?", "Wait.").
+- Each spoken line must be a real sentence (about ${minWordsPerLine}+ words), not a 2–3 word stub ("Haan", "Kya?", "Wait.", "اتنی صبح؟").
 - animationPrompt MUST paste EVERY dialogue[].line in full as "Dialogue: Speaker: line" — never shorten, paraphrase, or drop lines. ImagePrompt may quote the same lines when a talking still is shown.
 - Keep the clip feeling lively and full of talk — not sparse. Match action/blocking in animationPrompt to the same ${words.durationSec}s.`;
 }
