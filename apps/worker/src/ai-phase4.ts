@@ -2485,7 +2485,7 @@ ${
       const update = updates.get(sceneIndex);
       const dialogue = normalizeDialogue(row.dialogue);
       let animationPrompt = update?.animationPrompt ?? text(row.animationPrompt);
-      let animationNegativePrompt =
+      const animationNegativePrompt =
         update?.animationNegativePrompt ||
         text(row.animationNegativePrompt ?? row.videoNegativePrompt) ||
         (dramaOrDialogue || dialogue.length > 0
