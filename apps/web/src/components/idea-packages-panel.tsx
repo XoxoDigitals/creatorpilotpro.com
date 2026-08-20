@@ -309,6 +309,21 @@ function sceneVideoPrompt(scene: ProductionScene, presentationMode = ''): string
     : scene.animationPrompt;
 }
 
+function countDialogueWords(scene: ProductionScene): number {
+  return scene.dialogue.reduce((sum, line) => {
+    const text = (line.line ?? '').trim();
+    if (!text) return sum;
+    return sum + text.split(/\s+/).filter(Boolean).length;
+  }, 0);
+}
+
+function sceneDialogueWordSummary(scene: ProductionScene): string | null {
+  const words = countDialogueWords(scene);
+  if (words <= 0) return null;
+  const lines = scene.dialogue.filter((d) => (d.line ?? '').trim()).length;
+  return `${words} dialogue word${words === 1 ? '' : 's'} · ${lines} line${lines === 1 ? '' : 's'}`;
+}
+
 function sceneCopyPayload(prompt: string, scene: ProductionScene): string {
   const main = prompt.trim();
   const imageNeg = (scene.negativePrompt ?? '').trim();
@@ -441,14 +456,23 @@ function PromptGroup({
       index,
       label: `Scene ${scene.sceneIndex || index + 1}`,
       prompt: kind === 'image' ? scene.imagePrompt : sceneVideoPrompt(scene, presentationMode),
+      dialogueSummary: kind === 'video' ? sceneDialogueWordSummary(scene) : null,
     }))
     .filter((item) => item.prompt);
   if (items.length === 0) return null;
+  const totalDialogueWords =
+    kind === 'video'
+      ? items.reduce((sum, item) => sum + countDialogueWords(item.scene), 0)
+      : 0;
   return (
     <Accordion
       id={`${ideaId}-${kind}-prompts`}
       title={title}
-      summary={sceneRangeSummary(items.map((item) => item.scene))}
+      summary={
+        kind === 'video' && totalDialogueWords > 0
+          ? `${sceneRangeSummary(items.map((item) => item.scene))} · ${totalDialogueWords} dialogue words`
+          : sceneRangeSummary(items.map((item) => item.scene))
+      }
       actions={
         <CopyButton
           value={items.map((item) => `${item.label}\n${item.prompt}`).join('\n\n')}
@@ -466,7 +490,7 @@ function PromptGroup({
             id={`${ideaId}-${kind}-scene-${item.index}`}
             variant="item"
             title={item.label}
-            summary={sceneTimeLabel(item.scene)}
+            summary={[sceneTimeLabel(item.scene), item.dialogueSummary].filter(Boolean).join(' · ')}
             actions={
               <CopyButton
                 value={sceneCopyPayload(item.prompt, item.scene)}
@@ -478,6 +502,29 @@ function PromptGroup({
           >
             {item.scene.narrationSegment ? (
               <p className="mb-2 text-xs italic text-zinc-500">“{item.scene.narrationSegment}”</p>
+            ) : null}
+            {kind === 'video' && item.scene.dialogue.length > 0 ? (
+              <div className="mb-2 rounded-md border border-zinc-100 bg-zinc-50 px-2.5 py-2">
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  Dialogue word count
+                  {item.dialogueSummary ? ` · ${item.dialogueSummary}` : ''}
+                </p>
+                <ul className="space-y-1 text-xs text-zinc-600">
+                  {item.scene.dialogue.map((line, lineIndex) => {
+                    const text = (line.line ?? '').trim();
+                    if (!text) return null;
+                    const words = text.split(/\s+/).filter(Boolean).length;
+                    return (
+                      <li key={`${item.index}-dlg-${lineIndex}`}>
+                        <span className="font-medium text-zinc-700">
+                          {line.speaker || 'Speaker'}
+                        </span>
+                        {` · ${words} word${words === 1 ? '' : 's'} — ${text}`}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             ) : null}
             <p className="whitespace-pre-wrap text-sm text-zinc-700">{item.prompt}</p>
             {(kind === 'image' ? item.scene.negativePrompt : item.scene.animationNegativePrompt || item.scene.negativePrompt) ? (

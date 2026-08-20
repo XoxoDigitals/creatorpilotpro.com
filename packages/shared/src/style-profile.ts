@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  dialogueWordsTargetForClip,
   formatDialogueClipDensityRules,
   formatIdeaTitleLanguageRules,
   formatOnScreenTextLanguageRules,
@@ -7,6 +8,7 @@ import {
   formatPublishCopyLanguageRules,
   formatSpokenLanguageRules,
   languageDisplayName,
+  nearestDialogueClipDuration,
   OUTPUT_LANGUAGE_POLICY_REV,
   thumbnailOverlayLanguageLabel,
 } from './content-languages.js';
@@ -63,6 +65,13 @@ export const styleProfileAnswersSchema = z.object({
   extraNotes: z.string().default(''),
   /** Owner-written or AI-analyzed visual/editing DNA. */
   customVisualStyle: z.string().default(''),
+  /**
+   * Optional owner targets for spoken dialogue words per clip length.
+   * Keys: "8" | "10" | "15" | "30". Empty/0 = use language default density.
+   */
+  dialogueWordsByClipSec: z
+    .record(z.string(), z.number().int().min(0).max(800))
+    .default({}),
 });
 export type StyleProfileAnswers = z.infer<typeof styleProfileAnswersSchema>;
 
@@ -738,11 +747,17 @@ export function formatDramaDialoguePackageRules(options: {
   const qualityLine = cartoon
     ? '- Quality: keep a consistent 2D or 3D cartoon / CGI look (do NOT require photoreal or "ultra realistic"; do NOT forbid cartoon or anime in negatives).'
     : '- Quality keyword: include the exact phrase "ultra realistic" in every imagePrompt and animationPrompt (and thumbnailPrompt when writing one).';
+  const customWords = options.styleProfile != null
+    ? parseStyleProfile(options.styleProfile).answers.dialogueWordsByClipSec
+    : undefined;
+  const targetWords = dialogueWordsTargetForClip(clip, options.language, customWords);
+  const ownerRaw = customWords?.[String(nearestDialogueClipDuration(clip))];
+  const ownerOverride = typeof ownerRaw === 'number' && ownerRaw > 0;
 
   return `DRAMA / DIALOGUE package rules (mandatory):
 - Spoken dialogue language: write EVERY spoken line in ${lang}. Do not use English dialogue unless the channel language is English. Character names and visual/scene descriptions stay in English; only the spoken words must match ${lang}.
 - imagePrompt and animationPrompt bodies stay in English. Quote any on-screen overlay text and spoken lines in ${lang} inside those English prompts.
-- ${formatDialogueClipDensityRules(clip, options.language)}
+- ${formatDialogueClipDensityRules(clip, options.language, { targetWords, ownerOverride })}
 - Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Emotion is metadata only — NEVER put tone/emotion words (excited, angry, cheerful, calm, sad, whisper, playful, etc.) into imagePrompt or animationPrompt, and do not print the emotion inside the spoken line.
 - animationPrompt must embed each spoken line as: "Dialogue: Name: line" (no emotion/tone label in parentheses).
 - Lip-sync (mandatory on every talking scene): imagePrompt AND animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines — clear mouth shapes matching each word, natural jaw and lip motion, no frozen or mismatched mouths.

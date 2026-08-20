@@ -43,6 +43,8 @@ import {
   YOUTUBE_CATEGORIES,
   YOUTUBE_COUNTRIES,
   CONTENT_LANGUAGES,
+  DIALOGUE_CLIP_DURATION_OPTIONS,
+  dialogueWordsTargetForClip,
   type CaptionColorMode,
 } from '@scp/shared';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -733,6 +735,45 @@ export default function AccountSettingsPage() {
             <p className="mt-1 text-xs text-zinc-500">
               Ideas generation is on AI and Mixed accounts only. Dramas works on any content type.
             </p>
+          </div>
+          <div className="sm:col-span-2 space-y-2 rounded-md border border-zinc-200 bg-zinc-50/80 p-3">
+            <p className="text-sm font-medium text-zinc-800">Dialogue words per clip</p>
+            <p className="text-xs text-zinc-500">
+              For Dialogues-only / talking scenes: set how many spoken words each clip length should
+              carry. Leave blank to use the language default (Hindi/Urdu defaults are ~2× English).
+              After saving, regenerate script or animation prompts to apply.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {DIALOGUE_CLIP_DURATION_OPTIONS.map((seconds) => {
+                const key = String(seconds);
+                const current = styleAnswers.dialogueWordsByClipSec?.[key];
+                const placeholder = dialogueWordsTargetForClip(seconds, language);
+                return (
+                  <Field key={seconds} label={`${seconds}s clip`}>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={800}
+                      inputMode="numeric"
+                      placeholder={`Default ${placeholder}`}
+                      value={typeof current === 'number' && current > 0 ? String(current) : ''}
+                      onChange={(e) => {
+                        const raw = e.target.value.trim();
+                        const nextMap = { ...(styleAnswers.dialogueWordsByClipSec ?? {}) };
+                        if (!raw) {
+                          delete nextMap[key];
+                        } else {
+                          const n = Math.max(0, Math.min(800, Math.round(Number(raw)) || 0));
+                          if (n <= 0) delete nextMap[key];
+                          else nextMap[key] = n;
+                        }
+                        setStyleAnswers({ ...styleAnswers, dialogueWordsByClipSec: nextMap });
+                      }}
+                    />
+                  </Field>
+                );
+              })}
+            </div>
           </div>
         </div>
       </Card>

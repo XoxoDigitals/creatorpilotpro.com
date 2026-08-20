@@ -29,6 +29,8 @@ import {
   formatLockedCharactersPrompt,
   formatNarrationDurationDensityRules,
   formatDialogueClipDensityRules,
+  dialogueWordsTargetForClip,
+  nearestDialogueClipDuration,
   formatOutputLanguagePolicy,
   formatSpokenLanguageRules,
   formatCharacterReference,
@@ -950,6 +952,21 @@ function normalizedPresentation(value: unknown): PackagePresentation {
     : 'other';
 }
 
+/** Owner clip-word targets (Content pipeline) or language defaults. */
+function channelDialogueDensityRules(
+  clipDurationSec: number,
+  language: string,
+  styleProfile: unknown,
+): string {
+  const custom = parseStyleProfile(styleProfile).answers.dialogueWordsByClipSec;
+  const targetWords = dialogueWordsTargetForClip(clipDurationSec, language, custom);
+  const ownerRaw = custom?.[String(nearestDialogueClipDuration(clipDurationSec))];
+  return formatDialogueClipDensityRules(clipDurationSec, language, {
+    targetWords,
+    ownerOverride: typeof ownerRaw === 'number' && ownerRaw > 0,
+  });
+}
+
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
 }
@@ -1416,7 +1433,7 @@ ${formatNarrationDurationDensityRules(videoDurationSec, channelLanguage)}
         ? `Presentation mode is DIALOGUES ONLY — no TTS. Spoken lines live in image/animation prompts + scene.dialogue[].
 - narrationScript must be an empty string.
 - ${hookRetentionReminder}
-${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
+${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}
 - Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion is metadata only — do NOT put tone/emotion words into prompts.
 - The line must ALSO appear labeled "Dialogue: Speaker: line" (never "Dialogue (excited): …") inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt). Paste EVERY line in full — never shorten dialogue in the prompt.
 - Fill each ~${clipDurationSec}s talking clip with enough dialogue for the full duration (multiple exchanges, full sentences). HARD FAIL if a scene has only one short line then silence.
@@ -1438,7 +1455,7 @@ ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
 ${formatFernNarrationRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 - ${mixedVoLayupRules}
-${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
+${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}
 - narrationScript contains only the narrator portions (Fern continuous prose) for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not dialogue-only clips.
 - Character names must be defined in characters[].
 - Do not invent scene image/video prompts yet — those are generated after the narrator voiceover is timed.
@@ -1447,7 +1464,7 @@ ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 - ${mixedVoLayupRules}
 ${formatNarrationDurationDensityRules(Math.max(clipDurationSec, Math.round(videoDurationSec * 0.4)), channelLanguage)}
-${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
+${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}
 - narrationScript contains only the narrator portions for NARRATION windows (in ${languageDisplayName(channelLanguage)}), not a lecture over dialogue clips.
 - Open narrator portions with a hooky person/subject line when the idea is about a notable person (same "this person from [place] is famous for…" energy), then continue the story.
 - Also return narrationLines: one narrator sentence per item as { text, emotion }. Pick a fitting emotion per line from cheerful, excited, calm, empathetic, sad, angry, playful, whisper, newscast, default. Vary with the story — do not tag every line newscast or default. Do not name the emotion in spoken text. narrationScript must equal those texts concatenated.
@@ -1465,6 +1482,7 @@ ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}
         language: channelLanguage,
         includeNegativePrompts: !audioFirst,
         cartoonPackage,
+        styleProfile: channelStyle?.styleProfile,
       })}`
     : '';
 
@@ -2013,6 +2031,7 @@ export async function runIdeaVisuals(
           language: channelLanguage,
           includeNegativePrompts: true,
           cartoonPackage,
+          styleProfile: channelStyle?.styleProfile,
         })}`
       : '';
   const documentaryRules = documentaryCollage
@@ -2035,10 +2054,10 @@ export async function runIdeaVisuals(
       ? `- Mixed narration + dialogues: cover the FULL ${videoDurationSec}s video, not only the VO transcript. Follow any VO LAYUP TIMELINE in the provided editingInstructions.
 - Tag each scene with audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
 - NARRATION scenes: narrationSegment = exact VO text for that window; dialogue[] empty; visual prompts MUST NOT invent speech; use narration (no-talking) negatives; AUDIO-IN-PROMPT is SFX/music/ambience only.
-- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker: line" with NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)} Do NOT add "no dialogue" negatives on these scenes.
+- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker: line" with NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)} Do NOT add "no dialogue" negatives on these scenes.
 - Keep/update the VO LAYUP TIMELINE in editingInstructions: Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE.`
       : presentation === 'dialogue'
-        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker: line" with NO tone/emotion labels. Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken lines in ${languageDisplayName(channelLanguage)}. ${formatDialogueClipDensityRules(clipDurationSec, channelLanguage)}`
+        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker: line" with NO tone/emotion labels. Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken lines in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}`
         : presentation === 'background_audio'
           ? `- Background Audio: dialogue[] must be [] for every scene. No spoken speech or lip-sync talking. Every animationPrompt MUST include kids-channel background beds (crowd cheering, applause, playful whoops, soft music beds, reaction SFX) synced to the action.`
           : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';
@@ -2379,6 +2398,7 @@ async function runIdeaAnimationPromptsOnly(
           language: channelLanguage,
           includeNegativePrompts: true,
           cartoonPackage,
+          styleProfile: channelStyle?.styleProfile,
         })}`
       : '';
   const kidsRhymeVisualRules = kidsRhyme ? `\n${formatKidsRhymeVisualRules()}` : '';

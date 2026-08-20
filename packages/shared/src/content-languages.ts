@@ -151,26 +151,82 @@ export function dialogueExchangesForClip(
   return base;
 }
 
+/** Supported clip lengths for owner dialogue word targets. */
+export const DIALOGUE_CLIP_DURATION_OPTIONS = [8, 10, 15, 30] as const;
+export type DialogueClipDurationSec = (typeof DIALOGUE_CLIP_DURATION_OPTIONS)[number];
+
+/** Count whitespace-separated spoken words (works for English / Hindi / Urdu script). */
+export function countSpokenWords(text: string): number {
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length > 0).length;
+}
+
+/** Snap an arbitrary clip length to the nearest configured bucket (8/10/15/30). */
+export function nearestDialogueClipDuration(clipDurationSec: number): DialogueClipDurationSec {
+  const clip = Math.max(1, Math.round(clipDurationSec));
+  let best: DialogueClipDurationSec = 8;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const option of DIALOGUE_CLIP_DURATION_OPTIONS) {
+    const dist = Math.abs(option - clip);
+    if (dist < bestDist || (dist === bestDist && option > best)) {
+      best = option;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolve spoken-word target for a clip. Owner overrides in `customByClipSec`
+ * (keys "8"|"10"|"15"|"30") win when > 0; otherwise language default density.
+ */
+export function dialogueWordsTargetForClip(
+  clipDurationSec: number,
+  language?: string | null,
+  customByClipSec?: Record<string, number> | null,
+): number {
+  const bucket = nearestDialogueClipDuration(clipDurationSec);
+  const raw = customByClipSec?.[String(bucket)];
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return Math.min(800, Math.round(raw));
+  }
+  return spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language)).target;
+}
+
 export function formatDialogueClipDensityRules(
   clipDurationSec: number,
   language?: string | null,
+  options?: { targetWords?: number | null; ownerOverride?: boolean },
 ): string {
   const fill = dialogueFillMultiplierForLanguage(language);
-  const words = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language));
+  const auto = spokenWordsForDuration(clipDurationSec, dialogueWpmForLanguage(language));
+  const target =
+    typeof options?.targetWords === 'number' && options.targetWords > 0
+      ? Math.round(options.targetWords)
+      : auto.target;
+  const min = Math.max(1, Math.round(target * 0.9));
+  const max = Math.max(target + 1, Math.round(target * 1.1));
+  const wpm = Math.max(60, Math.round((target / Math.max(1, auto.durationSec)) * 60));
   const exchanges = dialogueExchangesForClip(clipDurationSec, language);
   const minLines = exchanges * 2;
-  const minWordsPerLine = Math.max(6, Math.round(words.min / minLines));
-  const indicNote =
-    fill > 1
-      ? ` Hindi/Urdu MUST write about ${fill}× an English clip (≈${words.target} words / ${minLines}+ lines for ${words.durationSec}s). One short line (~3–4s) then silence is a HARD FAIL — keep speaking across the full ${words.durationSec}s in native script.`
+  const minWordsPerLine = Math.max(6, Math.round(min / minLines));
+  const ownerNote =
+    options?.ownerOverride === true
+      ? ` Owner setting for this channel: about ${target} spoken words per ~${auto.durationSec}s clip.`
       : '';
-  return `Clip dialogue density (mandatory for every dialogue / character scene of ~${words.durationSec}s):
-- Pace: ${words.wpm} words per minute (≈ ${(words.wpm / 60).toFixed(2)} words/sec). Formula: words = round(WPM / 60 × clipSeconds).${indicNote}
-- Spoken words in dialogue[] for THIS scene: about ${words.target} (acceptable ${words.min}-${words.max}). HARD FAIL if under ${words.min} words or if the clip has long silent gaps with no talk.
-- At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the FULL ${words.durationSec}s — talk from start to end, not one short beat then silence.
+  const indicNote =
+    fill > 1 && options?.ownerOverride !== true
+      ? ` Hindi/Urdu MUST write about ${fill}× an English clip (≈${target} words / ${minLines}+ lines for ${auto.durationSec}s). One short line (~3–4s) then silence is a HARD FAIL — keep speaking across the full ${auto.durationSec}s in native script.`
+      : '';
+  return `Clip dialogue density (mandatory for every dialogue / character scene of ~${auto.durationSec}s):
+- Pace: ~${wpm} words per minute (≈ ${(wpm / 60).toFixed(2)} words/sec). Target ≈ ${target} words for ${auto.durationSec}s.${ownerNote}${indicNote}
+- Spoken words in dialogue[] for THIS scene: about ${target} (acceptable ${min}-${max}). HARD FAIL if under ${min} words or if the clip has long silent gaps with no talk.
+- At least ${exchanges} dialogue exchanges (about ${minLines}+ spoken lines alternating speakers) timed across the FULL ${auto.durationSec}s — talk from start to end, not one short beat then silence.
 - Each spoken line must be a real sentence (about ${minWordsPerLine}+ words), not a 2–3 word stub ("Haan", "Kya?", "Wait.", "اتنی صبح؟").
 - animationPrompt MUST paste EVERY dialogue[].line in full as "Dialogue: Speaker: line" — never shorten, paraphrase, or drop lines. ImagePrompt may quote the same lines when a talking still is shown.
-- Keep the clip feeling lively and full of talk — not sparse. Match action/blocking in animationPrompt to the same ${words.durationSec}s.`;
+- Keep the clip feeling lively and full of talk — not sparse. Match action/blocking in animationPrompt to the same ${auto.durationSec}s.`;
 }
 
 export function formatNarrationDurationDensityRules(

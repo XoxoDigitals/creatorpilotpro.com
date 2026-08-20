@@ -6,6 +6,8 @@ import {
   dialogueExchangesForClip,
   dialogueFillMultiplierForLanguage,
   dialogueWpmForLanguage,
+  dialogueWordsTargetForClip,
+  countSpokenWords,
   formatDialogueClipDensityRules,
   formatIdeaTitleLanguageRules,
   formatNarrationDurationDensityRules,
@@ -147,7 +149,15 @@ describe('content languages', () => {
     expect(dialogueExchangesForClip(8, 'ur')).toBeGreaterThanOrEqual(dialogueExchangesForClip(8) * 2);
     expect(formatDialogueClipDensityRules(8, 'ur')).toContain(String(urduDialogue.target));
     expect(formatDialogueClipDensityRules(8, 'ur')).toMatch(/2×/i);
-    expect(formatDialogueClipDensityRules(8, 'hi')).toMatch(/HARD FAIL/i);
+    expect(formatDialogueClipDensityRules(8, 'ur', { targetWords: 60, ownerOverride: true })).toContain(
+      '60',
+    );
+    expect(formatDialogueClipDensityRules(8, 'ur', { targetWords: 60, ownerOverride: true })).toMatch(
+      /Owner setting/i,
+    );
+    expect(dialogueWordsTargetForClip(8, 'en', { '8': 40 })).toBe(40);
+    expect(dialogueWordsTargetForClip(9, 'en', { '8': 40, '10': 50 })).toBe(50);
+    expect(countSpokenWords('اتنی صبح صبح کون آ سکتا ہے؟')).toBeGreaterThanOrEqual(5);
 
     const narration = spokenWordsForDuration(60, NARRATION_SPEAKING_WPM);
     expect(narration.target).toBe(150);
