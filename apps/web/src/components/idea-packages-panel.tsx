@@ -590,82 +590,6 @@ function PromptGroup({
   );
 }
 
-function NegativePromptsSection({
-  scenes,
-  thumbnailNegativePrompt,
-  ideaId,
-  copiedKey,
-  onCopy,
-}: {
-  scenes: ProductionScene[];
-  thumbnailNegativePrompt: string;
-  ideaId: string;
-  copiedKey: string | null;
-  onCopy: (key: string, value: unknown) => void;
-}) {
-  const items = [
-    ...scenes.flatMap((scene, index) => {
-      const rows: Array<{ label: string; prompt: string; key: string }> = [];
-      if (scene.negativePrompt) {
-        rows.push({
-          label: `Scene ${scene.sceneIndex || index + 1} · Image`,
-          prompt: scene.negativePrompt,
-          key: `scene-${index}-image`,
-        });
-      }
-      if (scene.animationNegativePrompt) {
-        rows.push({
-          label: `Scene ${scene.sceneIndex || index + 1} · Video`,
-          prompt: scene.animationNegativePrompt,
-          key: `scene-${index}-video`,
-        });
-      }
-      return rows;
-    }),
-    ...(thumbnailNegativePrompt
-      ? [{ label: 'Thumbnail', prompt: thumbnailNegativePrompt, key: 'thumbnail' }]
-      : []),
-  ];
-  if (items.length === 0) return null;
-  return (
-    <Accordion
-      id={`${ideaId}-negative-prompts`}
-      title="Negative prompts"
-      summary={`${items.length} prompt${items.length === 1 ? '' : 's'}`}
-      actions={
-        <CopyButton
-          value={items.map((item) => `${item.label}\n${item.prompt}`).join('\n\n')}
-          copyKey={`${ideaId}:negative:all`}
-          copiedKey={copiedKey}
-          onCopy={onCopy}
-          label="Copy all negatives"
-        />
-      }
-    >
-      <div className="space-y-2">
-        {items.map((item) => (
-          <Accordion
-            key={item.key}
-            id={`${ideaId}-negative-${item.key}`}
-            variant="item"
-            title={item.label}
-            actions={
-              <CopyButton
-                value={item.prompt}
-                copyKey={`${ideaId}:negative:${item.key}`}
-                copiedKey={copiedKey}
-                onCopy={onCopy}
-              />
-            }
-          >
-            <p className="whitespace-pre-wrap text-sm text-zinc-700">{item.prompt}</p>
-          </Accordion>
-        ))}
-      </div>
-    </Accordion>
-  );
-}
-
 function transcriptRangeSummary(segments: TimedTranscriptSegment[]): string {
   const count = `${segments.length} segment${segments.length === 1 ? '' : 's'}`;
   if (segments.length === 0) return count;
@@ -1171,13 +1095,6 @@ function PackageDetails({
               <ReadableValue value={pkg.universalVideoPrompt} />
             </Accordion>
           ) : null}
-          <NegativePromptsSection
-            scenes={pkg.sceneBreakdown}
-            thumbnailNegativePrompt={pkg.thumbnailNegativePrompt}
-            ideaId={idea.id}
-            copiedKey={copiedKey}
-            onCopy={onCopy}
-          />
           <PackageSection
             title="Thumbnail prompt"
             value={pkg.thumbnailPrompt}
