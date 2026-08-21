@@ -1069,6 +1069,14 @@ function ensureDialogueLipSync(prompt: string): string {
   return `${trimmed}\nLip-sync: ${DIALOGUE_LIPSYNC_CUE}`;
 }
 
+/** Remove video-only lip-sync cues from still-image prompts. */
+function stripLipSyncFromImagePrompt(prompt: string): string {
+  return prompt
+    .replace(/(?:^|\n)[ \t]*Lip-sync:[^\n]*/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function ensureUltraRealistic(prompt: string): string {
   const trimmed = prompt.trim();
   if (!trimmed) return trimmed;
@@ -1171,8 +1179,11 @@ export function normalizeProductionBriefOutput(
     if (dialogue.length > 0 && (drama || options.presentation === 'dialogue' || options.presentation === 'mixed')) {
       imagePrompt = stripDialogueToneLabels(imagePrompt);
       animationPrompt = stripDialogueToneLabels(animationPrompt);
-      if (imagePrompt) imagePrompt = ensureDialogueLipSync(imagePrompt);
+      // Lip-sync is motion-only — never bake it into still imagePrompt.
+      if (imagePrompt) imagePrompt = stripLipSyncFromImagePrompt(imagePrompt);
       if (animationPrompt) animationPrompt = ensureDialogueLipSync(animationPrompt);
+    } else if (imagePrompt) {
+      imagePrompt = stripLipSyncFromImagePrompt(imagePrompt);
     }
     if (characters.length) {
       imagePrompt = expandCharacterReferencesInText(imagePrompt, characters);
@@ -1464,7 +1475,7 @@ ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.st
 - The line must ALSO appear labeled "Dialogue: Speaker: line" (never "Dialogue (excited): …") inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt). Paste EVERY line in full — never shorten dialogue in the prompt.
 - Fill each ~${clipDurationSec}s talking clip with enough dialogue for the full duration (multiple exchanges, full sentences). HARD FAIL if a scene has only one short line then silence.
 - Hindi/Urdu: write about 2× English dialogue volume and keep native-script speech across the FULL clip — never one ~3–4s line in an 8s scene.
-- Every talking imagePrompt and animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines.
+- Every talking animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines. Do NOT put "Lip-sync:" into imagePrompt.
 - animationPrompt must combine camera, motion, timed beats, action, lip-sync, and exact dialogue so it can be pasted directly into a video-generation tool.
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".
 - Dialogue language: ALL spoken lines MUST be in ${languageDisplayName(channelLanguage)}.`
@@ -2090,10 +2101,10 @@ export async function runIdeaVisuals(
       ? `- Mixed narration + dialogues: cover the FULL ${videoDurationSec}s video, not only the VO transcript. Follow any VO LAYUP TIMELINE in the provided editingInstructions.
 - Tag each scene with audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
 - NARRATION scenes: narrationSegment = exact VO text for that window; dialogue[] empty; visual prompts MUST NOT invent speech; use narration (no-talking) negatives; AUDIO-IN-PROMPT is SFX/music/ambience only.
-- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker: line" with NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)} Do NOT add "no dialogue" negatives on these scenes.
+- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker: line" with NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking animationPrompt MUST require accurate mouth lip-sync; do NOT put Lip-sync into imagePrompt. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)} Do NOT add "no dialogue" negatives on these scenes.
 - Keep/update the VO LAYUP TIMELINE in editingInstructions: Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE.`
       : presentation === 'dialogue'
-        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker: line" with NO tone/emotion labels. Emotion is metadata only. Every talking imagePrompt and animationPrompt MUST require accurate mouth lip-sync. Spoken lines in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}`
+        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker: line" with NO tone/emotion labels. Emotion is metadata only. Every talking animationPrompt MUST require accurate mouth lip-sync (not imagePrompt). Spoken lines in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}`
         : presentation === 'background_audio'
           ? `- Background Audio: dialogue[] must be [] for every scene. No spoken speech or lip-sync talking. Every animationPrompt MUST include kids-channel background beds (crowd cheering, applause, playful whoops, soft music beds, reaction SFX) synced to the action.`
           : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';

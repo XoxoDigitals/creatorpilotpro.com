@@ -324,18 +324,43 @@ function sceneDialogueWordSummary(scene: ProductionScene): string | null {
   return `${words} dialogue word${words === 1 ? '' : 's'} · ${lines} line${lines === 1 ? '' : 's'}`;
 }
 
-function sceneCopyPayload(prompt: string, scene: ProductionScene): string {
-  const main = prompt.trim();
-  const imageNeg = (scene.negativePrompt ?? '').trim();
-  const videoNeg = (scene.animationNegativePrompt ?? '').trim();
-  const blocks = [main];
-  if (imageNeg && videoNeg && imageNeg !== videoNeg) {
-    blocks.push(`Image negative:\n${imageNeg}`, `Video negative:\n${videoNeg}`);
+/**
+ * Image prompts must not carry video-only cues; video prompts must not carry
+ * image-only negative labels. Cleans already-stored packages for copy/display.
+ */
+function sanitizeScenePrompt(prompt: string, kind: 'image' | 'video'): string {
+  let out = (prompt ?? '').trim();
+  if (!out) return out;
+  if (kind === 'image') {
+    // Lip-sync is a motion cue — keep it on video prompts only.
+    out = out.replace(/(?:^|\n)[ \t]*Lip-sync:[^\n]*/gi, '');
+    out = out.replace(
+      /(?:^|\n)[ \t]*Video\s+negative:\s*[\s\S]*?(?=(?:\n[ \t]*(?:Image\s+negative|Negative):)|\s*$)/gi,
+      '',
+    );
   } else {
-    const single = imageNeg || videoNeg;
-    if (single) blocks.push(`Negative:\n${single}`);
+    out = out.replace(
+      /(?:^|\n)[ \t]*Image\s+negative:\s*[\s\S]*?(?=(?:\n[ \t]*(?:Video\s+negative|Negative):)|\s*$)/gi,
+      '',
+    );
   }
-  return blocks.join('\n\n');
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Copy body for one scene: matching prompt only + matching negative (never both). */
+function sceneCopyPayload(
+  prompt: string,
+  scene: ProductionScene,
+  kind: 'image' | 'video',
+): string {
+  const main = sanitizeScenePrompt(prompt, kind);
+  const neg =
+    kind === 'image'
+      ? (scene.negativePrompt ?? '').trim()
+      : (scene.animationNegativePrompt ?? '').trim();
+  if (!neg || main.includes(neg)) return main;
+  const label = kind === 'image' ? 'Image negative' : 'Video negative';
+  return `${main}\n\n${label}:\n${neg}`;
 }
 
 function sceneTimeLabel(scene: ProductionScene): string {
@@ -451,13 +476,17 @@ function PromptGroup({
   onCopy: (key: string, value: unknown) => void;
 }) {
   const items = scenes
-    .map((scene, index) => ({
-      scene,
-      index,
-      label: `Scene ${scene.sceneIndex || index + 1}`,
-      prompt: kind === 'image' ? scene.imagePrompt : sceneVideoPrompt(scene, presentationMode),
-      dialogueSummary: kind === 'video' ? sceneDialogueWordSummary(scene) : null,
-    }))
+    .map((scene, index) => {
+      const raw =
+        kind === 'image' ? scene.imagePrompt : sceneVideoPrompt(scene, presentationMode);
+      return {
+        scene,
+        index,
+        label: `Scene ${scene.sceneIndex || index + 1}`,
+        prompt: sanitizeScenePrompt(raw, kind),
+        dialogueSummary: kind === 'video' ? sceneDialogueWordSummary(scene) : null,
+      };
+    })
     .filter((item) => item.prompt);
   if (items.length === 0) return null;
   const totalDialogueWords =
@@ -475,7 +504,9 @@ function PromptGroup({
       }
       actions={
         <CopyButton
-          value={items.map((item) => `${item.label}\n${item.prompt}`).join('\n\n')}
+          value={items
+            .map((item) => `${item.label}\n${sceneCopyPayload(item.prompt, item.scene, kind)}`)
+            .join('\n\n')}
           copyKey={`${ideaId}:${kind}:all`}
           copiedKey={copiedKey}
           onCopy={onCopy}
@@ -493,7 +524,7 @@ function PromptGroup({
             summary={[sceneTimeLabel(item.scene), item.dialogueSummary].filter(Boolean).join(' · ')}
             actions={
               <CopyButton
-                value={sceneCopyPayload(item.prompt, item.scene)}
+                value={sceneCopyPayload(item.prompt, item.scene, kind)}
                 copyKey={`${ideaId}:${kind}:${item.index}`}
                 copiedKey={copiedKey}
                 onCopy={onCopy}
@@ -978,9 +1009,14 @@ function PackageDetails({
                 storySummary: pkg.storySummary,
                 characterPrompts: pkg.characterPrompts,
                 timedTranscript: pkg.timedTranscript,
-                imagePrompts: pkg.sceneBreakdown.map((scene) => scene.imagePrompt),
+                imagePrompts: pkg.sceneBreakdown.map((scene) =>
+                  sanitizeScenePrompt(scene.imagePrompt, 'image'),
+                ),
                 videoPrompts: pkg.sceneBreakdown.map((scene) =>
-                  sceneVideoPrompt(scene, pkg.presentationMode),
+                  sanitizeScenePrompt(
+                    sceneVideoPrompt(scene, pkg.presentationMode),
+                    'video',
+                  ),
                 ),
                 negativePrompts: pkg.sceneBreakdown.map((scene) => scene.negativePrompt),
                 animationNegativePrompts: pkg.sceneBreakdown.map(
