@@ -1077,6 +1077,36 @@ function stripLipSyncFromImagePrompt(prompt: string): string {
     .trim();
 }
 
+/**
+ * Image-to-video cast repair: every dialogue speaker must appear in the still.
+ * Appends missing speakers with expanded character references.
+ */
+function ensureDialogueSpeakersInImagePrompt(
+  imagePrompt: string,
+  dialogue: Array<{ speaker: string; line: string }>,
+  characters: CharacterReferenceInput[],
+): string {
+  const base = imagePrompt.trim();
+  if (!base || dialogue.length === 0) return imagePrompt;
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  const haystack = base.toLowerCase();
+  for (const line of dialogue) {
+    const speaker = (line.speaker || '').trim();
+    if (!speaker) continue;
+    const key = speaker.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (haystack.includes(key)) continue;
+    const match = characters.find(
+      (character) => (character.name ?? '').toLowerCase() === key,
+    );
+    missing.push(match ? formatCharacterReference(match) : speaker);
+  }
+  if (missing.length === 0) return imagePrompt;
+  return `${base}\nAlso in frame (same cast for image-to-video): ${missing.join('; ')}.`;
+}
+
 function ensureUltraRealistic(prompt: string): string {
   const trimmed = prompt.trim();
   if (!trimmed) return trimmed;
@@ -1167,7 +1197,10 @@ export function normalizeProductionBriefOutput(
     const dialogue = normalizeDialogue(row.dialogue ?? row.dialogues ?? row.lines ?? row.narration);
     let imagePrompt = text(row.imagePrompt ?? row.image);
     let animationPrompt = text(row.animationPrompt ?? row.videoPrompt ?? row.motionPrompt);
-    const renderedDialogue = dialogueBlock(dialogue, characters, drama);
+    const talkingPackage =
+      drama || options.presentation === 'dialogue' || options.presentation === 'mixed';
+    const expandDialogueSpeakers = talkingPackage && characters.length > 0;
+    const renderedDialogue = dialogueBlock(dialogue, characters, expandDialogueSpeakers);
     if (
       renderedDialogue &&
       (options.presentation === 'dialogue' || options.presentation === 'mixed') &&
@@ -1176,12 +1209,16 @@ export function normalizeProductionBriefOutput(
     ) {
       animationPrompt = `${animationPrompt}${animationPrompt ? '\n\n' : ''}Dialogue:\n${renderedDialogue}`;
     }
-    if (dialogue.length > 0 && (drama || options.presentation === 'dialogue' || options.presentation === 'mixed')) {
+    if (dialogue.length > 0 && talkingPackage) {
       imagePrompt = stripDialogueToneLabels(imagePrompt);
       animationPrompt = stripDialogueToneLabels(animationPrompt);
       // Lip-sync is motion-only — never bake it into still imagePrompt.
       if (imagePrompt) imagePrompt = stripLipSyncFromImagePrompt(imagePrompt);
       if (animationPrompt) animationPrompt = ensureDialogueLipSync(animationPrompt);
+      // Same-cast repair: speakers missing from the still get appended before I2V.
+      if (imagePrompt) {
+        imagePrompt = ensureDialogueSpeakersInImagePrompt(imagePrompt, dialogue, characters);
+      }
     } else if (imagePrompt) {
       imagePrompt = stripLipSyncFromImagePrompt(imagePrompt);
     }
@@ -1472,10 +1509,11 @@ ${formatNarrationDurationDensityRules(videoDurationSec, channelLanguage)}
 - ${hookRetentionReminder}
 ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}
 - Every spoken line must be in its scene's dialogue array as {speaker, line, emotion} with the exact stable character name. Emotion is metadata only — do NOT put tone/emotion words into prompts.
-- The line must ALSO appear labeled "Dialogue: Speaker: line" (never "Dialogue (excited): …") inside that scene's animationPrompt (use expanded character references for speaker labels in animationPrompt). Paste EVERY line in full — never shorten dialogue in the prompt.
+- The line must ALSO appear labeled "Dialogue: Speaker (appearance…): line" (never "Dialogue (excited): …") inside that scene's animationPrompt — use expanded character references for speaker labels. Paste EVERY line in full — never shorten dialogue in the prompt.
 - Fill each ~${clipDurationSec}s talking clip with enough dialogue for the full duration (multiple exchanges, full sentences). HARD FAIL if a scene has only one short line then silence.
 - Hindi/Urdu: write about 2× English dialogue volume and keep native-script speech across the FULL clip — never one ~3–4s line in an 8s scene.
 - Every talking animationPrompt MUST explicitly require accurate mouth lip-sync to the spoken lines. Do NOT put "Lip-sync:" into imagePrompt.
+- SCENE CAST LOCK (image-to-video): every dialogue speaker for a scene MUST be visibly present in that scene's imagePrompt. Do NOT introduce new named characters mid-clip. Multi-speaker scenes use a two-shot / OTS / group still, then animate people already in frame.
 - animationPrompt must combine camera, motion, timed beats, action, lip-sync, and exact dialogue so it can be pasted directly into a video-generation tool.
 - Return exactly ${sceneCount} scenes (~${clipDurationSec}s each, totaling ~${videoDurationSec}s). Optional audioMode per scene should be "dialogue".
 - Dialogue language: ALL spoken lines MUST be in ${languageDisplayName(channelLanguage)}.`
@@ -2101,10 +2139,10 @@ export async function runIdeaVisuals(
       ? `- Mixed narration + dialogues: cover the FULL ${videoDurationSec}s video, not only the VO transcript. Follow any VO LAYUP TIMELINE in the provided editingInstructions.
 - Tag each scene with audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
 - NARRATION scenes: narrationSegment = exact VO text for that window; dialogue[] empty; visual prompts MUST NOT invent speech; use narration (no-talking) negatives; AUDIO-IN-PROMPT is SFX/music/ambience only.
-- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker: line" with NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking animationPrompt MUST require accurate mouth lip-sync; do NOT put Lip-sync into imagePrompt. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)} Do NOT add "no dialogue" negatives on these scenes.
+- DIALOGUE scenes: narrationSegment empty (do not copy spoken lines into narrationSegment); put character dialogue in dialogue[] as {speaker, line, emotion} AND embed it in animationPrompt labeled "Dialogue: Speaker (appearance…): line" with expanded character references and NO tone/emotion labels (never "Dialogue (excited): …"). Emotion is metadata only. Every talking animationPrompt MUST require accurate mouth lip-sync; do NOT put Lip-sync into imagePrompt. SCENE CAST LOCK: every speaker must already be visible in that scene's imagePrompt — no mid-clip new characters. Spoken character dialogue must be in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)} Do NOT add "no dialogue" negatives on these scenes.
 - Keep/update the VO LAYUP TIMELINE in editingInstructions: Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE.`
       : presentation === 'dialogue'
-        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker: line" with NO tone/emotion labels. Emotion is metadata only. Every talking animationPrompt MUST require accurate mouth lip-sync (not imagePrompt). Spoken lines in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}`
+        ? `- Dialogues only: dialogue[] filled; embed each line in animationPrompt as "Dialogue: Speaker (appearance…): line" with expanded character references and NO tone/emotion labels. Emotion is metadata only. Every talking animationPrompt MUST require accurate mouth lip-sync (not imagePrompt). SCENE CAST LOCK: every speaker must already be visible in that scene's imagePrompt — no mid-clip new characters. Spoken lines in ${languageDisplayName(channelLanguage)}. ${channelDialogueDensityRules(clipDurationSec, channelLanguage, channelStyle?.styleProfile)}`
         : presentation === 'background_audio'
           ? `- Background Audio: dialogue[] must be [] for every scene. No spoken speech or lip-sync talking. Every animationPrompt MUST include kids-channel background beds (crowd cheering, applause, playful whoops, soft music beds, reaction SFX) synced to the action.`
           : '- Voiceover mode: dialogue must be [] for every scene. Do not invent spoken character lines.';
@@ -2474,7 +2512,7 @@ ${formatLockedCharactersPrompt(lockedCharacters)}
 - Return exactly ${sceneSeed.length} scenes, one per provided sceneIndex.
 - animationPrompt bodies stay in English; quote spoken lines in the output language.
 - Do NOT change or return imagePrompt. Do NOT invent new dialogue lines — reuse the provided dialogue verbatim.
-- For dialogue / talking scenes: embed spoken lines as "Dialogue: Speaker: line" with NO tone/emotion labels, and require accurate mouth lip-sync.
+- For dialogue / talking scenes: embed spoken lines as "Dialogue: Speaker (appearance…): line" with expanded character references and NO tone/emotion labels, and require accurate mouth lip-sync. Do NOT introduce characters missing from the provided imagePrompt (same-cast for image-to-video).
 - For narration / background-audio scenes: no spoken character speech; include music/SFX/ambience (or kids cheering beds when Background Audio).
 - Return a distinct animationNegativePrompt per scene (video/motion avoids). Embed it into animationPrompt as needed by the channel rules.
 ${formatSceneVisualPromptRulesWithChannel(sceneSeed.length, channelStyle, {

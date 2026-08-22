@@ -768,7 +768,8 @@ export function formatDramaDialoguePackageRules(options: {
 - Dialogue emotion: every dialogue[] item MUST be { "speaker", "line", "emotion" }. emotion is one of: ${TTS_EMOTIONS.join(', ')}. Pick it from THAT line's situation (argument → angry, loss → sad, reveal → excited, joke → cheerful, comfort → empathetic, waiting → calm, facts → newscast, else default). Emotion is metadata only — NEVER put tone/emotion words (excited, angry, cheerful, calm, sad, whisper, playful, etc.) into imagePrompt or animationPrompt, and do not print the emotion inside the spoken line.
 - animationPrompt must embed each spoken line as: "Dialogue: Name: line" (no emotion/tone label in parentheses).
 - Lip-sync (mandatory on every talking animationPrompt only): require accurate mouth lip-sync to the spoken lines — clear mouth shapes matching each word, natural jaw and lip motion, no frozen or mismatched mouths. Do NOT put "Lip-sync:" lines into imagePrompt (stills may show a natural speaking mouth pose only).
-- Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for dialogue speaker labels inside animationPrompt where practical.
+- Character references: never use a bare character name alone in imagePrompt or animationPrompt. Always expand to "Name (appearance + wardrobe / consistency)" using the character sheets, e.g. Hina (A girl in Cozy knit sweater with a denim apron for painting tasks). Use the same expanded form for EVERY dialogue speaker label inside animationPrompt ("Dialogue: Name (appearance…): line") — never bare names only.
+- SCENE CAST LOCK (image-to-video — HARD): every person who speaks in dialogue[] or is named in animationPrompt for THAT scene MUST already be visibly present in that scene's imagePrompt (two-shot, OTS, reaction, background — any framing is fine). Do NOT introduce a new named character mid-clip ("B enters", "B appears", "B walks in") unless they are already in the still. Multi-speaker scenes must compose the still with the full speaking cast, then animate people already in frame (turns, reacts, speaks) — never invent identity the still does not show.
 ${qualityLine}
 ${
   negatives
@@ -1075,14 +1076,16 @@ function audioModeSection(
           ]
         : []),
       'Every talking animationPrompt MUST require accurate mouth lip-sync to the spoken lines. Do NOT put Lip-sync cues into imagePrompt.',
+      'SCENE CAST LOCK (image-to-video): every dialogue speaker for a scene MUST be visibly present in that scene\'s imagePrompt. Do not add mid-clip entrances of characters missing from the still. Use expanded character references for Dialogue speaker labels.',
       `Spoken lines in ${lang}. Visual prompt bodies stay English.`,
     );
   } else if (mode === 'mixed') {
     lines.push(
       'Narration + Dialogues in the SAME video.',
       'TTS voiceover is generated ONLY for narrator windows. narrationScript / narrationLines cover those narrator windows only — not dialogue-only clips and not the full runtime as one lecture.',
-      `Talking scenes: no VO on those clips; spoken lines go in dialogue[] and quoted in animationPrompt as "Dialogue: Speaker: line" (no tone/emotion labels), in ${lang}.`,
+      `Talking scenes: no VO on those clips; spoken lines go in dialogue[] and quoted in animationPrompt as "Dialogue: Speaker (appearance…): line" (expanded refs, no tone/emotion labels), in ${lang}.`,
       'Talking scenes: every animationPrompt MUST require accurate mouth lip-sync to the spoken lines (not imagePrompt).',
+      'Talking scenes: SCENE CAST LOCK — every speaker must already appear in that scene\'s imagePrompt; no mid-clip new characters.',
       'See section 5 for the VO LAYUP TIMELINE the editor uses to place generated VO vs dialogue clips.',
     );
   } else if (mode === 'background_audio') {
@@ -1480,6 +1483,7 @@ export function formatSceneVisualPromptRules(
 - Fill this visual prompt DNA per scene (one idea only): SCENE (hero ~70% + 2–3 supports) / STYLE / FRAMING / LIGHTING / MOOD / MOTION (${timedBeatHint(clip)}) / AUDIO-IN-PROMPT / CLOSER + negatives.
 - imagePrompt: a long, detailed, standalone still-image generation prompt. Include subject(s) and what they are doing; character appearance/wardrobe consistency from the character sheets when people appear; framing and composition (shot type, camera angle, lens feel); lighting; environment and background; time of day / era; art style and medium; mood/atmosphere; and key props. Tie the still only to that scene's narration segment, dialogue, and time range.
 - animationPrompt: a long, detailed, standalone video/animation generation prompt covering the full clip duration. Include what happens over time; camera move (pan, tilt, dolly, zoom, or locked-off); subject motion; environmental motion; pacing; transition into/out of the shot; and sync with narration or dialogue (quote or clearly time the spoken lines). Maintain continuity with adjacent scenes when relevant.
+- SCENE CAST LOCK (image-to-video — HARD for dialogue/talking scenes): the still is the only identity the video model sees. Every person who speaks in dialogue[] or is named in animationPrompt for THAT scene MUST already be visibly present in that scene's imagePrompt. Do NOT introduce new named characters mid-clip. Multi-speaker scenes: compose a two-shot / OTS / group still with the full speaking cast, then animate people already in frame.
 - Self-contained negatives (mandatory): for every scene return BOTH negativePrompt (still-image avoid list) AND animationNegativePrompt / videoNegativePrompt (video/motion avoid list). Embed negativePrompt ONLY at the end of imagePrompt, and animationNegativePrompt ONLY at the end of animationPrompt, each as "${NEGATIVE_PROMPT_INLINE_PREFIX} …". Never put video negatives into imagePrompt or image negatives into animationPrompt. The two lists MUST differ.${
     cartoon
       ? '\n- Cartoon package: STYLE must say 2D cartoon or 3D CGI cartoon. Do NOT add cartoon or anime to negatives.'
@@ -1503,7 +1507,7 @@ ${dna}`
     ? `
 - Mixed narration + dialogues: tag each scene as audioMode "narration" | "dialogue" (or "both" only if a clip truly layers both).
   - NARRATION scenes (audioMode=narration, dialogue[] empty): treat as voiceover — no talking in prompts; start negatives from ${DEFAULT_NARRATION_IMAGE_NEGATIVE_PROMPT} (image) and ${DEFAULT_NARRATION_VIDEO_NEGATIVE_PROMPT} (video). AUDIO-IN-PROMPT = SFX/music/ambience only.
-  - DIALOGUE scenes (audioMode=dialogue, dialogue[] filled): quoted speech allowed in imagePrompt/animationPrompt; do NOT add "no dialogue" / "no talking" negatives. narrationSegment should be empty; no VO on these clips.
+  - DIALOGUE scenes (audioMode=dialogue, dialogue[] filled): quoted speech allowed in imagePrompt/animationPrompt; do NOT add "no dialogue" / "no talking" negatives. narrationSegment should be empty; no VO on these clips. SCENE CAST LOCK applies — every speaker visible in the still.
   - editingInstructions must keep/update the VO LAYUP TIMELINE (Scene N  mm:ss–mm:ss  NARRATION|DIALOGUE).`
     : '';
 
@@ -1512,8 +1516,9 @@ ${dna}`
       ? '- Always use expanded character references (never bare names alone). Keep the cartoon/CGI look; do NOT require "ultra realistic"; do NOT forbid cartoon or anime.'
       : '- Always use expanded character references (never bare names alone) and include the quality phrase "ultra realistic" in imagePrompt and animationPrompt.';
     return `${base}${dnaBlock}
-- Drama/dialogue detail: imagePrompt and animationPrompt must be especially specific about faces, wardrobe continuity, blocking, and prop interaction${clip ? ` across the full ~${clip}s clip` : ''}. Do NOT write tone/emotion words (excited, angry, cheerful, etc.) into the prompts — keep spoken lines as "Dialogue: Name: line" only.
+- Drama/dialogue detail: imagePrompt and animationPrompt must be especially specific about faces, wardrobe continuity, blocking, and prop interaction${clip ? ` across the full ~${clip}s clip` : ''}. Do NOT write tone/emotion words (excited, angry, cheerful, etc.) into the prompts — keep spoken lines as "Dialogue: Name (appearance…): line" with expanded character references.
 - Lip-sync (mandatory on animationPrompt only): every talking animationPrompt MUST require accurate mouth lip-sync to the spoken lines (clear mouth shapes matching each word; no frozen or mismatched mouths). Do NOT put "Lip-sync:" into imagePrompt.
+- SCENE CAST LOCK: never show only Character A in imagePrompt while animationPrompt introduces Character B mid-clip — B must already be in the still.
 ${quality}
 - Include distinct negativePrompt (image) and animationNegativePrompt (video) per scene; embed each into its own prompt only (never cross-embed). Dialogue is allowed — do NOT add "no dialogue" negatives.
 - Where appropriate, animationPrompt should also call for dramatic production audio under/around dialogue (impact hits, whooshes, tension risers, ambient beds) without replacing spoken lines.`;

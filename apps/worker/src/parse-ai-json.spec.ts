@@ -181,6 +181,56 @@ describe('creative package normalization', () => {
       { speaker: 'Maya', line: 'We leave before midnight.', emotion: 'calm' },
     ]);
   });
+
+  it('expands dialogue speakers and adds missing cast to imagePrompt for I2V', () => {
+    const normalized = normalizeProductionBriefOutput(
+      {
+        narrationScript: '',
+        sceneBreakdown: [
+          {
+            sceneIndex: 1,
+            durationSec: 8,
+            imagePrompt: 'Maya stands at the workbench alone',
+            animationPrompt: 'Maya turns as Theo replies.',
+            dialogue: [
+              { speaker: 'Maya', line: 'Where is the map?', emotion: 'calm' },
+              { speaker: 'Theo', line: 'In my pocket.', emotion: 'calm' },
+            ],
+          },
+        ],
+        characters: [
+          {
+            name: 'Maya',
+            appearance: 'Round face, brown eyes, black curls',
+            wardrobe: 'Blue mechanic coveralls',
+            age: '28',
+            personality: 'Patient',
+            consistencyDetails: 'Same curls and coveralls',
+          },
+          {
+            name: 'Theo',
+            appearance: 'Square jaw, short blond hair',
+            wardrobe: 'Brown leather jacket',
+            age: '30',
+            personality: 'Blunt',
+            consistencyDetails: 'Same jacket and scar',
+          },
+        ],
+      },
+      { ...baseOptions, presentation: 'dialogue', dramaOrDialogue: true },
+    );
+
+    const image = normalized.scenes[0]?.imagePrompt ?? '';
+    const animation = normalized.scenes[0]?.animationPrompt ?? '';
+    expect(image).toMatch(/Maya/i);
+    expect(image).toMatch(/Theo/i);
+    expect(image).toMatch(/Also in frame \(same cast for image-to-video\)/i);
+    expect(image).toMatch(/Theo \(.*\)/);
+    expect(image).not.toMatch(/lip[- ]?sync/i);
+    expect(animation).toMatch(/Dialogue: Maya \(.*\): Where is the map\?/i);
+    expect(animation).toMatch(/Dialogue: Theo \(.*\): In my pocket\./i);
+    expect(animation).toMatch(/lip[- ]?sync/i);
+  });
 });
 
 describe('generated idea titles', () => {

@@ -19,7 +19,7 @@ import type {
   SpokenNarrationLine,
   TimedTranscriptSegment,
 } from '@/lib/domain-types';
-import { TTS_EMOTION_LABELS, isKidsRhymePackage, type TtsEmotion } from '@scp/shared';
+import { TTS_EMOTION_LABELS, formatCharacterReference, isKidsRhymePackage, type TtsEmotion } from '@scp/shared';
 
 const STAGE_ORDER: PackageStage[] = ['SCRIPT', 'VOICE', 'TRANSCRIPT', 'VISUALS', 'READY'];
 
@@ -292,18 +292,30 @@ function PackageSection({
   );
 }
 
-function sceneVideoPrompt(scene: ProductionScene, presentationMode = ''): string {
+function sceneVideoPrompt(
+  scene: ProductionScene,
+  presentationMode = '',
+  characters: CharacterPrompt[] = [],
+): string {
   if (presentationMode === 'voiceover' || presentationMode === 'background_audio') {
     return scene.animationPrompt;
   }
   const lines = scene.dialogue
     .map((dialogue) => {
       const speaker = dialogue.speaker || 'Speaker';
-      return `Dialogue: ${speaker}: ${dialogue.line}`;
+      const match = characters.find(
+        (character) => (character.name ?? '').toLowerCase() === speaker.toLowerCase(),
+      );
+      const label = match ? formatCharacterReference(match) : speaker;
+      return `Dialogue: ${label}: ${dialogue.line}`;
     })
     .filter(Boolean);
   if (lines.length === 0) return scene.animationPrompt;
-  const missing = lines.filter((line) => !scene.animationPrompt.includes(line));
+  const missing = lines.filter((line) => {
+    // Match by spoken text so expanded vs bare speaker labels still count as present.
+    const spoken = line.replace(/^Dialogue:\s*.+?:\s*/i, '').trim();
+    return spoken ? !scene.animationPrompt.includes(spoken) : !scene.animationPrompt.includes(line);
+  });
   return missing.length
     ? `${scene.animationPrompt}${scene.animationPrompt ? '\n\n' : ''}Dialogue:\n${missing.join('\n')}`
     : scene.animationPrompt;
@@ -463,6 +475,7 @@ function PromptGroup({
   scenes,
   kind,
   presentationMode,
+  characters,
   ideaId,
   copiedKey,
   onCopy,
@@ -471,6 +484,7 @@ function PromptGroup({
   scenes: ProductionScene[];
   kind: 'image' | 'video';
   presentationMode: string;
+  characters: CharacterPrompt[];
   ideaId: string;
   copiedKey: string | null;
   onCopy: (key: string, value: unknown) => void;
@@ -478,7 +492,9 @@ function PromptGroup({
   const items = scenes
     .map((scene, index) => {
       const raw =
-        kind === 'image' ? scene.imagePrompt : sceneVideoPrompt(scene, presentationMode);
+        kind === 'image'
+          ? scene.imagePrompt
+          : sceneVideoPrompt(scene, presentationMode, characters);
       return {
         scene,
         index,
@@ -938,7 +954,7 @@ function PackageDetails({
                 ),
                 videoPrompts: pkg.sceneBreakdown.map((scene) =>
                   sanitizeScenePrompt(
-                    sceneVideoPrompt(scene, pkg.presentationMode),
+                    sceneVideoPrompt(scene, pkg.presentationMode, pkg.characterPrompts),
                     'video',
                   ),
                 ),
@@ -1064,6 +1080,7 @@ function PackageDetails({
             scenes={pkg.sceneBreakdown}
             kind="image"
             presentationMode={pkg.presentationMode}
+            characters={pkg.characterPrompts}
             ideaId={idea.id}
             copiedKey={copiedKey}
             onCopy={onCopy}
@@ -1073,6 +1090,7 @@ function PackageDetails({
             scenes={pkg.sceneBreakdown}
             kind="video"
             presentationMode={pkg.presentationMode}
+            characters={pkg.characterPrompts}
             ideaId={idea.id}
             copiedKey={copiedKey}
             onCopy={onCopy}
